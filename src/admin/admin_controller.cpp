@@ -15,6 +15,10 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef CROSSDESK_SERVER_VERSION
+#define CROSSDESK_SERVER_VERSION "dev"
+#endif
+
 namespace {
 
 constexpr char kSessionCookieName[] = "cd_admin_session";
@@ -23,6 +27,7 @@ constexpr char kDisconnectSuffix[] = "/disconnect";
 constexpr size_t kDefaultPageLimit = 50;
 constexpr size_t kMaxPageLimit = 200;
 constexpr char kAdminAssetPrefix[] = "/admin/assets/";
+constexpr char kServerVersionPlaceholder[] = "{{SERVER_VERSION}}";
 
 std::string ResourcePath(const std::string& resource) {
   size_t query_pos = resource.find('?');
@@ -477,6 +482,11 @@ AdminHttpResponse AdminController::HandleAdminPage() {
         "Admin</title></head><body><h1>CrossDesk Admin</h1><p>Admin frontend "
         "assets were not found.</p></body></html>");
   }
+  const auto version_pos = body.find(kServerVersionPlaceholder);
+  if (version_pos != std::string::npos) {
+    body.replace(version_pos, sizeof(kServerVersionPlaceholder) - 1,
+                 CROSSDESK_SERVER_VERSION);
+  }
   return HtmlResponse(200, body);
 }
 
@@ -801,7 +811,8 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
   }
 
   stats_cached_at_ = now;
-  stats_cache_ = {{"online_device_count",
+  stats_cache_ = {{"server_version", CROSSDESK_SERVER_VERSION},
+          {"online_device_count",
            presence_ ? presence_->GetOnlineDeviceCount()
                      : online_device_fallback},
           {"online_web_client_count",

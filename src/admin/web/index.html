@@ -8,73 +8,79 @@
 </head>
 <body>
   <header>
-    <h1>CrossDesk Admin</h1>
-    <button id="logout" class="hidden">Logout</button>
+    <h1>CrossDesk Admin <span id="server-version" class="server-version">{{SERVER_VERSION}}</span></h1>
+    <div class="header-actions">
+      <select id="language" aria-label="Language" data-i18n-aria-label="Language">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+      <button id="logout" class="hidden" data-i18n="Logout">Logout</button>
+    </div>
   </header>
   <main>
     <section id="login-view" class="login">
       <form id="login-form" class="panel">
-        <h2>Admin Login</h2>
-        <input id="username" autocomplete="username" placeholder="Username" required>
-        <input id="password" autocomplete="current-password" placeholder="Password" type="password" required>
-        <button class="primary" type="submit">Login</button>
+        <h2 data-i18n="Admin Login">Admin Login</h2>
+        <input id="username" autocomplete="username" placeholder="Username" data-i18n-placeholder="Username" aria-label="Username" data-i18n-aria-label="Username" required>
+        <input id="password" autocomplete="current-password" placeholder="Password" data-i18n-placeholder="Password" aria-label="Password" data-i18n-aria-label="Password" type="password" required>
+        <button class="primary" type="submit" data-i18n="Login">Login</button>
         <div id="login-error" class="error"></div>
       </form>
     </section>
     <section id="dashboard-view" class="hidden">
       <div class="toolbar">
-        <div class="muted">Last refresh: <span id="last-refresh">never</span></div>
+        <div class="muted"><span data-i18n="Last refresh:">Last refresh:</span> <span id="last-refresh">never</span></div>
         <div class="actions">
-          <button id="list-refresh" type="button">Refresh lists</button>
+          <button id="list-refresh" type="button" data-i18n="Refresh lists">Refresh lists</button>
           <div id="refresh-error" class="error"></div>
         </div>
       </div>
       <div class="metrics">
-        <div class="metric"><span>Online devices</span><strong id="metric-devices">0</strong></div>
-        <div class="metric"><span>Web clients</span><strong id="metric-web">0</strong></div>
-        <div class="metric"><span>Active sessions</span><strong id="metric-sessions">0</strong></div>
-        <div class="metric"><span>Online time</span><strong id="metric-duration">0s</strong></div>
-        <div class="metric"><span>Control time</span><strong id="metric-control">0s</strong></div>
-        <div class="metric"><span>Controlled time</span><strong id="metric-controlled">0s</strong></div>
+        <div class="metric"><span data-i18n="Online devices">Online devices</span><strong id="metric-devices">0</strong></div>
+        <div class="metric"><span data-i18n="Web clients">Web clients</span><strong id="metric-web">0</strong></div>
+        <div class="metric"><span data-i18n="Active sessions">Active sessions</span><strong id="metric-sessions">0</strong></div>
+        <div class="metric"><span data-i18n="Online time">Online time</span><strong id="metric-duration">0s</strong></div>
+        <div class="metric"><span data-i18n="Control time">Control time</span><strong id="metric-control">0s</strong></div>
+        <div class="metric"><span data-i18n="Controlled time">Controlled time</span><strong id="metric-controlled">0s</strong></div>
       </div>
       <section class="panel geo-panel">
         <div class="toolbar">
-          <h2>中国用户分布</h2>
-          <div class="geo-total">总用户 <strong id="geo-total">0</strong></div>
+          <h2 data-i18n="User distribution in China">User distribution in China</h2>
+          <div class="geo-total"><span data-i18n="Total users">Total users</span> <strong id="geo-total">0</strong></div>
         </div>
         <div class="geo-layout">
           <div class="china-map-wrap">
-            <svg id="china-map" class="china-map" viewBox="0 0 760 560" role="img" aria-label="China user distribution map"></svg>
+            <svg id="china-map" class="china-map" viewBox="0 0 760 560" role="img" aria-label="China user distribution map" data-i18n-aria-label="China user distribution map"></svg>
             <p class="geo-attribution">
-              CrossDesk uses IP2Location.io
-              <a href="https://www.ip2location.io" target="_blank" rel="noopener noreferrer">IP geolocation</a>
-              web service.
+              <span data-i18n="CrossDesk uses IP2Location.io">CrossDesk uses IP2Location.io</span>
+              <a href="https://www.ip2location.io" target="_blank" rel="noopener noreferrer" data-i18n="IP geolocation">IP geolocation</a>
+              <span data-i18n="web service.">web service.</span>
             </p>
             <div id="geo-tooltip" class="geo-tooltip"></div>
           </div>
           <aside class="geo-side">
             <div class="geo-stat">
-              <span>国内用户</span>
+              <span data-i18n="Users in China">Users in China</span>
               <strong id="geo-domestic-count">0</strong>
               <small id="geo-domestic-percent">0%</small>
             </div>
             <div class="geo-stat">
-              <span>国外用户</span>
+              <span data-i18n="Users outside China">Users outside China</span>
               <strong id="geo-foreign-count">0</strong>
               <small id="geo-foreign-percent">0%</small>
             </div>
             <div class="geo-stat">
-              <span>未解析</span>
+              <span data-i18n="Unresolved">Unresolved</span>
               <strong id="geo-unknown-count">0</strong>
               <small id="geo-unknown-percent">0%</small>
             </div>
             <div class="geo-list">
               <div class="geo-list-header">
-                <div class="geo-list-tabs" role="tablist" aria-label="用户地域范围">
-                  <button id="geo-domestic-tab" class="geo-list-tab active" type="button" data-geo-list="domestic" aria-selected="true">国内用户</button>
-                  <button id="geo-foreign-tab" class="geo-list-tab" type="button" data-geo-list="foreign" aria-selected="false">国外用户</button>
+                <div class="geo-list-tabs" role="tablist" aria-label="User regions" data-i18n-aria-label="User regions">
+                  <button id="geo-domestic-tab" class="geo-list-tab active" type="button" data-geo-list="domestic" aria-selected="true" data-i18n="In China">In China</button>
+                  <button id="geo-foreign-tab" class="geo-list-tab" type="button" data-geo-list="foreign" aria-selected="false" data-i18n="Outside China">Outside China</button>
                 </div>
-                <button id="geo-list-order" class="geo-sort-order" type="button" aria-label="国内用户当前倒排，点击正排" title="按人数从多到少"></button>
+                <button id="geo-list-order" class="geo-sort-order" type="button" aria-label="Users in China, descending; click to sort ascending" title="Most users first" data-i18n-title="Most users first"></button>
               </div>
               <ol id="geo-user-list" class="geo-top-list"></ol>
             </div>
@@ -84,74 +90,74 @@
       <div class="grid">
         <section class="panel presence-panel">
           <div class="toolbar">
-            <h2>Client Presence</h2>
+            <h2 data-i18n="Client Presence">Client Presence</h2>
             <div class="actions">
-              <input id="device-search" placeholder="Search device ID">
-              <select id="device-kind" aria-label="Client category">
-                <option value="pc">PC</option>
-                <option value="web">Web</option>
+              <input id="device-search" placeholder="Search device ID" data-i18n-placeholder="Search device ID">
+              <select id="device-kind" aria-label="Client category" data-i18n-aria-label="Client category">
+                <option value="pc" data-i18n="PC">PC</option>
+                <option value="web" data-i18n="Web">Web</option>
               </select>
-              <select id="device-sort" aria-label="Device sort">
-                <option value="status">Status</option>
-                <option value="updated_at">Last seen</option>
-                <option value="online_since">Online since</option>
-                <option value="current_online">Current online</option>
-                <option value="total_online">Total online</option>
-                <option value="total_control">Total control</option>
-                <option value="total_controlled">Total controlled</option>
-                <option value="location">Location status</option>
-                <option value="device_id">Device ID</option>
+              <select id="device-sort" aria-label="Device sort" data-i18n-aria-label="Device sort">
+                <option value="status" data-i18n="Status">Status</option>
+                <option value="updated_at" data-i18n="Last seen">Last seen</option>
+                <option value="online_since" data-i18n="Online since">Online since</option>
+                <option value="current_online" data-i18n="Current online">Current online</option>
+                <option value="total_online" data-i18n="Total online">Total online</option>
+                <option value="total_control" data-i18n="Total control">Total control</option>
+                <option value="total_controlled" data-i18n="Total controlled">Total controlled</option>
+                <option value="location" data-i18n="Location status">Location status</option>
+                <option value="device_id" data-i18n="Device ID">Device ID</option>
               </select>
-              <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order">DESC</button>
-              <select id="device-limit" aria-label="Devices per page">
-                <option value="10">10 / page</option>
-                <option value="50">50 / page</option>
-                <option value="100">100 / page</option>
-                <option value="200">200 / page</option>
+              <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order" data-i18n-aria-label="Toggle sort order" data-i18n="DESC">DESC</button>
+              <select id="device-limit" aria-label="Devices per page" data-i18n-aria-label="Devices per page">
+                <option value="10" data-i18n="10 / page">10 / page</option>
+                <option value="50" data-i18n="50 / page">50 / page</option>
+                <option value="100" data-i18n="100 / page">100 / page</option>
+                <option value="200" data-i18n="200 / page">200 / page</option>
               </select>
             </div>
           </div>
-          <div class="segments" id="device-filters" role="tablist" aria-label="Device filters">
-            <button type="button" data-device-filter="online">Online <span id="device-count-online">0</span></button>
-            <button type="button" data-device-filter="active" title="Devices currently being controlled; each device is counted once">Controlled <span id="device-count-active">0</span></button>
-            <button type="button" data-device-filter="offline">Offline <span id="device-count-offline">0</span></button>
-            <button type="button" data-device-filter="all">All <span id="device-count-all">0</span></button>
+          <div class="segments" id="device-filters" role="tablist" aria-label="Device filters" data-i18n-aria-label="Device filters">
+            <button type="button" data-device-filter="online"><span data-i18n="Online">Online</span> <span id="device-count-online">0</span></button>
+            <button type="button" data-device-filter="active" title="Devices currently being controlled; each device is counted once" data-i18n-title="Devices currently being controlled; each device is counted once"><span data-i18n="Controlled">Controlled</span> <span id="device-count-active">0</span></button>
+            <button type="button" data-device-filter="offline"><span data-i18n="Offline">Offline</span> <span id="device-count-offline">0</span></button>
+            <button type="button" data-device-filter="all"><span data-i18n="All">All</span> <span id="device-count-all">0</span></button>
           </div>
           <div class="table-wrap">
             <table class="presence-table">
-              <thead><tr><th>Client</th><th>State</th><th>Location</th><th>Current online</th><th>Detail</th></tr></thead>
+              <thead><tr><th data-i18n="Client">Client</th><th data-i18n="State">State</th><th data-i18n="Location">Location</th><th data-i18n="Current online">Current online</th><th data-i18n="Detail">Detail</th></tr></thead>
               <tbody id="devices"></tbody>
             </table>
           </div>
           <div class="pager">
-            <button id="device-prev" type="button">Previous</button>
+            <button id="device-prev" type="button" data-i18n="Previous">Previous</button>
             <span id="device-page-info">0-0 of 0</span>
-            <button id="device-next" type="button">Next</button>
+            <button id="device-next" type="button" data-i18n="Next">Next</button>
           </div>
         </section>
         <section class="panel">
           <div class="toolbar">
-            <h2>Active Sessions</h2>
+            <h2 data-i18n="Active sessions">Active sessions</h2>
             <div class="actions">
-              <input id="session-search" placeholder="Search session or user">
-              <select id="session-limit" aria-label="Sessions per page">
-                <option value="10">10 / page</option>
-                <option value="50">50 / page</option>
-                <option value="100">100 / page</option>
-                <option value="200">200 / page</option>
+              <input id="session-search" placeholder="Search session or user" data-i18n-placeholder="Search session or user">
+              <select id="session-limit" aria-label="Sessions per page" data-i18n-aria-label="Sessions per page">
+                <option value="10" data-i18n="10 / page">10 / page</option>
+                <option value="50" data-i18n="50 / page">50 / page</option>
+                <option value="100" data-i18n="100 / page">100 / page</option>
+                <option value="200" data-i18n="200 / page">200 / page</option>
               </select>
             </div>
           </div>
           <div class="table-wrap">
             <table class="sessions-table">
-              <thead><tr><th>Transmission</th><th>Participants</th><th>Action</th></tr></thead>
+              <thead><tr><th data-i18n="Transmission">Transmission</th><th data-i18n="Participants">Participants</th><th data-i18n="Action">Action</th></tr></thead>
               <tbody id="sessions"></tbody>
             </table>
           </div>
           <div class="pager">
-            <button id="session-prev" type="button">Previous</button>
+            <button id="session-prev" type="button" data-i18n="Previous">Previous</button>
             <span id="session-page-info">0-0 of 0</span>
-            <button id="session-next" type="button">Next</button>
+            <button id="session-next" type="button" data-i18n="Next">Next</button>
           </div>
         </section>
       </div>

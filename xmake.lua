@@ -1,5 +1,4 @@
 set_project("crossdesk_server")
-set_version("0.0.1")
 
 add_rules("mode.release", "mode.debug")
 set_languages("c++17")
@@ -51,6 +50,18 @@ target("admin")
     add_deps("log", "transmission", "presence", "device_db_manager")
     add_files("src/admin/*.cpp")
     add_includedirs("src/admin", "src", "src/device_db_manager", "src/log", {public = true})
+    on_load(function (target)
+        local version = os.getenv("GITHUB_REF_TYPE") == "tag" and os.getenv("GITHUB_REF_NAME")
+        if not version or version == "" then
+            local output = try {function ()
+                return os.iorunv("git",
+                    {"describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"},
+                    {curdir = os.projectdir()})
+            end}
+            version = output and output:trim() or "dev"
+        end
+        target:add("defines", 'CROSSDESK_SERVER_VERSION="' .. version:gsub("[^%w%.%+%-%_]", "_") .. '"')
+    end)
 
 target("negotiation")
     set_kind("object")

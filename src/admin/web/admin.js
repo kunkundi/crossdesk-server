@@ -1,3 +1,164 @@
+    const chinese = {
+      'Language': '语言',
+      'Logout': '退出登录',
+      'Admin Login': '管理员登录',
+      'Username': '用户名',
+      'Password': '密码',
+      'Login': '登录',
+      'Last refresh:': '最近刷新：',
+      'never': '尚未刷新',
+      'Refresh lists': '刷新列表',
+      'Online devices': '在线设备',
+      'Web clients': '网页客户端',
+      'Active sessions': '活动会话',
+      'Online time': '累计在线时长',
+      'Control time': '累计控制时长',
+      'Controlled time': '累计被控时长',
+      'User distribution in China': '中国用户分布',
+      'Total users': '总用户',
+      'China user distribution map': '中国用户分布地图',
+      'CrossDesk uses IP2Location.io': 'CrossDesk 使用 IP2Location.io',
+      'IP geolocation': 'IP 地理位置查询',
+      'web service.': '服务。',
+      'Users in China': '国内用户',
+      'Users outside China': '国外用户',
+      'In China': '国内用户',
+      'Outside China': '国外用户',
+      'Unresolved': '未解析',
+      'User regions': '用户地域范围',
+      'Client Presence': '设备在线状态',
+      'Search device ID': '搜索设备 ID',
+      'Client category': '客户端类型',
+      'PC': '电脑',
+      'Web': '网页端',
+      'Device sort': '设备排序',
+      'Status': '状态',
+      'Last seen': '最近活动',
+      'Online since': '上线时间',
+      'Current online': '本次在线',
+      'Total online': '累计在线',
+      'Total control': '累计控制',
+      'Total controlled': '累计被控',
+      'Location status': '位置状态',
+      'Device ID': '设备 ID',
+      'Toggle sort order': '切换排序方向',
+      'ASC': '升序',
+      'DESC': '降序',
+      'Ascending': '升序',
+      'Descending': '降序',
+      'Devices per page': '每页设备数',
+      'Sessions per page': '每页会话数',
+      '10 / page': '10 条 / 页',
+      '50 / page': '50 条 / 页',
+      '100 / page': '100 条 / 页',
+      '200 / page': '200 条 / 页',
+      'Device filters': '设备筛选',
+      'Online': '在线',
+      'Controlled': '被控中',
+      'Devices currently being controlled; each device is counted once': '正在被控制的设备，每台设备只计一次',
+      'Offline': '离线',
+      'All': '全部',
+      'Client': '客户端',
+      'State': '状态',
+      'Location': '位置',
+      'Detail': '详情',
+      'Previous': '上一页',
+      'Next': '下一页',
+      'Search session or user': '搜索会话或用户',
+      'Transmission': '会话',
+      'Participants': '参与者',
+      'Action': '操作',
+      'No records': '暂无记录',
+      'Unknown': '未知',
+      'Web client': '网页客户端',
+      'PC client': '电脑客户端',
+      'Remote': '远控中',
+      'Hide': '收起',
+      'Details': '详情',
+      'Current control': '本次控制',
+      'Current controlled': '本次被控',
+      'Client IP': '客户端 IP',
+      'Region': '地区',
+      'Country': '国家或地区',
+      'Last online': '最近在线',
+      'Active session': '活动会话',
+      'Controlling': '正在控制',
+      'Controlled by': '控制方',
+      'Disconnect': '断开',
+      'Invalid username or password': '用户名或密码错误',
+      'Connection error': '连接失败，请重试',
+      'Failed to disconnect session': '断开会话失败',
+      'Failed to log out': '退出登录失败，请重试',
+      'Map data could not be loaded': '地图数据加载失败',
+      'Fewest users first': '按人数从少到多',
+      'Most users first': '按人数从多到少',
+      '{scope}, {order}; click to switch to {nextOrder}': '{scope}当前{order}，点击切换为{nextOrder}',
+      '{count} users': '{count} 位用户',
+      'controlling {count}': '正在控制 {count} 台设备',
+      'controlled by {count}': '有 {count} 个控制方',
+      'host {id}': '被控端 {id}',
+      '{start}-{end} of {total}': '第 {start}-{end} 条，共 {total} 条',
+      'Disconnect session {id} for host {host}? Devices stay online.': '确定断开被控端 {host} 的会话 {id}？设备将保持在线。',
+      '{days}d {hours}h': '{days}天 {hours}小时',
+      '{hours}h {minutes}m': '{hours}小时 {minutes}分',
+      '{minutes}m {seconds}s': '{minutes}分 {seconds}秒',
+      '{seconds}s': '{seconds}秒'
+    };
+    const languageStorageKey = 'crossdesk-admin-language';
+    let language = (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    try {
+      const saved = localStorage.getItem(languageStorageKey);
+      if (saved === 'zh' || saved === 'en') language = saved;
+    } catch (_) {}
+
+    function locale() {
+      return language === 'zh' ? 'zh-CN' : 'en-US';
+    }
+
+    function t(key, values = {}) {
+      const text = language === 'zh' ? (chinese[key] || key) : key;
+      return text.replace(/\{(\w+)\}/g, (match, name) => values[name] ?? match);
+    }
+
+    function translatePage() {
+      document.documentElement.lang = locale();
+      document.getElementById('language').value = language;
+      for (const attribute of ['text', 'placeholder', 'title', 'aria-label']) {
+        const dataAttribute = attribute === 'text' ? 'data-i18n' : `data-i18n-${attribute}`;
+        document.querySelectorAll(`[${dataAttribute}]`).forEach(element => {
+          const value = t(element.getAttribute(dataAttribute));
+          if (attribute === 'text') element.textContent = value;
+          else element.setAttribute(attribute, value);
+        });
+      }
+    }
+
+    function setMessage(id, key) {
+      const element = document.getElementById(id);
+      element.dataset.i18n = key;
+      element.textContent = t(key);
+    }
+
+    function setLanguage(value) {
+      language = value === 'zh' ? 'zh' : 'en';
+      try { localStorage.setItem(languageStorageKey, language); } catch (_) {}
+      translatePage();
+      updateRefreshTime();
+      applyDeviceKindCounts();
+      renderDevices(currentDevices);
+      renderSessions(currentSessions);
+      updatePager('devices');
+      updatePager('sessions');
+      hideGeoTooltip();
+      renderGeoDistribution(state.geo.distribution);
+      updateLiveDurations();
+    }
+
+    function updateRefreshTime() {
+      document.getElementById('last-refresh').textContent = lastRefreshAt
+        ? new Date(lastRefreshAt).toLocaleTimeString(locale()) : t('never');
+    }
+
     const loginView = document.getElementById('login-view');
     const dashboardView = document.getElementById('dashboard-view');
     const logoutButton = document.getElementById('logout');
@@ -23,6 +184,10 @@
     const searchTimers = {devices: null, sessions: null};
     const expandedDevices = new Set();
     let currentDevices = [];
+    let devicesCapturedAt = 0;
+    let currentSessions = [];
+    let deviceKindCounts = null;
+    let lastRefreshAt = 0;
     let listTimer = null;
     let durationTimer = null;
     let listRefreshSerial = 0;
@@ -77,7 +242,7 @@
       listTimer = null;
       if (durationTimer) clearInterval(durationTimer);
       durationTimer = null;
-      document.getElementById('login-error').textContent = message || '';
+      setMessage('login-error', message || '');
     }
 
     async function login(event) {
@@ -86,24 +251,33 @@
         username: document.getElementById('username').value,
         password: document.getElementById('password').value
       });
-      const response = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        credentials: 'same-origin',
-        body
-      });
-      if (response.ok) showDashboard();
-      else showLogin('Invalid username or password');
+      try {
+        const response = await fetch('/api/admin/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          body
+        });
+        if (response.ok) showDashboard();
+        else showLogin(response.status === 401 ? 'Invalid username or password' : 'Connection error');
+      } catch (_) {
+        showLogin('Connection error');
+      }
     }
 
     async function logout() {
-      await fetch('/api/admin/logout', {method: 'POST', credentials: 'same-origin'});
-      showLogin('');
+      try {
+        const response = await fetch('/api/admin/logout', {method: 'POST', credentials: 'same-origin'});
+        if (response.ok || response.status === 401) showLogin('');
+        else setMessage('refresh-error', 'Failed to log out');
+      } catch (_) {
+        setMessage('refresh-error', 'Failed to log out');
+      }
     }
 
     function formatTime(value) {
       if (!value) return '-';
-      return new Date(value * 1000).toLocaleString();
+      return new Date(value * 1000).toLocaleString(locale());
     }
 
     function formatDuration(value) {
@@ -115,10 +289,10 @@
       seconds %= 3600;
       const minutes = Math.floor(seconds / 60);
       seconds = Math.floor(seconds % 60);
-      if (days > 0) return `${days}d ${hours}h`;
-      if (hours > 0) return `${hours}h ${minutes}m`;
-      if (minutes > 0) return `${minutes}m ${seconds}s`;
-      return `${seconds}s`;
+      if (days > 0) return t('{days}d {hours}h', {days, hours});
+      if (hours > 0) return t('{hours}h {minutes}m', {hours, minutes});
+      if (minutes > 0) return t('{minutes}m {seconds}s', {minutes, seconds});
+      return t('{seconds}s', {seconds});
     }
 
     function appendEmptyRow(body, colSpan) {
@@ -126,7 +300,7 @@
       const cell = document.createElement('td');
       cell.className = 'empty';
       cell.colSpan = colSpan;
-      cell.textContent = 'No records';
+      cell.textContent = t('No records');
       row.appendChild(cell);
       body.appendChild(row);
     }
@@ -140,7 +314,7 @@
     }
 
     function labelCell(cell, label) {
-      cell.dataset.label = label;
+      cell.dataset.label = t(label);
       return cell;
     }
 
@@ -165,7 +339,11 @@
     }
 
     function provinceName(feature) {
-      return feature && feature.properties ? feature.properties.name : '';
+      if (!feature || !feature.properties) return '';
+      if (language === 'zh') return feature.properties.name;
+      const key = provinceKey(feature);
+      const names = {hongkong: 'Hong Kong', macau: 'Macau'};
+      return names[key] || key.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
     }
 
     function provinceTooltipText(feature) {
@@ -202,11 +380,14 @@
       const button = document.getElementById('geo-list-order');
       if (!button) return;
       const isAsc = currentGeoListOrder() === 'asc';
-      const label = mode === 'foreign' ? '国外用户' : '国内用户';
+      const label = t(mode === 'foreign' ? 'Users outside China' : 'Users in China');
       button.textContent = '';
       button.classList.toggle('ascending', isAsc);
-      button.title = isAsc ? '按人数从少到多' : '按人数从多到少';
-      button.setAttribute('aria-label', `${label}当前${isAsc ? '正排' : '倒排'}，点击${isAsc ? '倒排' : '正排'}`);
+      button.title = t(isAsc ? 'Fewest users first' : 'Most users first');
+      button.setAttribute('aria-label', t('{scope}, {order}; click to switch to {nextOrder}', {
+        scope: label, order: t(isAsc ? 'Ascending' : 'Descending'),
+        nextOrder: t(isAsc ? 'Descending' : 'Ascending')
+      }));
     }
 
     function renderGeoUserList(data) {
@@ -228,12 +409,12 @@
           if (lhs.count !== rhs.count) return (lhs.count - rhs.count) * direction;
           const lhsName = isForeign ? lhs.key : provinceDisplayName(lhs.key);
           const rhsName = isForeign ? rhs.key : provinceDisplayName(rhs.key);
-          const nameCompare = lhsName.localeCompare(rhsName, 'zh-CN');
+          const nameCompare = lhsName.localeCompare(rhsName, locale());
           return currentGeoListOrder() === 'asc' ? nameCompare : -nameCompare;
         });
       if (isForeign && !geoItems.length) {
         const foreignCount = Number(data.foreign_count) || 0;
-        if (foreignCount > 0) geoItems = [{key: '国外用户', count: foreignCount}];
+        if (foreignCount > 0) geoItems = [{key: t('Users outside China'), count: foreignCount}];
       }
       if (!geoItems.length) {
         const item = document.createElement('li');
@@ -270,7 +451,7 @@
       const count = geoProvinceCounts.get(provinceKey(feature)) || 0;
       tooltip.replaceChildren();
       appendText(tooltip, 'strong', provinceName(feature));
-      appendText(tooltip, 'span', `${count} users`);
+      appendText(tooltip, 'span', t('{count} users', {count}));
       appendText(tooltip, 'small', formatPercent(count, geoTotalUsers));
       tooltip.classList.add('visible');
       const label = document.getElementById(`geo-label-${provinceKey(feature)}`);
@@ -420,7 +601,7 @@
     async function ensureChinaMap() {
       if (geoMapReady) return true;
       if (!await loadChinaMapData()) {
-        renderMapStatus('地图数据加载失败');
+        renderMapStatus(t('Map data could not be loaded'));
         return false;
       }
       const svg = document.getElementById('china-map');
@@ -479,6 +660,8 @@
         const count = geoProvinceCounts.get(key) || 0;
         const path = document.getElementById(`geo-province-${key}`);
         if (!path) return;
+        const label = document.getElementById(`geo-label-${key}`);
+        if (label) label.textContent = provinceName(feature);
         path.setAttribute('fill', geoColor(count, maxProvinceCount));
         path.setAttribute('aria-label', provinceTooltipText(feature));
       });
@@ -520,7 +703,7 @@
       if (!geoMapReady) {
         ensureChinaMap().then(ok => {
           if (ok) {
-            renderGeoDistribution(data);
+            renderGeoDistribution(state.geo.distribution);
           }
         });
         return;
@@ -544,8 +727,8 @@
       const controlling = Number(device.active_control_count) || targets.length;
       const controlled = Number(device.active_controlled_count) || controlledBy.length;
       const parts = [];
-      if (controlling > 0) parts.push(`controlling ${controlling}`);
-      if (controlled > 0) parts.push(`controlled by ${controlled}`);
+      if (controlling > 0) parts.push(t('controlling {count}', {count: controlling}));
+      if (controlled > 0) parts.push(t('controlled by {count}', {count: controlled}));
       return parts.join(', ') || '-';
     }
 
@@ -555,7 +738,7 @@
 
     function locationLabel(device) {
       if (device.geo_location) return device.geo_location;
-      if (device.client_ip) return 'Unknown';
+      if (device.client_ip) return t('Unknown');
       return '-';
     }
 
@@ -572,7 +755,7 @@
 
     function appendDetailItem(parent, label, value, className, dataset) {
       const item = document.createElement('div');
-      appendText(item, 'span', label);
+      appendText(item, 'span', t(label));
       const strong = appendText(item, 'strong', value, className);
       if (dataset) {
         Object.keys(dataset).forEach(key => {
@@ -583,8 +766,9 @@
       return strong;
     }
 
-    function renderDevices(devices) {
+    function renderDevices(devices, capturedAt = devicesCapturedAt) {
       currentDevices = devices;
+      devicesCapturedAt = capturedAt;
       const body = document.getElementById('devices');
       const fragment = document.createDocumentFragment();
       if (!devices.length) {
@@ -592,7 +776,6 @@
         body.replaceChildren(fragment);
         return;
       }
-      const capturedAt = Math.floor(Date.now() / 1000);
       devices.forEach(device => {
         const activeSessions = Number(device.active_session_count) || 0;
         const isExpanded = expandedDevices.has(device.id);
@@ -603,7 +786,7 @@
         appendText(clientCell, 'div', device.id, 'device-id');
         const clientMeta = document.createElement('div');
         clientMeta.className = 'client-meta';
-        appendText(clientMeta, 'span', device.kind === 'web' ? 'web client' : 'PC client', 'subline');
+        appendText(clientMeta, 'span', t(device.kind === 'web' ? 'Web client' : 'PC client'), 'subline');
         if (device.kind !== 'web' && device.client_platform) {
           appendBadge(clientMeta, platformLabel(device.client_platform), 'platform');
         }
@@ -615,9 +798,9 @@
 
         const statusCell = document.createElement('td');
         labelCell(statusCell, 'State');
-        appendBadge(statusCell, device.online ? 'online' : 'offline',
+        appendBadge(statusCell, t(device.online ? 'Online' : 'Offline'),
           device.online ? 'online' : 'offline');
-        if (activeSessions > 0) appendBadge(statusCell, 'remote', 'active');
+        if (activeSessions > 0) appendBadge(statusCell, t('Remote'), 'active');
         row.appendChild(statusCell);
 
         const locationCell = document.createElement('td');
@@ -633,7 +816,7 @@
         labelCell(detailCell, 'Detail');
         const detailButton = document.createElement('button');
         detailButton.type = 'button';
-        detailButton.textContent = isExpanded ? 'Hide' : 'Details';
+        detailButton.textContent = t(isExpanded ? 'Hide' : 'Details');
         detailButton.addEventListener('click', () => {
           if (expandedDevices.has(device.id)) expandedDevices.delete(device.id);
           else expandedDevices.add(device.id);
@@ -701,6 +884,7 @@
     }
 
     function renderSessions(sessions) {
+      currentSessions = sessions;
       const body = document.getElementById('sessions');
       const fragment = document.createDocumentFragment();
       if (!sessions.length) {
@@ -715,7 +899,7 @@
         const transmissionCell = document.createElement('td');
         labelCell(transmissionCell, 'Transmission');
         appendText(transmissionCell, 'div', session.transmission_id);
-        appendText(transmissionCell, 'span', `host ${session.host_id}`, 'muted');
+        appendText(transmissionCell, 'span', t('host {id}', {id: session.host_id}), 'muted');
         row.appendChild(transmissionCell);
 
         const participantsCell = document.createElement('td');
@@ -728,7 +912,7 @@
         labelCell(actionCell, 'Action');
         const button = document.createElement('button');
         button.className = 'danger';
-        button.textContent = 'Disconnect';
+        button.textContent = t('Disconnect');
         button.dataset.id = session.transmission_id;
         button.dataset.host = session.host_id;
         button.addEventListener('click', () => disconnectSession(button.dataset.id, button.dataset.host, button));
@@ -771,15 +955,15 @@
       const prefix = kind === 'devices' ? 'device' : 'session';
       const start = page.total === 0 ? 0 : Math.min(page.offset + 1, page.total);
       const end = Math.min(page.offset + page.limit, page.total);
-      document.getElementById(`${prefix}-page-info`).textContent = `${start}-${end} of ${page.total}`;
+      document.getElementById(`${prefix}-page-info`).textContent = t('{start}-{end} of {total}', {start, end, total: page.total});
       document.getElementById(`${prefix}-prev`).disabled = page.offset === 0;
       document.getElementById(`${prefix}-next`).disabled = page.offset + page.limit >= page.total;
       document.getElementById(`${prefix}-limit`).value = String(page.limit);
       if (kind === 'devices') {
         document.getElementById('device-kind').value = page.kind;
         document.getElementById('device-sort').value = page.sort;
-        document.getElementById('device-order').textContent = page.order === 'asc' ? 'ASC' : 'DESC';
-        document.getElementById('device-order').title = page.order === 'asc' ? 'Ascending' : 'Descending';
+        document.getElementById('device-order').textContent = t(page.order === 'asc' ? 'ASC' : 'DESC');
+        document.getElementById('device-order').title = t(page.order === 'asc' ? 'Ascending' : 'Descending');
       }
     }
 
@@ -800,7 +984,9 @@
     function applyDeviceKindCounts(counts) {
       const kindSelect = document.getElementById('device-kind');
       if (!kindSelect) return;
-      const labels = {pc: 'PC', web: 'Web'};
+      if (counts) deviceKindCounts = counts;
+      counts = deviceKindCounts;
+      const labels = {pc: t('PC'), web: t('Web')};
       Array.from(kindSelect.options).forEach(option => {
         const value = option.value;
         const count = counts && Object.prototype.hasOwnProperty.call(counts, value)
@@ -812,13 +998,15 @@
     }
 
     function applyStats(stats) {
+      if (stats.server_version) document.getElementById('server-version').textContent = stats.server_version;
       document.getElementById('metric-devices').textContent = stats.online_device_count;
       document.getElementById('metric-web').textContent = stats.online_web_client_count;
       document.getElementById('metric-sessions').textContent = stats.active_connection_count;
       document.getElementById('metric-duration').textContent = formatDuration(stats.total_online_seconds);
       document.getElementById('metric-control').textContent = formatDuration(stats.total_control_seconds);
       document.getElementById('metric-controlled').textContent = formatDuration(stats.total_controlled_seconds);
-      document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString();
+      lastRefreshAt = Date.now();
+      updateRefreshTime();
       statsSnapshot = {
         onlineDuration: Number(stats.total_online_seconds) || 0,
         onlineCount: Number(stats.online_device_count) || 0,
@@ -858,7 +1046,7 @@
       try {
         response = await fetch('/api/admin/stats', {credentials: 'same-origin'});
       } catch (_) {
-        document.getElementById('refresh-error').textContent = 'Connection error';
+        setMessage('refresh-error', 'Connection error');
         return false;
       }
       if (response.status === 401) {
@@ -866,11 +1054,11 @@
         return false;
       }
       if (!response.ok) {
-        document.getElementById('refresh-error').textContent = 'Connection error';
+        setMessage('refresh-error', 'Connection error');
         return false;
       }
       const data = await response.json();
-      document.getElementById('refresh-error').textContent = '';
+      setMessage('refresh-error', '');
       applyStats(data.stats);
       return true;
     }
@@ -889,7 +1077,7 @@
         await loadLists(serial);
       } catch (_) {
         if (serial === listRefreshSerial && !dashboardView.classList.contains('hidden')) {
-          document.getElementById('refresh-error').textContent = 'Connection error';
+          setMessage('refresh-error', 'Connection error');
         }
       } finally {
         listRefreshInFlight = false;
@@ -921,7 +1109,7 @@
       if (serial !== listRefreshSerial || requestedUrl !== buildOverviewUrl() || dashboardView.classList.contains('hidden')) {
         return;
       }
-      document.getElementById('refresh-error').textContent = '';
+      setMessage('refresh-error', '');
       applyStats(data.stats);
       if (data.devices_page && data.devices_page.kind) {
         state.devices.kind = data.devices_page.kind;
@@ -935,26 +1123,30 @@
       applyDeviceCounts(data.device_counts);
       applyDeviceKindCounts(data.device_kind_counts);
       renderGeoDistribution(data.geo_distribution);
-      renderDevices(data.devices || []);
+      renderDevices(data.devices || [], Math.floor(Date.now() / 1000));
       renderSessions(data.sessions || []);
       updatePager('devices');
       updatePager('sessions');
     }
 
     async function disconnectSession(id, host, button) {
-      if (!confirm(`Disconnect session ${id} for host ${host}? Devices stay online.`)) return;
+      if (!confirm(t('Disconnect session {id} for host {host}? Devices stay online.', {id, host}))) return;
       button.disabled = true;
-      const response = await fetch(`/api/admin/sessions/${encodeURIComponent(id)}/disconnect`, {
-        method: 'POST',
-        credentials: 'same-origin'
-      });
-      button.disabled = false;
-      if (response.ok) {
-        refreshLists();
+      try {
+        const response = await fetch(`/api/admin/sessions/${encodeURIComponent(id)}/disconnect`, {
+          method: 'POST',
+          credentials: 'same-origin'
+        });
+        if (response.ok) refreshLists();
+        else setMessage('refresh-error', 'Failed to disconnect session');
+      } catch (_) {
+        setMessage('refresh-error', 'Failed to disconnect session');
+      } finally {
+        button.disabled = false;
       }
-      else document.getElementById('refresh-error').textContent = 'Failed to disconnect session';
     }
 
+    document.getElementById('language').addEventListener('change', event => setLanguage(event.target.value));
     document.getElementById('login-form').addEventListener('submit', login);
     document.getElementById('logout').addEventListener('click', logout);
     document.getElementById('device-search').addEventListener('input', (event) => {
@@ -1059,6 +1251,8 @@
         refreshLists();
       }
     });
+    translatePage();
+    updateRefreshTime();
     applyDeviceCounts();
     applyDeviceKindCounts();
     renderGeoDistribution();
