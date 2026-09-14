@@ -145,7 +145,7 @@ Set both `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, then run `sudo docker 
 | Area / control | Action |
 | --- | --- |
 | Top metrics | View online devices, Web clients, active connections, and cumulative online/control durations |
-| Client Presence | Defaults to online PCs; switch PC/Web, filter Online/Remote/Offline/All, search IDs, sort, and paginate |
+| Client Presence | Defaults to online PCs; switch PC/Web, filter Online/Controlled/Offline/All, search IDs, sort, and paginate; Controlled counts and lists only devices currently being controlled, once per device |
 | Details | Expand platform/version, current and cumulative durations, connection IP, location, and remote peers |
 | Active Sessions → Disconnect | Confirm to disconnect the selected session; devices stay online |
 | Refresh lists / Logout | Refresh manually / sign out |

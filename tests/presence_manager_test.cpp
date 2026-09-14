@@ -266,34 +266,54 @@ int main() {
     expect(db.StartRemoteControlSession("tx-1", "device-2", "device-1"),
            "remote control session starts");
     std::this_thread::sleep_for(std::chrono::seconds(1));
-    expect(db.CountDevicePresence("", "active") == 2,
-           "presence count supports active remote filter");
+    expect(db.CountDevicePresence("", "active") == 1,
+           "active presence count includes only the controlled device");
     auto active_presence_counts = db.CountDevicePresenceByFilters();
-    expect(active_presence_counts.active == 2,
-           "presence count aggregation reports active remote filter");
+    expect(active_presence_counts.active == 1,
+           "active presence aggregation includes only the controlled device");
+    expect(db.CountDevicePresence("device-1", "active") == 0 &&
+               db.CountDevicePresenceByFilters("device-1").active == 0,
+           "active presence search excludes the controller");
+    auto controller_devices = db.ListDevicePresence(10, 0, "device-1");
+    expect(controller_devices.size() == 1 &&
+               controller_devices[0].active_control_count == 1,
+           "unfiltered presence list reports active control count");
+    expect(!controller_devices.empty() &&
+               controller_devices[0].current_control_seconds >= 1,
+           "unfiltered presence list reports current control duration");
+    expect(!controller_devices.empty() &&
+               contains_id(controller_devices[0].active_control_targets,
+                           "device-2"),
+           "unfiltered presence list reports active control target id");
     auto active_devices =
         db.ListDevicePresence(10, 0, "", "active", "device_id", "asc");
-    expect(active_devices.size() == 2,
-           "presence list supports active remote filter");
-    expect(active_devices[0].device_id == "device-1" &&
-               active_devices[0].active_control_count == 1,
-           "presence list reports active control count");
-    expect(active_devices[0].current_control_seconds >= 1,
-           "presence list reports current control duration");
-    expect(contains_id(active_devices[0].active_control_targets, "device-2"),
-           "presence list reports active control target id");
-    expect(active_devices[1].device_id == "device-2" &&
-               active_devices[1].active_controlled_count == 1,
+    expect(active_devices.size() == 1,
+           "active presence list includes only the controlled device");
+    expect(!active_devices.empty() &&
+               active_devices[0].device_id == "device-2" &&
+               active_devices[0].active_controlled_count == 1,
            "presence list reports active controlled count");
-    expect(active_devices[1].current_controlled_seconds >= 1,
+    expect(!active_devices.empty() &&
+               active_devices[0].current_controlled_seconds >= 1,
            "presence list reports current controlled duration");
-    expect(contains_id(active_devices[1].active_controlled_by, "device-1"),
+    expect(!active_devices.empty() &&
+               contains_id(active_devices[0].active_controlled_by, "device-1"),
            "presence list reports active controlled-by peer id");
     db.SetDeviceOnline("device-4", true);
     expect(db.StartRemoteControlSession("tx-clone", "device-2", "C-device-4"),
            "clone remote control session starts");
-    auto clone_control =
-        db.ListDevicePresence(10, 0, "device-4", "active");
+    expect(db.CountDevicePresence("", "active") == 1 &&
+               db.CountDevicePresenceByFilters().active == 1,
+           "multiple controllers count the same controlled device once");
+    auto shared_host = db.ListDevicePresence(10, 0, "", "active");
+    expect(shared_host.size() == 1 &&
+               shared_host[0].device_id == "device-2" &&
+               shared_host[0].active_controlled_count == 2,
+           "active list returns the shared host once with both connections");
+    expect(db.ListDevicePresence(10, 0, "device-4", "active").empty() &&
+               db.CountDevicePresenceByFilters("device-4").active == 0,
+           "active presence excludes normalized clone controllers");
+    auto clone_control = db.ListDevicePresence(10, 0, "device-4");
     expect(clone_control.size() == 1 &&
                clone_control[0].active_control_count == 1,
            "presence list maps clone guest control count to base device");
@@ -304,6 +324,33 @@ int main() {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     expect(db.EndRemoteControlSession("tx-clone", "device-2", "C-device-4"),
            "clone remote control session ends");
+    expect(db.CountDevicePresence("", "active") == 1 &&
+               db.CountDevicePresenceByFilters().active == 1,
+           "controlled device remains counted while another connection exists");
+    expect(db.StartRemoteControlSession("tx-web", "device-2", "web-1"),
+           "web controller session starts");
+    expect(db.CountDevicePresence("", "active", "web") == 0 &&
+               db.CountDevicePresenceByFilters("", "web").active == 0 &&
+               db.ListDevicePresence(10, 0, "", "active", "device_id", "asc",
+                                     "web").empty(),
+           "web controllers are excluded from controlled device counts and list");
+    expect(db.CountDevicePresence("", "active", "all") == 1 &&
+               db.CountDevicePresenceByFilters("", "all").active == 1,
+           "all client kinds count only the shared controlled device");
+    expect(db.EndRemoteControlSession("tx-web", "device-2", "web-1"),
+           "web controller session ends");
+    expect(db.StartRemoteControlSession("tx-chain", "device-3", "device-2"),
+           "controlled device also starts controlling another device");
+    expect(db.CountDevicePresence("", "active") == 2 &&
+               db.CountDevicePresenceByFilters().active == 2,
+           "two controlled devices count once each even with a dual-role device");
+    auto controlled_page =
+        db.ListDevicePresence(1, 1, "", "active", "device_id", "asc");
+    expect(controlled_page.size() == 1 &&
+               controlled_page[0].device_id == "device-3",
+           "controlled device pagination excludes controller-only devices");
+    expect(db.EndRemoteControlSession("tx-chain", "device-3", "device-2"),
+           "chained remote control session ends");
     auto clone_persisted = db.ListDevicePresence(10, 0, "device-4");
     expect(!clone_persisted.empty() &&
                clone_persisted[0].total_control_seconds >= 1,
@@ -323,6 +370,10 @@ int main() {
            "stats include active controlled duration");
     expect(db.EndRemoteControlSession("tx-1", "device-2", "device-1"),
            "remote control session ends");
+    expect(db.CountDevicePresence("", "active") == 0 &&
+               db.CountDevicePresenceByFilters().active == 0 &&
+               db.ListDevicePresence(10, 0, "", "active").empty(),
+           "controlled device count and list clear after the last connection ends");
     auto remote_stats = db.GetOnlineDurationStats();
     expect(remote_stats.total_control_seconds >= 1,
            "stats persist total control duration");
@@ -369,8 +420,9 @@ int main() {
     expect(!restored_sessions.empty() &&
                contains_id(restored_sessions[0].guest_ids, "device-3"),
            "database lists restored remote control guest");
-    expect(restarted_db.CountDevicePresence("", "active") == 2,
-           "database active device filter includes restored remote control");
+    expect(restarted_db.CountDevicePresence("", "active") == 1 &&
+               restarted_db.CountDevicePresenceByFilters().active == 1,
+           "restored remote control counts only the controlled device");
     auto restarted_devices =
         restarted_db.ListDevicePresence(10, 0, "device-2");
     expect(!restarted_devices.empty() && !restarted_devices[0].online,

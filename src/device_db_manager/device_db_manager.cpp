@@ -175,8 +175,7 @@ std::string DevicePresenceFilterClause(const std::string& filter,
     clause +=
         "AND EXISTS ("
         "SELECT 1 FROM remote_control_sessions "
-        "WHERE normalized_guest_id = device_presence.device_id "
-        "OR normalized_host_id = device_presence.device_id) ";
+        "WHERE normalized_host_id = device_presence.device_id) ";
   }
   return clause;
 }
@@ -1551,8 +1550,7 @@ DevicePresenceCounts DeviceDBManager::CountDevicePresenceByFilters(
       kind_clause +
       "AND EXISTS ("
       "SELECT 1 FROM remote_control_sessions "
-      "WHERE normalized_guest_id = device_presence.device_id "
-      "OR normalized_host_id = device_presence.device_id) "
+      "WHERE normalized_host_id = device_presence.device_id) "
       "THEN 1 ELSE 0 END), 0), "
       "COALESCE(SUM(CASE WHEN device_id LIKE 'web-%' "
       "THEN 1 ELSE 0 END), 0) "

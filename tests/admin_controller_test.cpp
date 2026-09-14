@@ -284,6 +284,8 @@ int main() {
            "overview reports zero current duration for offline device");
     expect(offline_body["devices"][0]["client_ip"] == "",
            "overview clears transient network info for offline device");
+    expect(offline_body["devices"][0]["active_control_count"] == 1,
+           "overview preserves controller details outside the active filter");
 
     AdminHttpResponse active_overview = db_controller.Handle(
         {"GET",
@@ -293,12 +295,13 @@ int main() {
     expect(active_overview.status == 200,
            "overview with active device filter returns ok");
     auto active_body = nlohmann::json::parse(active_overview.body);
-    expect(active_body["devices_page"]["total"] == 3,
-           "overview reports active device total");
-    expect(active_body["devices"].size() == 3,
-           "overview returns active devices");
+    expect(active_body["devices_page"]["total"] == 1 &&
+               active_body["device_counts"]["active"] == 1,
+           "overview counts a shared controlled device once");
+    expect(active_body["devices"].size() == 1,
+           "overview returns only controlled devices");
     expect(active_body["devices"][0]["id"] == "device-admin-1",
-           "overview applies device sort order");
+           "overview active filter returns the host");
     expect(active_body["devices"][0]["active_controlled_count"] == 2,
            "overview reports active controlled count");
     auto first_controlled_by =
@@ -307,15 +310,38 @@ int main() {
     expect(contains_id(first_controlled_by, "device-admin-offline") &&
                contains_id(first_controlled_by, "device-admin-control"),
            "overview reports active controlled-by peer ids");
-    expect(active_body["devices"][1]["id"] == "device-admin-control" &&
-               active_body["devices"][1]["active_control_count"] == 1,
+    AdminHttpResponse control_overview = db_controller.Handle(
+        {"GET",
+         "/api/admin/overview?device_filter=all&device_search=device-admin-control",
+         "",
+         "cd_admin_session=" + *token});
+    expect(control_overview.status == 200,
+           "overview with controller search returns ok");
+    auto control_body = nlohmann::json::parse(control_overview.body);
+    expect(control_body["device_counts"]["active"] == 0,
+           "overview excludes controllers from the controlled count");
+    expect(control_body["devices"].size() == 1 &&
+               control_body["devices"][0]["id"] == "device-admin-control" &&
+               control_body["devices"][0]["active_control_count"] == 1,
            "overview maps clone guest control count to base device");
-    auto clone_targets = active_body["devices"][1]["active_control_targets"]
+    auto clone_targets = control_body["devices"][0]["active_control_targets"]
                              .get<std::vector<std::string>>();
     expect(contains_id(clone_targets, "device-admin-1"),
            "overview maps clone guest control target to base device");
-    expect(active_body["devices"][2]["active_control_count"] == 1,
-           "overview reports active control count");
+
+    AdminHttpResponse active_control_overview = db_controller.Handle(
+        {"GET",
+         "/api/admin/overview?device_filter=active&device_search=device-admin-control",
+         "",
+         "cd_admin_session=" + *token});
+    expect(active_control_overview.status == 200,
+           "overview with active controller search returns ok");
+    auto active_control_body =
+        nlohmann::json::parse(active_control_overview.body);
+    expect(active_control_body["devices_page"]["total"] == 0 &&
+               active_control_body["device_counts"]["active"] == 0 &&
+               active_control_body["devices"].empty(),
+           "overview controlled filter excludes controllers from count and list");
 
     AdminHttpResponse location_desc_overview = db_controller.Handle(
         {"GET",
