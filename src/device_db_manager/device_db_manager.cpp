@@ -287,10 +287,11 @@ constexpr int64_t kRemoteControlRecoveryWindowSeconds = 120;
 
 }  // namespace
 
-DeviceDBManager::DeviceDBManager(const std::string& db_path) : db_(nullptr) {
+DeviceDBManager::DeviceDBManager(const std::string& db_path, OpenMode mode)
+    : db_(nullptr) {
   try {
     std::filesystem::path path(db_path);
-    if (!path.parent_path().empty()) {
+    if (mode == OpenMode::ReadWrite && !path.parent_path().empty()) {
       std::filesystem::create_directories(path.parent_path());
     }
   } catch (const std::exception& e) {
@@ -298,7 +299,10 @@ DeviceDBManager::DeviceDBManager(const std::string& db_path) : db_(nullptr) {
                              std::string(e.what()));
   }
 
-  int rc = sqlite3_open(db_path.c_str(), &db_);
+  const int flags = mode == OpenMode::ReadOnly
+                        ? SQLITE_OPEN_READONLY
+                        : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+  int rc = sqlite3_open_v2(db_path.c_str(), &db_, flags, nullptr);
   if (rc != SQLITE_OK) {
     std::string error =
         db_ ? sqlite3_errmsg(db_) : std::string(sqlite3_errstr(rc));
@@ -310,12 +314,35 @@ DeviceDBManager::DeviceDBManager(const std::string& db_path) : db_(nullptr) {
     throw std::runtime_error("Failed to open database: " + error);
   }
   try {
-    InitDB();
+    sqlite3_busy_timeout(db_, 1000);
+    if (mode == OpenMode::ReadWrite) {
+      ExecuteSchemaStatement(db_, "PRAGMA journal_mode=WAL;", "enable WAL");
+      InitDB();
+    }
   } catch (...) {
     sqlite3_close(db_);
     db_ = nullptr;
     throw;
   }
+}
+
+void DeviceDBManager::SetReadDeadline(
+    std::chrono::steady_clock::time_point deadline) {
+  read_deadline_ = deadline;
+  sqlite3_progress_handler(
+      db_, 1000,
+      [](void* data) -> int {
+        return std::chrono::steady_clock::now() >=
+               static_cast<DeviceDBManager*>(data)->read_deadline_;
+      },
+      this);
+}
+
+bool DeviceDBManager::ClearReadDeadline() {
+  const bool expired = std::chrono::steady_clock::now() >= read_deadline_;
+  sqlite3_progress_handler(db_, 0, nullptr, nullptr);
+  read_deadline_ = std::chrono::steady_clock::time_point::max();
+  return expired;
 }
 
 DeviceDBManager::~DeviceDBManager() {

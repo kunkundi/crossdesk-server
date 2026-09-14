@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -62,8 +63,36 @@ bool TransmissionMatchesSearch(const std::string& transmission_id,
 
 }  // namespace
 
-TransmissionManager::TransmissionManager() {
-  ws_hdl_alive_checker_ = std::thread(&TransmissionManager::AliveChecker, this);
+TransmissionManager::TransmissionManager(bool automatic_expiry) {
+  if (automatic_expiry)
+    ws_hdl_alive_checker_ = std::thread(&TransmissionManager::AliveChecker, this);
+}
+
+TransmissionManager::StateLock::StateLock(TransmissionManager& owner)
+    : exceptions_(std::uncaught_exceptions()),
+      owner_(owner),
+      lock_(owner.ws_hdl_alive_checker_mutex_) {
+  ++owner_.lock_depth_;
+}
+
+TransmissionManager::StateLock::~StateLock() noexcept(false) {
+  if (--owner_.lock_depth_ != 0) return;
+  auto callbacks = std::move(owner_.pending_notifications_);
+  owner_.pending_notifications_.clear();
+  lock_.unlock();
+  if (std::uncaught_exceptions() == exceptions_)
+    for (auto& callback : callbacks) callback();
+}
+
+void TransmissionManager::NotifyRemoteControl(
+    const std::string& transmission_id, const std::string& host_id,
+    const std::string& guest_id, bool started) {
+  auto callback = remote_control_session_callback_;
+  if (callback) {
+    pending_notifications_.push_back(
+        [callback = std::move(callback), transmission_id, host_id, guest_id,
+         started] { callback(transmission_id, host_id, guest_id, started); });
+  }
 }
 
 TransmissionManager::~TransmissionManager() {
@@ -82,7 +111,7 @@ bool TransmissionManager::IsTransmissionExist(
 
 bool TransmissionManager::ReleaseTransmission(
     const std::string& transmission_id) {
-  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  StateLock lock(*this);
   auto host_it = transmission_host_id_list_.find(transmission_id);
   std::string host_id =
       host_it != transmission_host_id_list_.end() ? host_it->second : "";
@@ -90,8 +119,7 @@ bool TransmissionManager::ReleaseTransmission(
   if (guest_it != transmission_guest_id_list_.end()) {
     if (remote_control_session_callback_) {
       for (const auto& guest_id : guest_it->second) {
-        remote_control_session_callback_(transmission_id, host_id, guest_id,
-                                         false);
+        NotifyRemoteControl(transmission_id, host_id, guest_id, false);
       }
     }
     transmission_guest_id_list_.erase(guest_it);
@@ -219,7 +247,7 @@ bool TransmissionManager::BindHostToTransmission(
 
 bool TransmissionManager::BindGuestToTransmission(
     const std::string& guest_id, const std::string& transmission_id) {
-  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  StateLock lock(*this);
   auto host_it = transmission_host_id_list_.find(transmission_id);
   if (host_it == transmission_host_id_list_.end()) {
     LOG_WARN("Transmission [{}] does not exist", transmission_id);
@@ -234,10 +262,7 @@ bool TransmissionManager::BindGuestToTransmission(
     return false;
   }
   guests.push_back(guest_id);
-  if (remote_control_session_callback_) {
-    remote_control_session_callback_(transmission_id, host_it->second, guest_id,
-                                     true);
-  }
+  NotifyRemoteControl(transmission_id, host_it->second, guest_id, true);
   LOG_INFO("Bind guest [{}] to transmission [{}]", guest_id, transmission_id);
   return true;
 }
@@ -245,6 +270,9 @@ bool TransmissionManager::BindGuestToTransmission(
 bool TransmissionManager::BindUserToWsHandle(const std::string& user_id,
                                              websocketpp::connection_hdl hdl) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  auto existing = ws_hdl_user_id_list_.find(hdl);
+  if (existing != ws_hdl_user_id_list_.end() && existing->second != user_id)
+    return false;  // A socket must not orphan its previous identity.
   user_id_ws_hdl_list_[user_id] = hdl;
   ws_hdl_user_id_list_[hdl] = user_id;
   UpdateWsHandleLastActiveTime(hdl);
@@ -267,7 +295,7 @@ void TransmissionManager::SetSessionTimeoutCallback(
 
 bool TransmissionManager::ReleaseGuestFromTransmission(
     const std::string& guest_id) {
-  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  StateLock lock(*this);
   bool released = false;
   for (auto map_it = transmission_guest_id_list_.begin();
        map_it != transmission_guest_id_list_.end();) {
@@ -281,10 +309,7 @@ bool TransmissionManager::ReleaseGuestFromTransmission(
     auto host_it = transmission_host_id_list_.find(map_it->first);
     std::string host_id =
         host_it != transmission_host_id_list_.end() ? host_it->second : "";
-    if (remote_control_session_callback_) {
-      remote_control_session_callback_(map_it->first, host_id, guest_id,
-                                       false);
-    }
+    NotifyRemoteControl(map_it->first, host_id, guest_id, false);
     list.erase(remove_begin, list.end());
     released = true;
     if (list.empty()) {
@@ -298,7 +323,7 @@ bool TransmissionManager::ReleaseGuestFromTransmission(
 
 bool TransmissionManager::DisconnectTransmission(
     const std::string& transmission_id) {
-  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  StateLock lock(*this);
   if (!IsTransmissionExist(transmission_id)) {
     return true;
   }
@@ -306,7 +331,7 @@ bool TransmissionManager::DisconnectTransmission(
 }
 
 size_t TransmissionManager::PruneDisconnectedTransmissions() {
-  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  StateLock lock(*this);
 
   std::vector<std::string> disconnected_transmissions;
   for (const auto& host_pair : transmission_host_id_list_) {
@@ -335,10 +360,7 @@ size_t TransmissionManager::PruneDisconnectedTransmissions() {
         ++guest_it;
         continue;
       }
-      if (remote_control_session_callback_) {
-        remote_control_session_callback_(map_it->first, host_id, *guest_it,
-                                         false);
-      }
+      NotifyRemoteControl(map_it->first, host_id, *guest_it, false);
       guest_it = guests.erase(guest_it);
       ++pruned_connections;
     }
@@ -354,7 +376,7 @@ size_t TransmissionManager::PruneDisconnectedTransmissions() {
 
 std::string TransmissionManager::ReleaseUserSession(
     websocketpp::connection_hdl hdl) {
-  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  StateLock lock(*this);
   std::string user_id = ReleaseUserFromWsHandle(hdl);
   if (user_id.empty()) {
     return "";
@@ -463,28 +485,33 @@ void TransmissionManager::AliveChecker() {
   while (!exit_alive_checker_) {
     std::unique_lock<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
     if (ws_hdl_alive_checker_cv_.wait_for(
-            lock, std::chrono::seconds(10),
+            lock, std::chrono::seconds(5),
             [this]() { return exit_alive_checker_.load(); })) {
       break;
     }
 
+    lock.unlock();
     ExpireInactiveSessions();
   }
 }
 
 void TransmissionManager::ExpireInactiveSessions(
     std::chrono::steady_clock::time_point now) {
-  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  StateLock lock(*this);
   for (auto it = ws_hdl_last_active_time_map_.begin();
        it != ws_hdl_last_active_time_map_.end();) {
     auto hdl = it->first;
-    if (hdl.expired() || now - it->second > std::chrono::seconds(10)) {
+    if (hdl.expired() || now - it->second > std::chrono::seconds(30)) {
       it = ws_hdl_last_active_time_map_.erase(it);
       std::string user_id = ReleaseUserSession(hdl);
       if (session_timeout_callback_) {
         // Close every expired connection, including an old connection whose
         // device has another live session. Only the final session logs out.
-        session_timeout_callback_(hdl, user_id);
+        auto callback = session_timeout_callback_;
+        pending_notifications_.push_back(
+            [callback = std::move(callback), hdl, user_id] {
+              callback(hdl, user_id);
+            });
       }
     } else {
       ++it;

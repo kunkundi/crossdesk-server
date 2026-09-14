@@ -1,6 +1,7 @@
 #include "log.h"
 
 #include <atomic>
+#include <spdlog/async.h>
 #include <filesystem>
 
 namespace {
@@ -59,8 +60,12 @@ std::shared_ptr<spdlog::logger> get_logger() {
       std::cerr << "Warning: file logging disabled: " << e.what() << std::endl;
     }
 
-    g_logger = std::make_shared<spdlog::logger>(LOGGER_NAME, sinks.begin(),
-                                                sinks.end());
+    // Slow disks/stdout must not stall the network loop. The queue is bounded;
+    // diagnostic overload drops oldest records instead of blocking signaling.
+    spdlog::init_thread_pool(8192, 1);
+    g_logger = std::make_shared<spdlog::async_logger>(
+        LOGGER_NAME, sinks.begin(), sinks.end(), spdlog::thread_pool(),
+        spdlog::async_overflow_policy::overrun_oldest);
     g_logger->flush_on(spdlog::level::info);
     spdlog::register_logger(g_logger);
     g_logger_created.store(true);

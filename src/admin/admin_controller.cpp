@@ -390,8 +390,10 @@ std::string JsonContentType() { return "application/json; charset=utf-8"; }
 AdminController::AdminController(
     AdminAuth* auth, PresenceManager* presence,
     std::shared_ptr<TransmissionManager> transmission, DeviceDBManager* db,
-    std::function<void(const std::string&, nlohmann::json)> send_to_user)
-    : auth_(auth),
+    std::function<void(const std::string&, nlohmann::json)> send_to_user,
+    std::chrono::milliseconds stats_ttl)
+    : stats_ttl_(stats_ttl),
+      auth_(auth),
       presence_(presence),
       transmission_(std::move(transmission)),
       db_(db),
@@ -783,6 +785,9 @@ bool AdminController::IsAuthorized(const AdminHttpRequest& request) {
 }
 
 nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const {
+  const auto now = std::chrono::steady_clock::now();
+  if (!stats_cache_.is_null() && now - stats_cached_at_ < stats_ttl_)
+    return stats_cache_;
   OnlineDurationStats duration_stats;
   if (db_) {
     duration_stats = db_->GetOnlineDurationStats();
@@ -795,7 +800,8 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
         static_cast<size_t>(db_->CountActiveRemoteControlConnections()));
   }
 
-  return {{"online_device_count",
+  stats_cached_at_ = now;
+  stats_cache_ = {{"online_device_count",
            presence_ ? presence_->GetOnlineDeviceCount()
                      : online_device_fallback},
           {"online_web_client_count",
@@ -807,6 +813,7 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
           {"total_control_seconds", duration_stats.total_control_seconds},
           {"total_controlled_seconds",
            duration_stats.total_controlled_seconds}};
+  return stats_cache_;
 }
 
 ClientGeoDistribution AdminController::GetCurrentGeoDistribution() const {

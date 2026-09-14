@@ -9,6 +9,7 @@
 
 #include <sqlite3.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -97,8 +98,14 @@ struct RemoteControlSessionInfo {
 
 class DeviceDBManager {
  public:
-  explicit DeviceDBManager(const std::string& db_path);
+  enum class OpenMode { ReadWrite, ReadOnly };
+  explicit DeviceDBManager(const std::string& db_path,
+                           OpenMode mode = OpenMode::ReadWrite);
   ~DeviceDBManager();
+  // Only the dedicated reader worker sets this; writers keep their existing
+  // transaction behavior. SQLite's progress handler bounds expensive reads.
+  void SetReadDeadline(std::chrono::steady_clock::time_point deadline);
+  bool ClearReadDeadline();
 
   DeviceDBManager(const DeviceDBManager&) = delete;
   DeviceDBManager& operator=(const DeviceDBManager&) = delete;
@@ -166,6 +173,7 @@ class DeviceDBManager {
                                    const std::string& password);
 
  private:
+  std::chrono::steady_clock::time_point read_deadline_ = std::chrono::steady_clock::time_point::max();
   sqlite3* db_;
   mutable std::recursive_mutex db_mutex_;
 };

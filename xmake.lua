@@ -66,7 +66,7 @@ target("presence")
 target("server")
     set_kind("object")
     add_deps("log", "common", "negotiation", "presence", "admin")
-    add_files("src/signal_server.cpp", "src/geo_location_resolver.cpp")
+    add_files("src/signal_server.cpp", "src/geo_location_resolver.cpp", "src/resource_monitor.cpp")
 
 target("crossdesk_server")
     set_kind("binary")

@@ -2,12 +2,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "common.h"
 #include "log.h"
@@ -15,7 +16,6 @@
 
 namespace {
 
-constexpr long kRuntimeHeartbeatIntervalMs = 5000;
 constexpr long kRecoveredSessionCleanupDelayMs = 120000;
 constexpr size_t kMaxClientNetworkInfoJobs = 1024;
 constexpr int kDefaultGeoIpFailureTtlMs = 60000;
@@ -29,7 +29,7 @@ int EnvMillis(const char* name, int fallback, int min_value, int max_value) {
   }
   char* end = nullptr;
   long value = std::strtol(raw, &end, 10);
-  if (end == raw || value < min_value || value > max_value) {
+  if (*end != '\0' || end == raw || value < min_value || value > max_value) {
     return fallback;
   }
   return static_cast<int>(value);
@@ -69,12 +69,10 @@ std::shared_ptr<IceServerConfigIssuer> CreateIceServerConfigIssuer() {
 }
 
 std::chrono::milliseconds GeoIpFailureRetryDelay(int failure_count) {
-  int64_t delay_ms =
-      EnvMillis("CROSSDESK_GEOIP_FAILURE_TTL_MS",
-                kDefaultGeoIpFailureTtlMs, 0, 3600000);
-  int64_t max_delay_ms =
-      EnvMillis("CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS",
-                kDefaultGeoIpFailureMaxTtlMs, 0, 86400000);
+  int64_t delay_ms = EnvMillis("CROSSDESK_GEOIP_FAILURE_TTL_MS",
+                               kDefaultGeoIpFailureTtlMs, 0, 3600000);
+  int64_t max_delay_ms = EnvMillis("CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS",
+                                   kDefaultGeoIpFailureMaxTtlMs, 0, 86400000);
   max_delay_ms = std::max(delay_ms, max_delay_ms);
   if (delay_ms <= 0) {
     return std::chrono::milliseconds(0);
@@ -138,88 +136,17 @@ void RestorePersistedRemoteControlSessions(
 
 }  // namespace
 
-SignalServer::SignalServer() {
-  server_.set_error_channels(websocketpp::log::elevel::none);
-  server_.set_access_channels(websocketpp::log::alevel::none);
-  server_.init_asio();
-
-  server_.set_open_handler(
-      std::bind(&SignalServer::OnOpen, this, std::placeholders::_1));
-  server_.set_close_handler(
-      std::bind(&SignalServer::OnClose, this, std::placeholders::_1));
-  server_.set_fail_handler(
-      std::bind(&SignalServer::OnFail, this, std::placeholders::_1));
-  server_.set_message_handler(std::bind(&SignalServer::OnMessage, this,
-                                        std::placeholders::_1,
-                                        std::placeholders::_2));
-  server_.set_http_handler(
-      std::bind(&SignalServer::OnHttp, this, std::placeholders::_1));
-  server_.set_tls_init_handler(
-      std::bind(&SignalServer::OnTlsInit, this, std::placeholders::_1));
-  server_.set_ping_handler(std::bind(&SignalServer::OnPing, this,
-                                     std::placeholders::_1,
-                                     std::placeholders::_2));
-  server_.set_pong_handler(std::bind(&SignalServer::OnPong, this,
-                                     std::placeholders::_1,
-                                     std::placeholders::_2));
-
-  transmission_manager_ = std::make_shared<TransmissionManager>();
-  device_db_manager_ = std::make_unique<DeviceDBManager>(db_path_);
-  transmission_manager_->SetRemoteControlSessionCallback(
-      [this](const std::string& transmission_id, const std::string& host_id,
-             const std::string& guest_id, bool started) {
-        if (!device_db_manager_) {
-          return;
-        }
-        if (started) {
-          device_db_manager_->StartRemoteControlSession(transmission_id,
-                                                        host_id, guest_id);
-        } else {
-          device_db_manager_->EndRemoteControlSession(transmission_id, host_id,
-                                                      guest_id);
-        }
-      });
-  RestorePersistedRemoteControlSessions(transmission_manager_,
-                                        device_db_manager_.get());
-  signal_negotiation_ = std::make_unique<SignalNegotiation>(
-      transmission_manager_, device_db_manager_.get(), nullptr,
-      CreateIceServerConfigIssuer());
-  signal_negotiation_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg,
-                                                    this, std::placeholders::_1,
-                                                    std::placeholders::_2));
-  if (GeoLocationResolver::IsEnabled()) {
-    geo_location_resolver_ = std::make_unique<GeoLocationResolver>();
-  }
-  presence_manager_ = std::make_unique<PresenceManager>();
-  presence_manager_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg, this,
-                                                  std::placeholders::_1,
-                                                  std::placeholders::_2));
-  presence_manager_->SetDeviceDB(device_db_manager_.get());
-  presence_manager_->SetSendToDeviceCallback(
-      [this](const std::string& id, json msg) {
-        SendMsg(transmission_manager_->GetWsHandle(id), msg);
-      });
-  transmission_manager_->SetSessionTimeoutCallback(
-      std::bind(&SignalServer::OnSessionTimeout, this, std::placeholders::_1,
-                std::placeholders::_2));
-  admin_auth_ = std::make_unique<AdminAuth>();
-  admin_controller_ = std::make_unique<AdminController>(
-      admin_auth_.get(), presence_manager_.get(), transmission_manager_,
-      device_db_manager_.get(), [this](const std::string& id, json msg) {
-        SendMsg(transmission_manager_->GetWsHandle(id), msg);
-      });
-  if (geo_location_resolver_) {
-    StartClientNetworkInfoWorker();
-  }
-}
+SignalServer::SignalServer()
+    : SignalServer(9090, "/var/lib/crossdesk/certs",
+                   "/var/lib/crossdesk/db/crossdesk-server.db") {}
 
 SignalServer::SignalServer(uint16_t port, std::string certs_dir,
                            std::string db_path)
-    : port_(port), certs_dir_(certs_dir), db_path_(db_path) {
+    : port_(port), certs_dir_(std::move(certs_dir)) {
   LOG_INFO(
       "Starting CrossDesk Signaling Server on port {}, certs_dir: {}, "
       "db_path: {}",
-      port_, certs_dir_, db_path_);
+      port_, certs_dir_, db_path);
 
   server_.set_error_channels(websocketpp::log::elevel::none);
   server_.set_access_channels(websocketpp::log::alevel::none);
@@ -227,10 +154,6 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
 
   server_.set_open_handler(
       std::bind(&SignalServer::OnOpen, this, std::placeholders::_1));
-  server_.set_close_handler(
-      std::bind(&SignalServer::OnClose, this, std::placeholders::_1));
-  server_.set_fail_handler(
-      std::bind(&SignalServer::OnFail, this, std::placeholders::_1));
   server_.set_message_handler(std::bind(&SignalServer::OnMessage, this,
                                         std::placeholders::_1,
                                         std::placeholders::_2));
@@ -238,15 +161,14 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       std::bind(&SignalServer::OnHttp, this, std::placeholders::_1));
   server_.set_tls_init_handler(
       std::bind(&SignalServer::OnTlsInit, this, std::placeholders::_1));
-  server_.set_ping_handler(std::bind(&SignalServer::OnPing, this,
+  auto heartbeat_handler = std::bind(&SignalServer::OnHeartbeat, this,
                                      std::placeholders::_1,
-                                     std::placeholders::_2));
-  server_.set_pong_handler(std::bind(&SignalServer::OnPong, this,
-                                     std::placeholders::_1,
-                                     std::placeholders::_2));
+                                     std::placeholders::_2);
+  server_.set_ping_handler(heartbeat_handler);
+  server_.set_pong_handler(heartbeat_handler);
 
-  transmission_manager_ = std::make_shared<TransmissionManager>();
-  device_db_manager_ = std::make_unique<DeviceDBManager>(db_path_);
+  transmission_manager_ = std::make_shared<TransmissionManager>(false);
+  device_db_manager_ = std::make_unique<DeviceDBManager>(db_path);
   transmission_manager_->SetRemoteControlSessionCallback(
       [this](const std::string& transmission_id, const std::string& host_id,
              const std::string& guest_id, bool started) {
@@ -281,25 +203,38 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       [this](const std::string& id, json msg) {
         SendMsg(transmission_manager_->GetWsHandle(id), msg);
       });
-  transmission_manager_->SetSessionTimeoutCallback(
-      std::bind(&SignalServer::OnSessionTimeout, this, std::placeholders::_1,
-                std::placeholders::_2));
   admin_auth_ = std::make_unique<AdminAuth>();
   admin_controller_ = std::make_unique<AdminController>(
       admin_auth_.get(), presence_manager_.get(), transmission_manager_,
       device_db_manager_.get(), [this](const std::string& id, json msg) {
         SendMsg(transmission_manager_->GetWsHandle(id), msg);
       });
-  if (geo_location_resolver_) {
-    StartClientNetworkInfoWorker();
-  }
+  admin_read_db_ = std::make_unique<DeviceDBManager>(
+      db_path, DeviceDBManager::OpenMode::ReadOnly);
+  admin_read_controller_ = std::make_unique<AdminController>(
+      admin_auth_.get(), presence_manager_.get(), transmission_manager_,
+      admin_read_db_.get(), nullptr, std::chrono::milliseconds(1000));
+  max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 2048, 1, 65536);
+  auto on_error = [this](std::exception_ptr error) { WorkerFailed(error); };
+  application_worker_ =
+      std::make_unique<BoundedExecutor>(1024, max_connections_ + 4, on_error);
+  admin_worker_ = std::make_unique<BoundedExecutor>(32, 0, on_error);
+  maintenance_worker_ = std::make_unique<BoundedExecutor>(2, 0, on_error);
+  server_.set_max_message_size(64 * 1024);
+  server_.set_max_http_body_size(16 * 1024);
+  server_.set_open_handshake_timeout(10000);
+  server_.set_close_handshake_timeout(3000);
+  if (geo_location_resolver_) StartClientNetworkInfoWorker();
 }
 
 SignalServer::~SignalServer() {
+  stopping_ = true;
   StopClientNetworkInfoWorker();
-  if (transmission_manager_) {
-    transmission_manager_->SetSessionTimeoutCallback({});
-  }
+  // Join before any manager or endpoint is destroyed. Worker completions only
+  // post back to the still-owned io_service; no worker accesses a connection.
+  if (admin_worker_) admin_worker_->Stop();
+  if (application_worker_) application_worker_->Stop();
+  if (maintenance_worker_) maintenance_worker_->Stop();
 }
 
 std::string SignalServer::GetClientIp(websocketpp::connection_hdl hdl) {
@@ -318,21 +253,9 @@ std::string SignalServer::GetClientIp(websocketpp::connection_hdl hdl) {
   return "";
 }
 
-void SignalServer::EnqueueClientNetworkInfo(websocketpp::connection_hdl hdl,
+void SignalServer::EnqueueClientNetworkInfo(const std::string& client_ip,
                                             const std::string& device_id) {
-  if (!presence_manager_ || device_id.empty()) {
-    return;
-  }
-
-  std::string client_ip;
-  auto ip_it = ws_connection_ips_.find(hdl);
-  if (ip_it != ws_connection_ips_.end()) {
-    client_ip = ip_it->second;
-  }
-  if (client_ip.empty()) {
-    client_ip = GetClientIp(hdl);
-  }
-
+  if (!presence_manager_ || device_id.empty()) return;
   ClientNetworkInfo network_info;
   network_info.client_ip = client_ip;
   presence_manager_->SetDeviceNetworkInfo(device_id, network_info);
@@ -341,8 +264,8 @@ void SignalServer::EnqueueClientNetworkInfo(websocketpp::connection_hdl hdl,
   }
 }
 
-void SignalServer::EnqueueGeoIpLookup(
-    const std::string& client_ip, std::chrono::milliseconds delay) {
+void SignalServer::EnqueueGeoIpLookup(const std::string& client_ip,
+                                      std::chrono::milliseconds delay) {
   if (client_ip.empty()) {
     return;
   }
@@ -391,8 +314,8 @@ void SignalServer::ProcessGeoIpLookup(const GeoIpLookupJob& job) {
   GeoLocationResolveResult resolve_result;
   resolve_result.info.client_ip = job.client_ip;
   if (geo_location_resolver_) {
-    resolve_result = geo_location_resolver_->ResolveWithRetryInfo(
-        job.client_ip);
+    resolve_result =
+        geo_location_resolver_->ResolveWithRetryInfo(job.client_ip);
   }
 
   if (!presence_manager_->HasDeviceWithClientIp(job.client_ip)) {
@@ -409,8 +332,8 @@ void SignalServer::ProcessGeoIpLookup(const GeoIpLookupJob& job) {
       pending_ip_lookup_at_.erase(job.client_ip);
       geo_ip_failure_counts_.erase(job.client_ip);
     }
-    size_t updated = presence_manager_->UpdateDevicesWithClientIp(
-        job.client_ip, network_info);
+    size_t updated = presence_manager_->UpdateDevicesWithClientIp(job.client_ip,
+                                                                  network_info);
     if (GeoLocationResolver::IsEnabled()) {
       LOG_INFO("GeoIP lookup for [{}] resolved [{}] and updated {} client(s)",
                job.client_ip, network_info.location, updated);
@@ -433,8 +356,7 @@ void SignalServer::ProcessGeoIpLookup(const GeoIpLookupJob& job) {
     std::lock_guard<std::mutex> lock(network_info_mutex_);
     failure_count = ++geo_ip_failure_counts_[job.client_ip];
   }
-  std::chrono::milliseconds retry_delay =
-      GeoIpFailureRetryDelay(failure_count);
+  std::chrono::milliseconds retry_delay = GeoIpFailureRetryDelay(failure_count);
   if (retry_delay.count() > 0 &&
       presence_manager_->HasDeviceWithClientIp(job.client_ip)) {
     const auto retry_at = std::chrono::steady_clock::now() + retry_delay;
@@ -519,340 +441,569 @@ void SignalServer::ProcessClientNetworkInfoJobs() {
       }
     }
 
-    ProcessGeoIpLookup(job);
+    try {
+      ProcessGeoIpLookup(job);
+    } catch (...) {
+      WorkerFailed(std::current_exception());
+      return;
+    }
   }
+}
+
+// TLS contexts are immutable once published. Existing SSL streams keep the old
+// shared_ptr alive, including across certificate rotation and failed reloads.
+context_ptr SignalServer::OnTlsInit(websocketpp::connection_hdl) {
+  return std::atomic_load(&tls_context_);
+}
+
+void SignalServer::ReloadTlsContext() {
+  const auto cert = certs_dir_ + "/api.crossdesk.cn_bundle.crt";
+  const auto key = certs_dir_ + "/api.crossdesk.cn.key";
+  auto stamp = [](const std::string& path) {
+    return std::to_string(
+               std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::filesystem::last_write_time(path).time_since_epoch())
+                   .count()) +
+           ":" + std::to_string(std::filesystem::file_size(path));
+  };
+  const auto generation = stamp(cert) + ":" + stamp(key);
+  if (generation == tls_generation_) return;
+  namespace asio = websocketpp::lib::asio;
+  auto ctx = websocketpp::lib::make_shared<asio::ssl::context>(
+      asio::ssl::context::sslv23);
+  ctx->set_options(asio::ssl::context::default_workarounds |
+                   asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 |
+                   asio::ssl::context::single_dh_use);
+  ctx->use_certificate_chain_file(cert);
+  ctx->use_private_key_file(key, asio::ssl::context::pem);
+  if (SSL_CTX_check_private_key(ctx->native_handle()) != 1)
+    throw std::runtime_error("TLS certificate and private key do not match");
+  if (SSL_CTX_set_cipher_list(
+          ctx->native_handle(),
+          "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+          "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256") != 1)
+    throw std::runtime_error("TLS cipher configuration failed");
+  if (generation != stamp(cert) + ":" + stamp(key))
+    throw std::runtime_error("TLS files changed during reload; retrying later");
+  std::atomic_store(&tls_context_, ctx);
+  tls_generation_ = generation;
+  LOG_INFO("TLS context loaded and published for new connections");
+}
+
+void SignalServer::RetryAccept() {
+  if (stopping_ || accept_retry_pending_) return;
+  accept_retry_pending_ = true;
+  server_.set_timer(500, [this](websocketpp::lib::error_code ec) {
+    accept_retry_pending_ = false;
+    if (!ec) AcceptNext();
+  });
+}
+
+void SignalServer::AcceptNext() {
+  if (stopping_ || accept_pending_) return;
+  const auto now = Clock::now();
+  if (now - fd_sampled_at_ >= std::chrono::seconds(1)) {
+    fd_usage_ = ReadFileDescriptorUsage();
+    fd_sampled_at_ = now;
+    fd_connections_at_sample_ = connections_.size();
+  }
+  const auto estimated_fds =
+      fd_usage_.open < 0
+          ? -1
+          : fd_usage_.open + static_cast<int64_t>(connections_.size()) -
+                static_cast<int64_t>(fd_connections_at_sample_);
+  size_t handshakes = 0;
+  for (const auto& entry : connections_)
+    if (!entry.second->opened) ++handshakes;
+  if (connections_.size() + pending_cleanup_ >= max_connections_ ||
+      handshakes >= max_handshakes_ ||
+      (fd_usage_.soft_limit >= 0 &&
+       (estimated_fds < 0 ||
+        estimated_fds + static_cast<int64_t>(fd_reserve_) >=
+            fd_usage_.soft_limit))) {
+    RetryAccept();
+    return;
+  }
+
+  namespace asio = websocketpp::lib::asio;
+  auto socket =
+      std::make_shared<asio::ip::tcp::socket>(server_.get_io_service());
+  accept_pending_ = true;
+  acceptor_->async_accept(*socket, [this, socket](asio::error_code error) {
+    accept_pending_ = false;
+    if (stopping_) return;  // RAII closes the accepted socket, if any.
+    if (error) {
+      if (error == asio::error::bad_descriptor ||
+          error == asio::error::invalid_argument)
+        throw std::runtime_error("Accept listener state is invalid: " +
+                                 error.message());
+      if (Clock::now() >= next_accept_warning_) {
+        LOG_WARN("Connection admission failed: {} ({}); retrying with backoff",
+                 error.message(), error.value());
+        next_accept_warning_ = Clock::now() + std::chrono::seconds(30);
+      }
+      fd_sampled_at_ = {};
+      RetryAccept();
+      return;
+    }
+    server::connection_ptr con;
+    try {
+      // Construct SSL only after TCP accept. A pending accept must not pin an
+      // obsolete TLS context across a certificate reload.
+      con = server_.get_connection();
+      if (!con) throw std::runtime_error("Connection initialization failed");
+      con->get_raw_socket() = std::move(*socket);
+      auto state = std::make_shared<ConnectionState>();
+      state->id = next_connection_id_++;
+      state->ip = GetClientIp(con->get_handle());
+      connections_.emplace(con->get_handle(), state);
+      con->set_termination_handler([this](server::connection_ptr finished) {
+        FinishConnection(finished);
+      });
+      con->start();
+    } catch (const std::system_error& e) {
+      if (con)
+        con->terminate(
+            websocketpp::error::make_error_code(websocketpp::error::general));
+      if (e.code() != std::errc::too_many_files_open &&
+          e.code() != std::errc::too_many_files_open_in_system &&
+          e.code() != std::errc::no_buffer_space)
+        throw;
+      fd_sampled_at_ = {};
+      RetryAccept();
+      return;
+    }
+    AcceptNext();
+  });
 }
 
 bool SignalServer::OnOpen(websocketpp::connection_hdl hdl) {
-  connection_id conn_id = ws_connection_id_++;
-  ws_connections_[hdl] = conn_id;
-  std::string client_ip = GetClientIp(hdl);
-  ws_connection_ips_[hdl] = client_ip;
-  LOG_INFO("Websocket connection [{}] opened from [{}]", conn_id,
-           client_ip.empty() ? "Unknown" : client_ip);
+  auto it = connections_.find(hdl);
+  if (it == connections_.end()) return false;
+  auto& state = *it->second;
+  state.opened = true;
+  state.last_heartbeat = Clock::now();
+  LOG_INFO("Websocket connection [{}] opened from [{}]", state.id, state.ip);
   return true;
 }
 
-bool SignalServer::OnClose(websocketpp::connection_hdl hdl) {
-  std::string user_id = transmission_manager_->ReleaseUserSession(hdl);
-  transmission_manager_->RemoveWsHandleLastActiveTime(hdl);
-  auto conn_it = ws_connections_.find(hdl);
-  connection_id conn_id =
-      (conn_it != ws_connections_.end()) ? conn_it->second : 0;
-  if (!user_id.empty()) {
-    LOG_INFO("Websocket connection [{}|{}] closed", conn_id, user_id);
-    // Remove web client from database on disconnect
-    if (signal_negotiation_) {
-      signal_negotiation_->OnWebClientDisconnect(user_id);
-    }
+void SignalServer::QueueSessionCleanup(
+    websocketpp::connection_hdl hdl,
+    const std::shared_ptr<ConnectionState>& state) {
+  if (!state->alive.exchange(false) || !state->opened) return;
+  ++pending_cleanup_;
+  if (!application_worker_->Submit(
+          [this, hdl] {
+            // Login, release and presence changes are ordered on this one
+            // worker. A release of an old handle cannot log out a newer handle
+            // for that ID.
+            const auto id = transmission_manager_->ReleaseUserSession(hdl);
+            if (!id.empty()) {
+              presence_manager_->OnLogout(id);
+              signal_negotiation_->OnWebClientDisconnect(id);
+            }
+            server_.get_io_service().post([this] { --pending_cleanup_; });
+          },
+          true)) {
+    throw std::runtime_error("Lifecycle queue reserve exhausted");
   }
-  if (presence_manager_ && !user_id.empty()) {
-    presence_manager_->OnLogout(user_id);
-  }
-  ws_connections_.erase(hdl);
-  ws_connection_ips_.erase(hdl);
-  return true;
 }
 
-bool SignalServer::OnFail(websocketpp::connection_hdl hdl) {
-  std::string user_id = transmission_manager_->ReleaseUserSession(hdl);
-  transmission_manager_->RemoveWsHandleLastActiveTime(hdl);
-  auto conn_it = ws_connections_.find(hdl);
-  connection_id conn_id =
-      (conn_it != ws_connections_.end()) ? conn_it->second : 0;
-  if (!user_id.empty()) {
-    LOG_INFO("Websocket connection [{}|{}] failed", conn_id, user_id);
-    // Remove web client from database on disconnect
-    if (signal_negotiation_) {
-      signal_negotiation_->OnWebClientDisconnect(user_id);
+// All teardown converges here, including TLS failures and plain HTTP requests.
+void SignalServer::FinishConnection(server::connection_ptr con) {
+  auto hdl = con->get_handle();
+  auto it = connections_.find(hdl);
+  if (it == connections_.end()) return;
+  auto state = it->second;
+  QueueSessionCleanup(hdl, state);
+  if (state->opened) {
+    LOG_INFO(
+        "Websocket connection [{}|{}] closed code={} error=[{}]",
+        state->id, state->device_id, con->get_local_close_code(),
+        con->get_ec().message());
+  } else if (con->get_ec() != websocketpp::error::http_connection_ended) {
+    // Bound warning volume for failed/unauthenticated connection floods.
+    if (Clock::now() >= next_preopen_warning_) {
+      LOG_WARN(
+          "Connection [{}] failed before websocket open error=[{}] "
+          "transport=[{}]",
+          state->id, con->get_ec().message(),
+          con->get_transport_ec().message());
+      next_preopen_warning_ = Clock::now() + std::chrono::seconds(30);
     }
   }
-  if (presence_manager_ && !user_id.empty()) {
-    presence_manager_->OnLogout(user_id);
+  state->pending_http.reset();
+  connections_.erase(it);
+}
+
+void SignalServer::CloseConnection(websocketpp::connection_hdl hdl,
+                                   const char* reason,
+                                   websocketpp::close::status::value code) {
+  auto it = connections_.find(hdl);
+  if (it == connections_.end() || !it->second->alive) return;
+  QueueSessionCleanup(hdl, it->second);
+  websocketpp::lib::error_code ec;
+  auto con = server_.get_con_from_hdl(hdl, ec);
+  if (ec) return;
+  if (con->get_state() == websocketpp::session::state::open) {
+    con->close(code, reason, ec);
+  } else if (con->get_state() == websocketpp::session::state::connecting) {
+    con->terminate(websocketpp::error::make_error_code(
+        websocketpp::error::open_handshake_timeout));
   }
-  ws_connections_.erase(hdl);
-  ws_connection_ips_.erase(hdl);
+}
+
+bool SignalServer::OnHeartbeat(websocketpp::connection_hdl hdl, std::string) {
+  auto it = connections_.find(hdl);
+  if (it == connections_.end() || !it->second->alive) return false;
+  it->second->last_heartbeat = Clock::now();
   return true;
 }
 
 void SignalServer::OnHttp(websocketpp::connection_hdl hdl) {
-  server::connection_ptr con = server_.get_con_from_hdl(hdl);
-  const std::string resource = con->get_resource();
-
-  if (admin_controller_ && AdminController::IsAdminRoute(resource)) {
-    AdminHttpRequest request;
-    request.method = con->get_request().get_method();
-    request.resource = resource;
-    request.body = con->get_request_body();
-    request.cookie = con->get_request_header("Cookie");
-    SetAdminResponse(con, admin_controller_->Handle(request));
+  auto con = server_.get_con_from_hdl(hdl);
+  auto it = connections_.find(hdl);
+  if (it == connections_.end()) return;
+  const auto resource = con->get_resource();
+  const bool admin = AdminController::IsAdminRoute(resource);
+  if (!admin && resource != "/stats" && resource != "/api/stats") {
+    SetJsonResponse(con, websocketpp::http::status_code::not_found,
+                    {{"error", "not_found"}});
     return;
   }
-
-  if (resource == "/stats" || resource == "/api/stats") {
-    OnlineDurationStats duration_stats;
-    if (device_db_manager_) {
-      duration_stats = device_db_manager_->GetOnlineDurationStats();
-    }
-    size_t active_connection_count =
-        transmission_manager_
-            ? transmission_manager_->GetActiveConnectionCount()
-            : 0;
-    if (device_db_manager_) {
-      active_connection_count = std::max(
-          active_connection_count,
-          static_cast<size_t>(
-              device_db_manager_->CountActiveRemoteControlConnections()));
-    }
-    json body = {
-        {"online_device_count",
-         presence_manager_ ? presence_manager_->GetOnlineDeviceCount() : 0},
-        {"online_web_client_count",
-         presence_manager_ ? presence_manager_->GetOnlineWebClientCount() : 0},
-        {"active_connection_count", active_connection_count},
-        {"online_duration_seconds", duration_stats.current_online_seconds},
-        {"total_online_seconds", duration_stats.total_online_seconds},
-        {"total_control_seconds", duration_stats.total_control_seconds},
-        {"total_controlled_seconds",
-         duration_stats.total_controlled_seconds},
-    };
-    SetJsonResponse(con, websocketpp::http::status_code::ok, body);
-    return;
+  AdminHttpRequest request{con->get_request().get_method(), resource,
+                           con->get_request_body(),
+                           con->get_request_header("Cookie")};
+  auto state = it->second;
+  // Explicitly retain deferred connections: defer_http_response cancels the
+  // library's handshake timer. Our deadline below bounds their lifetime.
+  con->defer_http_response();
+  state->pending_http = con;
+  state->accepted = Clock::now();
+  const bool reader = !admin || request.method != "POST";
+  auto* worker = reader ? admin_worker_.get() : application_worker_.get();
+  if (!worker->Submit([this, hdl, state, request = std::move(request), admin,
+                       reader] {
+        if (!state->alive) return;
+        const auto started = Clock::now();
+        AdminHttpResponse response;
+        if (reader)
+          admin_read_db_->SetReadDeadline(
+              started + std::chrono::milliseconds(http_timeout_ms_ / 2));
+        try {
+          if (admin) {
+            auto* controller = reader ? admin_read_controller_.get()
+                                      : admin_controller_.get();
+            response = controller->Handle(request);
+          } else {
+            response = {200,
+                        "application/json; charset=utf-8",
+                        {{"Cache-Control", "no-store"},
+                         {"Access-Control-Allow-Origin", "*"}},
+                        admin_read_controller_->GetPublicStats().dump()};
+          }
+        } catch (const std::bad_alloc&) {
+          throw;
+        } catch (...) {
+          response = {
+              500, "application/json", {}, "{\"error\":\"internal_error\"}"};
+        }
+        if (reader && admin_read_db_->ClearReadDeadline()) {
+          admin_read_controller_->InvalidateStatsCache();
+          response = {503,
+                      "application/json",
+                      {{"Retry-After", "1"}},
+                      "{\"error\":\"query_timeout\"}"};
+        }
+        server_.get_io_service().post(
+            [this, hdl, response = std::move(response)]() mutable {
+              CompleteHttp(hdl, std::move(response));
+            });
+      })) {
+    CompleteHttp(hdl, {503,
+                       "application/json",
+                       {{"Retry-After", "1"}},
+                       "{\"error\":\"busy\"}"});
   }
-
-  SetJsonResponse(
-      con, websocketpp::http::status_code::not_found,
-      {{"error", "not_found"},
-       {"message", "available endpoints: /stats, /api/stats"}});
 }
 
-context_ptr SignalServer::OnTlsInit(websocketpp::connection_hdl hdl) {
-  namespace asio = websocketpp::lib::asio;
-  context_ptr ctx = websocketpp::lib::make_shared<asio::ssl::context>(
-      asio::ssl::context::sslv23);
-
-  try {
-    ctx->set_options(
-        asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 |
-        asio::ssl::context::no_sslv3 | asio::ssl::context::single_dh_use);
-
-    std::string cert_file = certs_dir_ + "/api.crossdesk.cn_bundle.crt";
-    std::string key_file = certs_dir_ + "/api.crossdesk.cn.key";
-
-    // Check if certificate files exist
-    if (!std::filesystem::exists(cert_file)) {
-      LOG_ERROR("Certificate file not found: {}", cert_file);
-      throw std::runtime_error("Certificate file not found: " + cert_file);
-    }
-    if (!std::filesystem::exists(key_file)) {
-      LOG_ERROR("Private key file not found: {}", key_file);
-      throw std::runtime_error("Private key file not found: " + key_file);
-    }
-
-    ctx->use_certificate_chain_file(cert_file);
-    ctx->use_private_key_file(key_file, asio::ssl::context::pem);
-
-    SSL_CTX_set_cipher_list(ctx->native_handle(),
-                            "ECDHE-ECDSA-AES256-GCM-SHA384:"
-                            "ECDHE-RSA-AES256-GCM-SHA384:"
-                            "ECDHE-ECDSA-AES128-GCM-SHA256:"
-                            "ECDHE-RSA-AES128-GCM-SHA256");
-  } catch (std::exception& e) {
-    LOG_ERROR("Failed to initialize TLS context: {}", e.what());
-    throw;  // Re-throw to prevent invalid context from being used
-  }
-  return ctx;
-}
-
-bool SignalServer::OnPing(websocketpp::connection_hdl hdl, std::string s) {
-  transmission_manager_->UpdateWsHandleLastActiveTime(hdl);
-  return true;
-}
-
-bool SignalServer::OnPong(websocketpp::connection_hdl hdl, std::string s) {
-  transmission_manager_->UpdateWsHandleLastActiveTime(hdl);
-  return true;
-}
-
-void SignalServer::OnSessionTimeout(websocketpp::connection_hdl hdl,
-                                     const std::string& device_id) {
-  if (!device_id.empty()) {
-    LOG_INFO("Device [{}] heartbeat timed out", device_id);
-    presence_manager_->OnLogout(device_id);
-    signal_negotiation_->OnWebClientDisconnect(device_id);
-  }
-  // A resumed peer must reconnect and log in, rather than keep receiving
-  // pongs on a socket that no longer has an authenticated session.
+void SignalServer::CompleteHttp(websocketpp::connection_hdl hdl,
+                                AdminHttpResponse response) {
+  auto it = connections_.find(hdl);
+  if (it == connections_.end() || !it->second->alive) return;
+  auto con = std::move(it->second->pending_http);
+  if (!con) return;
+  SetAdminResponse(con, response);
   websocketpp::lib::error_code ec;
-  server_.close(hdl, websocketpp::close::status::going_away,
-                "Heartbeat timeout", ec);
+  con->send_http_response(ec);
+  if (ec) con->terminate(ec);
 }
 
 void SignalServer::ScheduleRuntimeHeartbeat() {
-  server_.set_timer(
-      kRuntimeHeartbeatIntervalMs,
-      [this](websocketpp::lib::error_code const& ec) {
-        if (ec) {
-          return;
-        }
-        if (device_db_manager_) {
-          device_db_manager_->RecordRuntimeHeartbeat();
-        }
-        ScheduleRuntimeHeartbeat();
-      });
+  if (runtime_job_pending_ || stopping_) return;
+  runtime_job_pending_ = application_worker_->Submit([this] {
+    device_db_manager_->RecordRuntimeHeartbeat();
+    server_.get_io_service().post([this] { runtime_job_pending_ = false; });
+  });
 }
 
 void SignalServer::ScheduleRecoveredSessionCleanup() {
   server_.set_timer(
-      kRecoveredSessionCleanupDelayMs,
-      [this](websocketpp::lib::error_code const& ec) {
-        if (ec) {
-          return;
-        }
-        if (!transmission_manager_) {
-          return;
-        }
-        size_t pruned =
-            transmission_manager_->PruneDisconnectedTransmissions();
-        if (pruned > 0) {
-          LOG_INFO("Pruned {} disconnected restored remote control "
-                   "connection(s)",
-                   pruned);
-        }
+      kRecoveredSessionCleanupDelayMs, [this](websocketpp::lib::error_code ec) {
+        if (ec || stopping_) return;
+        if (!application_worker_->Submit(
+                [this] {
+                  const auto pruned =
+                      transmission_manager_->PruneDisconnectedTransmissions();
+                  LOG_INFO(
+                      "Pruned {} disconnected restored remote control "
+                      "connection(s)",
+                      pruned);
+                },
+                true))
+          throw std::runtime_error("Cannot enqueue recovered session cleanup");
       });
 }
 
+void SignalServer::ScheduleMaintenance() {
+  if (stopping_) return;
+  const auto due = Clock::now() + std::chrono::milliseconds(check_interval_ms_);
+  server_.set_timer(check_interval_ms_, [this,
+                                         due](websocketpp::lib::error_code ec) {
+    if (ec || stopping_) return;
+    const auto now = Clock::now();
+    // If the loop stalled, give queued ping frames one full check interval to
+    // drain before considering expiry; never use a wall-clock timestamp.
+    if (now - due < std::chrono::milliseconds(check_interval_ms_)) {
+      size_t expired = 0;
+      for (const auto& entry : connections_) {
+        const auto& state = entry.second;
+        if (!state->alive) continue;
+        websocketpp::lib::error_code state_error;
+        auto con = server_.get_con_from_hdl(entry.first, state_error);
+        if (state->opened && !state_error &&
+            con->get_state() != websocketpp::session::state::open) {
+          // The peer may have completed WebSocket close while TLS shutdown is
+          // still pending. Stop routing immediately; don't label this a
+          // heartbeat timeout.
+          QueueSessionCleanup(entry.first, state);
+          if (++expired == 64) break;
+          continue;
+        }
+        auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       now - state->last_heartbeat)
+                       .count();
+        auto lifetime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - state->accepted)
+                            .count();
+        if (state->opened && state->authenticated &&
+            age > heartbeat_timeout_ms_) {
+          LOG_INFO("Device [{}] heartbeat timed out connection={}",
+                   state->device_id, state->id);
+          CloseConnection(entry.first, "Heartbeat timeout",
+                          websocketpp::close::status::going_away);
+        } else if (state->opened && !state->authenticated &&
+                   lifetime > authentication_timeout_ms_) {
+          CloseConnection(entry.first, "Authentication timeout",
+                          websocketpp::close::status::policy_violation);
+        } else if (state->pending_http && lifetime > http_timeout_ms_) {
+          CloseConnection(entry.first, "HTTP response timeout",
+                          websocketpp::close::status::going_away);
+        } else {
+          continue;
+        }
+        // Limit callback/close work per tick. Database teardown is queued.
+        if (++expired == 64) break;
+      }
+    }
+    ScheduleRuntimeHeartbeat();
+    if (now >= next_tls_reload_ && !tls_job_pending_) {
+      tls_job_pending_ = maintenance_worker_->Submit([this] {
+        try {
+          ReloadTlsContext();
+        } catch (const std::bad_alloc&) {
+          throw;
+        } catch (const std::exception& e) {
+          LOG_WARN("TLS reload rejected; retaining active context: {}",
+                   e.what());
+        }
+        server_.get_io_service().post([this] { tls_job_pending_ = false; });
+      });
+      next_tls_reload_ =
+          now + std::chrono::milliseconds(tls_reload_interval_ms_);
+    }
+    ScheduleMaintenance();
+  });
+}
+
+void SignalServer::WorkerFailed(std::exception_ptr error) {
+  {
+    std::lock_guard<std::mutex> lock(worker_error_mutex_);
+    if (!worker_error_) worker_error_ = error;
+  }
+  Stop();
+}
+
+void SignalServer::Stop() {
+  if (stopping_.exchange(true)) return;
+  server_.get_io_service().post([this] {
+    if (signals_) signals_->cancel();
+    websocketpp::lib::error_code ec;
+    if (acceptor_) acceptor_->close(ec);
+    for (const auto& entry : connections_)
+      CloseConnection(entry.first, "Server shutdown",
+                      websocketpp::close::status::going_away);
+    // Bound process shutdown even when a peer never acknowledges close/TLS
+    // shutdown. Workers are joined before dependent objects are destroyed.
+    server_.set_timer(5000,
+                      [this](websocketpp::lib::error_code) { server_.stop(); });
+  });
+}
+
 void SignalServer::Run() {
-  if (!std::filesystem::exists(certs_dir_)) {
-    std::string message = "Certs dir [" + certs_dir_ + "] does not exist";
-    LOG_ERROR("{}", message);
-    throw std::runtime_error(message);
+  ReloadTlsContext();  // Invalid startup configuration is a process-level
+                       // error.
+  fd_usage_ = ReadFileDescriptorUsage();
+  if (fd_usage_.soft_limit >= 0) {
+    if (fd_usage_.open < 0 ||
+        fd_usage_.soft_limit <=
+            fd_usage_.open + static_cast<int64_t>(fd_reserve_))
+      throw std::runtime_error(
+          "Insufficient file descriptors for configured reserve");
+    max_connections_ = std::min<size_t>(
+        max_connections_, fd_usage_.soft_limit - fd_usage_.open - fd_reserve_);
   }
-
-  // Verify certificate files exist
-  std::string cert_file = certs_dir_ + "/api.crossdesk.cn_bundle.crt";
-  std::string key_file = certs_dir_ + "/api.crossdesk.cn.key";
-  if (!std::filesystem::exists(cert_file)) {
-    std::string message = "Certificate file not found: " + cert_file;
-    LOG_ERROR("{}", message);
-    throw std::runtime_error(message);
-  }
-  if (!std::filesystem::exists(key_file)) {
-    std::string message = "Private key file not found: " + key_file;
-    LOG_ERROR("{}", message);
-    throw std::runtime_error(message);
-  }
-
-  server_.set_reuse_addr(true);
-  LOG_INFO("Signal server starting on port [{}]", port_);
-  LOG_INFO("Certificate directory: [{}]", certs_dir_);
-  LOG_INFO("Database path: [{}]", db_path_);
-
-  // Listen on all interfaces (0.0.0.0)
   namespace asio = websocketpp::lib::asio;
-  asio::error_code ec;
-  server_.listen(asio::ip::tcp::v4(), port_, ec);
-  if (ec) {
-    std::string message =
-        "Failed to listen on port " + std::to_string(port_) + ": " +
-        ec.message();
-    LOG_ERROR("{}", message);
-    throw std::runtime_error(message);
-  }
-  LOG_INFO("Successfully bound to port [{}]", port_);
-
-  server_.start_accept(ec);
-  if (ec) {
-    std::string message = "Failed to start accepting connections: " +
-                          ec.message();
-    LOG_ERROR("{}", message);
-    throw std::runtime_error(message);
-  }
+  acceptor_ =
+      std::make_unique<asio::ip::tcp::acceptor>(server_.get_io_service());
+  acceptor_->open(asio::ip::tcp::v4());
+  acceptor_->set_option(asio::ip::tcp::acceptor::reuse_address(true));
+  acceptor_->bind(asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port_));
+  acceptor_->listen(128);
+  signals_ = std::make_unique<websocketpp::lib::asio::signal_set>(
+      server_.get_io_service(), SIGINT, SIGTERM);
+  signals_->async_wait([this](websocketpp::lib::error_code ec, int) {
+    if (!ec) Stop();
+  });
+  AcceptNext();
+  ScheduleMaintenance();
+  ScheduleRecoveredSessionCleanup();
   LOG_INFO("Signal server listening on port [{}], waiting for connections...",
            port_);
+  // Never stop/re-listen a used endpoint on exception. Unknown exceptions,
+  // invalid listener state and allocation failure exit for the supervisor.
+  server_.run();
+  std::lock_guard<std::mutex> lock(worker_error_mutex_);
+  if (worker_error_) std::rethrow_exception(worker_error_);
+  if (!stopping_)
+    throw std::runtime_error("Signal event loop exited unexpectedly");
+}
 
-  if (device_db_manager_) {
-    device_db_manager_->RecordRuntimeHeartbeat();
-  }
-  ScheduleRuntimeHeartbeat();
-  ScheduleRecoveredSessionCleanup();
-
-  try {
-    server_.run();
-    LOG_INFO("Server run() returned");
-  } catch (std::exception& e) {
-    LOG_ERROR("Server error: {}, attempting to restart...", e.what());
-    // Try to restart the server
-    try {
-      server_.stop();
-      server_.listen(port_);
-      server_.start_accept();
-      server_.run();
-    } catch (std::exception& e2) {
-      LOG_ERROR("Failed to restart server: {}", e2.what());
-      throw;
+void SignalServer::RequestBackpressureClose(websocketpp::connection_hdl hdl) {
+  std::lock_guard<std::mutex> lock(backpressure_mutex_);
+  // Unique live handles are bounded by admission. Coalesce all overload
+  // notifications into one I/O callback rather than flooding asio::post.
+  if (backpressure_connections_.size() < max_connections_)
+    backpressure_connections_.insert(hdl);
+  if (backpressure_posted_) return;
+  backpressure_posted_ = true;
+  server_.get_io_service().post([this] {
+    decltype(backpressure_connections_) affected;
+    {
+      std::lock_guard<std::mutex> lock(backpressure_mutex_);
+      affected.swap(backpressure_connections_);
+      backpressure_posted_ = false;
     }
-  } catch (...) {
-    LOG_ERROR("Unknown error occurred in server");
-    throw;
-  }
+    for (const auto& handle : affected)
+      CloseConnection(handle, "Send backlog limit",
+                      websocketpp::close::status::try_again_later);
+  });
 }
 
 void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
-  if (hdl.expired()) {
-    LOG_ERROR("Destination hdl invalid for message type [{}]",
-              message.value("type", "unknown"));
+  const auto type = message.value("type", "");
+  if (hdl.expired()) return;
+  if (stopping_) return;
+  if (pending_sends_.fetch_add(1) >= 1024) {
+    --pending_sends_;
+    RequestBackpressureClose(hdl);
     return;
   }
-
-  try {
-    server_.send(hdl, message.dump(), websocketpp::frame::opcode::text);
-  } catch (const std::exception& e) {
-    LOG_ERROR("Failed to send message: {}", e.what());
-  } catch (...) {
-    LOG_ERROR("Failed to send message: unknown error");
+  std::string login_id;
+  if (type == "login" && message.value("status", "") == "success") {
+    login_id = message.value("user_id", "");
+    login_id = login_id.substr(0, login_id.find('@'));
   }
+  auto payload = message.dump();
+  server_.get_io_service().post(
+      [this, hdl, payload = std::move(payload), login_id] {
+        --pending_sends_;
+        auto it = connections_.find(hdl);
+        if (it == connections_.end() || !it->second->alive) return;
+        if (!login_id.empty()) {
+          it->second->device_id = login_id;
+          it->second->authenticated = true;
+        }
+        websocketpp::lib::error_code ec;
+        auto con = server_.get_con_from_hdl(hdl, ec);
+        if (ec) return;
+        if (con->get_buffered_amount() + payload.size() > 1024 * 1024) {
+          CloseConnection(hdl, "Send backlog limit",
+                          websocketpp::close::status::policy_violation);
+          return;
+        }
+        ec = con->send(payload, websocketpp::frame::opcode::text);
+        if (ec) LOG_ERROR("Failed to send message: {}", ec.message());
+      });
 }
 
 void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
                              server::message_ptr msg) {
-  if (!signal_negotiation_) {
+  auto it = connections_.find(hdl);
+  if (it == connections_.end() || !it->second->alive) return;
+  // Parsing is size bounded; malformed input is rejected without logging body
+  // fragments (nlohmann parse errors can include passwords or ICE credentials).
+  auto j = json::parse(msg->get_payload(), nullptr, false);
+  if (!j.is_object() || !j.contains("type") || !j["type"].is_string()) {
+    CloseConnection(hdl, "Invalid signaling message",
+                    websocketpp::close::status::invalid_payload);
     return;
   }
+  const auto type = j["type"].get<std::string>();
+  if (type == "ping") {
+    if (OnHeartbeat(hdl, "")) SendMsg(hdl, {{"type", "pong"}});
+    return;
+  }
+  auto state = it->second;
+  if (state->pending_messages.fetch_add(1) >= 128) {
+    --state->pending_messages;
+    CloseConnection(hdl, "Message backlog limit",
+                    websocketpp::close::status::policy_violation);
+    return;
+  }
+  if (!application_worker_->Submit([this, hdl, state, j = std::move(j)] {
+        if (state->alive) ProcessMessage(hdl, j, state);
+        --state->pending_messages;
+      })) {
+    --state->pending_messages;
+    CloseConnection(hdl, "Server busy",
+                    websocketpp::close::status::try_again_later);
+  }
+}
 
+void SignalServer::ProcessMessage(
+    websocketpp::connection_hdl hdl, const json& j,
+    const std::shared_ptr<ConnectionState>& state) {
   try {
-    std::string payload = msg->get_payload();
-    json j;
-    try {
-      j = json::parse(payload);
-    } catch (json::parse_error& e) {
-      LOG_ERROR("Failed to parse JSON message: {}", e.what());
-      return;
-    }
-
-    if (!j.contains("type") || !j["type"].is_string()) {
-      LOG_ERROR("Message missing 'type' field");
-      return;
-    }
-
-    std::string type = j["type"].get<std::string>();
-
+    const auto type = j["type"].get<std::string>();
     switch (HASH_STRING_PIECE(type.c_str())) {
-      case "ping"_H: {
-        if (transmission_manager_) {
-          transmission_manager_->UpdateWsHandleLastActiveTime(hdl);
-          json message = {{"type", "pong"}};
-          SendMsg(hdl, message);
-        }
-        break;
-      }
       case "login"_H:
         signal_negotiation_->login_user(hdl, j);
         if (presence_manager_) {
           std::string id = transmission_manager_->GetUserId(hdl);
           if (!id.empty()) {
             presence_manager_->OnLogin(id, id, hdl);
-            EnqueueClientNetworkInfo(hdl, id);
+            EnqueueClientNetworkInfo(state->ip, id);
           }
         }
         break;
@@ -890,7 +1041,8 @@ void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
         const std::string user_id = transmission_manager_->GetUserId(hdl);
         if (user_id.empty() ||
             (j.contains("user_id") && j["user_id"] != user_id)) {
-          LOG_WARN("Ignore presence request for unauthenticated or mismatched user");
+          LOG_WARN(
+              "Ignore presence request for unauthenticated or mismatched user");
           break;
         }
         if (j.contains("subscribe") && !j["subscribe"].is_boolean()) {
@@ -908,7 +1060,7 @@ void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
           // Legacy queries may contain just one device, so merge them.
           if (!j.contains("subscribe") || j["subscribe"].get<bool>()) {
             presence_manager_->UpdateUserDevices(user_id, device_ids,
-                                                  j.contains("subscribe"));
+                                                 j.contains("subscribe"));
           }
           auto statuses = presence_manager_->BatchQuery(device_ids);
           json resp = {{"type", "presence"}, {"devices", json::array()}};
@@ -920,12 +1072,10 @@ void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
         break;
       }
       default:
-        LOG_WARN("Unknown message type: {}", type);
+        LOG_WARN("Unknown signaling message type");
         break;
     }
-  } catch (std::exception& e) {
-    LOG_ERROR("Error processing message: {}", e.what());
-  } catch (...) {
-    LOG_ERROR("Unknown error processing message");
+  } catch (const json::exception&) {
+    LOG_WARN("Invalid signaling fields on connection [{}]", state->id);
   }
 }

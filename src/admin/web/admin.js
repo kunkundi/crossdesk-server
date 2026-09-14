@@ -26,6 +26,8 @@
     let listTimer = null;
     let durationTimer = null;
     let listRefreshSerial = 0;
+    let listRefreshInFlight = false;
+    let listRefreshPending = false;
     let statsSnapshot = {
       onlineDuration: 0,
       onlineCount: 0,
@@ -66,6 +68,8 @@
     }
 
     function showLogin(message) {
+      ++listRefreshSerial;
+      listRefreshPending = false;
       dashboardView.classList.add('hidden');
       loginView.classList.remove('hidden');
       logoutButton.classList.add('hidden');
@@ -872,32 +876,50 @@
     }
 
     async function refreshLists() {
-      if (document.hidden) return true;
+      if (document.hidden || dashboardView.classList.contains('hidden')) return;
+      if (listRefreshInFlight) {
+        listRefreshPending = true;
+        return;
+      }
+      listRefreshInFlight = true;
       const serial = ++listRefreshSerial;
       const refreshButton = document.getElementById('list-refresh');
       refreshButton.disabled = true;
-      let response;
       try {
-        response = await fetch(buildOverviewUrl(), {credentials: 'same-origin'});
+        await loadLists(serial);
       } catch (_) {
-        document.getElementById('refresh-error').textContent = 'Connection error';
+        if (serial === listRefreshSerial && !dashboardView.classList.contains('hidden')) {
+          document.getElementById('refresh-error').textContent = 'Connection error';
+        }
+      } finally {
+        listRefreshInFlight = false;
         refreshButton.disabled = false;
-        return false;
+        if (listRefreshPending && !dashboardView.classList.contains('hidden')) {
+          listRefreshPending = false;
+          void refreshLists();
+        }
+      }
+    }
+
+    async function loadLists(serial) {
+      const requestedUrl = buildOverviewUrl();
+      const response = await fetch(requestedUrl, {
+        credentials: 'same-origin',
+        signal: AbortSignal.timeout(12000)
+      });
+      if (serial !== listRefreshSerial || dashboardView.classList.contains('hidden')) {
+        return;
       }
       if (response.status === 401) {
         showLogin('');
-        refreshButton.disabled = false;
-        return false;
+        return;
       }
       if (!response.ok) {
-        document.getElementById('refresh-error').textContent = 'Connection error';
-        refreshButton.disabled = false;
-        return false;
+        throw new Error('Failed to refresh lists');
       }
       const data = await response.json();
-      if (serial !== listRefreshSerial) {
-        refreshButton.disabled = false;
-        return true;
+      if (serial !== listRefreshSerial || requestedUrl !== buildOverviewUrl() || dashboardView.classList.contains('hidden')) {
+        return;
       }
       document.getElementById('refresh-error').textContent = '';
       applyStats(data.stats);
@@ -907,8 +929,8 @@
       const reloadDevices = syncPage(state.devices, data.devices_page);
       const reloadSessions = syncPage(state.sessions, data.sessions_page);
       if (reloadDevices || reloadSessions) {
-        refreshButton.disabled = false;
-        return refreshLists();
+        listRefreshPending = true;
+        return;
       }
       applyDeviceCounts(data.device_counts);
       applyDeviceKindCounts(data.device_kind_counts);
@@ -917,8 +939,6 @@
       renderSessions(data.sessions || []);
       updatePager('devices');
       updatePager('sessions');
-      refreshButton.disabled = false;
-      return true;
     }
 
     async function disconnectSession(id, host, button) {

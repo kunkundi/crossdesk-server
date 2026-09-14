@@ -171,7 +171,7 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     }
 
     bool success = transmission_manager_->BindUserToWsHandle(ret_host_id, hdl);
-    transmission_manager_->BindHostToTransmission(ret_host_id, ret_host_id);
+    if (success) transmission_manager_->BindHostToTransmission(ret_host_id, ret_host_id);
 
     if (success) {
       if (ShouldTrackClientInfo(ret_host_id) &&
@@ -190,7 +190,7 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     }
   } else {
     bool success = transmission_manager_->BindUserToWsHandle(host_id, hdl);
-    transmission_manager_->BindHostToTransmission(host_id, host_id);
+    if (success) transmission_manager_->BindHostToTransmission(host_id, host_id);
     LOG_INFO("Receive login request with id [{}]", host_id);
 
     if (success) {

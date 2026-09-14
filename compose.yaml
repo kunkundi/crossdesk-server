@@ -7,8 +7,14 @@ services:
     container_name: crossdesk_server
     network_mode: host
     restart: unless-stopped
+    stop_grace_period: 20s
+    ulimits:
+      nofile:
+        soft: ${CROSSDESK_NOFILE:-8192}
+        hard: ${CROSSDESK_NOFILE:-8192}
     environment:
       EXTERNAL_IP: "${EXTERNAL_IP:?Set EXTERNAL_IP in .env}"
+      CROSSDESK_MAX_CONNECTIONS: "${CROSSDESK_MAX_CONNECTIONS:-2048}"
       CROSSDESK_SERVER_PORT: "${CROSSDESK_SERVER_PORT:-9099}"
       COTURN_PUBLIC_HOST: "${COTURN_PUBLIC_HOST:-}"
       COTURN_PORT: "${COTURN_PORT:-3478}"

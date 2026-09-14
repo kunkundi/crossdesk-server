@@ -29,7 +29,7 @@ struct TransmissionSnapshot {
 
 class TransmissionManager {
  public:
-  TransmissionManager();
+  explicit TransmissionManager(bool automatic_expiry = true);
   ~TransmissionManager();
 
   bool IsTransmissionExist(const std::string& transmission_id);
@@ -79,6 +79,20 @@ class TransmissionManager {
   size_t GetActiveConnectionCount();
 
  private:
+  // Nested mutations collect notifications; the outermost scope unlocks before
+  // invoking database/user callbacks. Production mutations run on one worker.
+  class StateLock {
+   public:
+    explicit StateLock(TransmissionManager& owner);
+    ~StateLock() noexcept(false);
+   private:
+    int exceptions_;
+    TransmissionManager& owner_;
+    std::unique_lock<std::recursive_mutex> lock_;
+  };
+  void NotifyRemoteControl(const std::string& transmission_id,
+                           const std::string& host_id,
+                           const std::string& guest_id, bool started);
   void AliveChecker();
 
  private:
@@ -97,6 +111,8 @@ class TransmissionManager {
   std::function<void(websocketpp::connection_hdl, const std::string&)>
       session_timeout_callback_;
 
+  size_t lock_depth_ = 0;
+  std::vector<std::function<void()>> pending_notifications_;
   std::thread ws_hdl_alive_checker_;
   std::recursive_mutex ws_hdl_alive_checker_mutex_;
   std::condition_variable_any ws_hdl_alive_checker_cv_;
