@@ -217,6 +217,17 @@ sudo docker compose up -d --no-build
 
 `docker compose restart` restarts existing containers without applying changed environment variables or images. Application logs are written to `${CROSSDESK_LOG_DIR}` and stdout; view Coturn logs with `docker compose logs coturn`. Each container's stdout/stderr rotates across three 50 MB files. Application log files rotate separately; restarts create new log groups that need periodic cleanup or archival.
 
+Connection diagnostics help investigate a running process that cannot reliably accept clients:
+
+| Log | Key fields |
+| --- | --- |
+| `Connection capacity` | Configured/effective connection limits, `fd_soft_limit`, and reserved FDs at startup; a separate warning reports capacity reduced by nofile |
+| `Connection admission paused / resumed` | `blocked_by_*` distinguishes total connections, unopened connections, FD capacity, and FD sampling failure; includes pause duration and retry checks |
+| `Connection diagnostics` | First emitted after approximately 5 seconds, then every 60 seconds and on shutdown; summarizes connections, FDs, backlogs, and cumulative errors |
+| `Signal event loop delayed` | Reports maintenance timer delays of at least 5 seconds |
+
+Warnings for admission pauses, accept/resource errors, peer address failures, pre-open failures, and event loop delays are limited to one per category per 30 seconds. Recovery records are paired only with reported pauses. `*_total` counters accumulate since process startup even when warnings are suppressed; `*_limit_checks_total` counts checks hitting a limit, not rejected clients. `unopened` includes WebSocket handshakes, ordinary HTTPS requests, and their cleanup. `fd_open` is measured when logging; `fd_estimated` is the admission estimate, with its sample age in `fd_sample_age_ms`. A value of `-1` means unavailable or unlimited. `expired_handles` and `oldest_unopened_ms` help identify retained or stalled connections.
+
 ### Backups and migration
 
 Back up `.env`, `compose.yaml`, and `certs/` plus `db/` under `${CROSSDESK_DATA_DIR}`. These backups include keys and the device database. This example uses the default data directory and stops services for a consistent archive; remote connections are interrupted during the backup:

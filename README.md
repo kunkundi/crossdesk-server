@@ -217,6 +217,17 @@ sudo docker compose up -d --no-build
 
 `docker compose restart` 用于重启现有容器，不会应用修改后的环境变量或镜像。业务日志写入 `${CROSSDESK_LOG_DIR}` 并同时输出到控制台；Coturn 日志通过 `docker compose logs coturn` 查看。两个容器的控制台日志均按 3 个、每个 50 MB 轮转。业务文件日志另行轮转，多次重启会产生新的日志组，需定期清理或归档。
 
+信令服务的连接诊断日志可用于排查“进程仍在运行，但客户端无法连接”：
+
+| 日志 | 关键字段 |
+| --- | --- |
+| `Connection capacity` | 启动时配置/实际连接上限、`fd_soft_limit`、预留 FD；因 nofile 降低容量时另有告警 |
+| `Connection admission paused / resumed` | `blocked_by_*` 区分连接总量、未打开连接额度、FD 额度或 FD 采样失败；记录暂停时长和重试检查次数 |
+| `Connection diagnostics` | 启动约 5 秒后首次输出，随后约每 60 秒及停服时汇总连接、FD、积压和累计错误 |
+| `Signal event loop delayed` | 事件循环定时检查延迟至少 5 秒时记录延迟量 |
+
+接入暂停、accept/资源错误、对端地址失败、握手前失败及事件循环延迟的同类告警最多每 30 秒输出一次；恢复日志只与已输出的暂停告警配对。`*_total` 是进程启动以来的累计计数，限频不影响计数；`*_limit_checks_total` 统计触发限制的检查次数，并非被拒客户端数。`unopened` 包括尚未打开的 WebSocket、普通 HTTPS 请求及其清理阶段。`fd_open` 是日志生成时实测值，`fd_estimated` 是接入检查使用的估计值，`fd_sample_age_ms` 表示其采样年龄；`-1` 表示不可用或无限制。`expired_handles` 和 `oldest_unopened_ms` 可帮助发现残留或长时间未完成的连接。
+
 ### 备份与迁移
 
 备份 `.env`、`compose.yaml` 及 `${CROSSDESK_DATA_DIR}` 下的 `certs/` 和 `db/`；备份包含密钥与设备数据库。以下示例使用默认数据目录，在停止服务后打包，期间远程连接会中断：

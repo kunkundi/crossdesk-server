@@ -77,6 +77,9 @@ class SignalServer {
   };
   void AcceptNext();
   void RetryAccept();
+  int64_t EstimateFileDescriptors() const;
+  std::string DescribeConnectionResources();
+  void LogConnectionDiagnostics();
   void FinishConnection(server::connection_ptr con);
   void QueueSessionCleanup(websocketpp::connection_hdl hdl,
                            const std::shared_ptr<ConnectionState>& state);
@@ -106,7 +109,7 @@ class SignalServer {
 
   void ScheduleRuntimeHeartbeat();
   void ScheduleRecoveredSessionCleanup();
-  std::string GetClientIp(websocketpp::connection_hdl hdl);
+  std::string GetClientIp(websocketpp::connection_hdl hdl, uint64_t id);
   void EnqueueClientNetworkInfo(const std::string& client_ip,
                                 const std::string& device_id);
   void EnqueueGeoIpLookup(const std::string& client_ip,
@@ -134,6 +137,18 @@ class SignalServer {
   const long tls_reload_interval_ms_ = 30000;
   Clock::time_point next_tls_reload_{};
   Clock::time_point next_accept_warning_{}, next_preopen_warning_{};
+  // Diagnostics are updated only on the network thread. Counters are cumulative.
+  struct ConnectionDiagnostics {
+    uint64_t accepted = 0, opened = 0, preopen_failed = 0, peer_failed = 0;
+    uint64_t accept_failed = 0, init_resource_failed = 0, loop_stalls = 0;
+    uint64_t connection_limit_checks = 0, unopened_limit_checks = 0;
+    uint64_t fd_limit_checks = 0, fd_sample_failed_checks = 0;
+  } diagnostics_;
+  Clock::time_point next_diagnostics_{}, next_admission_warning_{};
+  Clock::time_point next_peer_warning_{}, next_loop_warning_{};
+  Clock::time_point admission_paused_since_{};
+  bool admission_paused_ = false, admission_pause_logged_ = false;
+  uint64_t admission_pause_checks_ = 0;
   FileDescriptorUsage fd_usage_;
   std::atomic<bool> stopping_{false};
   bool accept_pending_ = false, accept_retry_pending_ = false;

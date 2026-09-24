@@ -21,6 +21,8 @@ constexpr size_t kMaxClientNetworkInfoJobs = 1024;
 constexpr int kDefaultGeoIpFailureTtlMs = 60000;
 constexpr int kDefaultGeoIpFailureMaxTtlMs = 1800000;
 constexpr int kDefaultTurnCredentialTtlSeconds = 3600;
+constexpr auto kDiagnosticInterval = std::chrono::seconds(60);
+constexpr auto kDiagnosticWarningInterval = std::chrono::seconds(30);
 
 int EnvMillis(const char* name, int fallback, int min_value, int max_value) {
   const char* raw = std::getenv(name);
@@ -237,18 +239,27 @@ SignalServer::~SignalServer() {
   if (maintenance_worker_) maintenance_worker_->Stop();
 }
 
-std::string SignalServer::GetClientIp(websocketpp::connection_hdl hdl) {
+std::string SignalServer::GetClientIp(websocketpp::connection_hdl hdl,
+                                    uint64_t id) {
+  auto warn = [this, id](const std::string& error) {
+    ++diagnostics_.peer_failed;
+    if (Clock::now() < next_peer_warning_) return;
+    LOG_WARN("Failed to get websocket peer endpoint: {} connection={} "
+             "peer_endpoint_failures_total={}",
+             error, id, diagnostics_.peer_failed);
+    next_peer_warning_ = Clock::now() + kDiagnosticWarningInterval;
+  };
   try {
     server::connection_ptr con = server_.get_con_from_hdl(hdl);
     websocketpp::lib::asio::error_code ec;
     auto endpoint = con->get_raw_socket().remote_endpoint(ec);
     if (ec) {
-      LOG_WARN("Failed to get websocket peer endpoint: {}", ec.message());
+      warn(ec.message());
       return "";
     }
     return endpoint.address().to_string();
   } catch (const std::exception& e) {
-    LOG_WARN("Failed to get websocket peer endpoint: {}", e.what());
+    warn(e.what());
   }
   return "";
 }
@@ -499,6 +510,68 @@ void SignalServer::RetryAccept() {
   });
 }
 
+int64_t SignalServer::EstimateFileDescriptors() const {
+  return fd_usage_.open < 0
+             ? -1
+             : fd_usage_.open + static_cast<int64_t>(connections_.size()) -
+                   static_cast<int64_t>(fd_connections_at_sample_);
+}
+
+std::string SignalServer::DescribeConnectionResources() {
+  size_t opened = 0, authenticated = 0, pending_http = 0, inactive = 0;
+  size_t expired_handles = 0;
+  int64_t oldest_unopened_ms = 0;
+  const auto now = Clock::now();
+  for (const auto& entry : connections_) {
+    const auto& state = *entry.second;
+    opened += state.opened;
+    authenticated += state.authenticated;
+    pending_http += static_cast<bool>(state.pending_http);
+    inactive += !state.alive.load();
+    expired_handles += entry.first.expired();
+    if (!state.opened)
+      oldest_unopened_ms = std::max<int64_t>(
+          oldest_unopened_ms,
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              now - state.accepted).count());
+  }
+  // Fresh diagnostic sampling does not change the admission control sample.
+  const auto fds = ReadFileDescriptorUsage();
+  return fmt::format(
+      "connections={} connection_limit={} ws_opened={} authenticated={} "
+      "unopened={} unopened_limit={} pending_http={} inactive={} "
+      "expired_handles={} oldest_unopened_ms={} pending_cleanup={} "
+      "pending_sends={} fd_open={} fd_estimated={} fd_sample_age_ms={} fd_soft_limit={} "
+      "fd_reserve={} admission_paused={} pause_ms={}",
+      connections_.size(), max_connections_, opened, authenticated,
+      connections_.size() - opened, max_handshakes_, pending_http, inactive,
+      expired_handles, oldest_unopened_ms, pending_cleanup_,
+      pending_sends_.load(), fds.open, EstimateFileDescriptors(),
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - fd_sampled_at_).count(), fds.soft_limit,
+      fd_reserve_, admission_paused_,
+      admission_paused_
+          ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - admission_paused_since_).count()
+          : 0);
+}
+
+void SignalServer::LogConnectionDiagnostics() {
+  LOG_INFO(
+      "Connection diagnostics: {} accepted_total={} ws_opened_total={} "
+      "preopen_failures_total={} peer_endpoint_failures_total={} "
+      "accept_failures_total={} init_resource_failures_total={} "
+      "connection_limit_checks_total={} unopened_limit_checks_total={} "
+      "fd_limit_checks_total={} fd_sample_failed_checks_total={} "
+      "event_loop_stalls_total={}",
+      DescribeConnectionResources(), diagnostics_.accepted, diagnostics_.opened,
+      diagnostics_.preopen_failed, diagnostics_.peer_failed,
+      diagnostics_.accept_failed, diagnostics_.init_resource_failed,
+      diagnostics_.connection_limit_checks, diagnostics_.unopened_limit_checks,
+      diagnostics_.fd_limit_checks, diagnostics_.fd_sample_failed_checks,
+      diagnostics_.loop_stalls);
+}
+
 void SignalServer::AcceptNext() {
   if (stopping_ || accept_pending_) return;
   const auto now = Clock::now();
@@ -507,22 +580,49 @@ void SignalServer::AcceptNext() {
     fd_sampled_at_ = now;
     fd_connections_at_sample_ = connections_.size();
   }
-  const auto estimated_fds =
-      fd_usage_.open < 0
-          ? -1
-          : fd_usage_.open + static_cast<int64_t>(connections_.size()) -
-                static_cast<int64_t>(fd_connections_at_sample_);
+  const auto estimated_fds = EstimateFileDescriptors();
   size_t handshakes = 0;
   for (const auto& entry : connections_)
     if (!entry.second->opened) ++handshakes;
-  if (connections_.size() + pending_cleanup_ >= max_connections_ ||
-      handshakes >= max_handshakes_ ||
-      (fd_usage_.soft_limit >= 0 &&
-       (estimated_fds < 0 ||
-        estimated_fds + static_cast<int64_t>(fd_reserve_) >=
-            fd_usage_.soft_limit))) {
+  const bool connection_limit =
+      connections_.size() + pending_cleanup_ >= max_connections_;
+  const bool unopened_limit = handshakes >= max_handshakes_;
+  const bool fd_sample_failed = fd_usage_.soft_limit >= 0 && estimated_fds < 0;
+  const bool fd_limit = fd_usage_.soft_limit >= 0 && estimated_fds >= 0 &&
+      estimated_fds + static_cast<int64_t>(fd_reserve_) >= fd_usage_.soft_limit;
+  if (connection_limit || unopened_limit || fd_sample_failed || fd_limit) {
+    diagnostics_.connection_limit_checks += connection_limit;
+    diagnostics_.unopened_limit_checks += unopened_limit;
+    diagnostics_.fd_limit_checks += fd_limit;
+    diagnostics_.fd_sample_failed_checks += fd_sample_failed;
+    if (!admission_paused_) {
+      admission_paused_ = true;
+      admission_paused_since_ = now;
+      admission_pause_checks_ = 0;
+    }
+    ++admission_pause_checks_;
+    if (now >= next_admission_warning_) {
+      LOG_WARN("Connection admission paused: blocked_by_connections={} "
+               "blocked_by_unopened={} blocked_by_fd={} blocked_by_fd_sample={} "
+               "pause_checks={} retry_ms=500 {}",
+               connection_limit, unopened_limit, fd_limit, fd_sample_failed,
+               admission_pause_checks_, DescribeConnectionResources());
+      admission_pause_logged_ = true;
+      next_admission_warning_ = now + kDiagnosticWarningInterval;
+    }
     RetryAccept();
     return;
+  }
+  if (admission_paused_) {
+    admission_paused_ = false;
+    // Pair only reported pauses with a recovery record, so flapping around a
+    // limit cannot bypass rate limiting. Cumulative counters include all checks.
+    if (admission_pause_logged_)
+      LOG_INFO("Connection admission resumed: paused_ms={} pause_checks={} {}",
+               std::chrono::duration_cast<std::chrono::milliseconds>(
+                   now - admission_paused_since_).count(),
+               admission_pause_checks_, DescribeConnectionResources());
+    admission_pause_logged_ = false;
   }
 
   namespace asio = websocketpp::lib::asio;
@@ -533,19 +633,23 @@ void SignalServer::AcceptNext() {
     accept_pending_ = false;
     if (stopping_) return;  // RAII closes the accepted socket, if any.
     if (error) {
+      ++diagnostics_.accept_failed;
       if (error == asio::error::bad_descriptor ||
           error == asio::error::invalid_argument)
         throw std::runtime_error("Accept listener state is invalid: " +
                                  error.message());
       if (Clock::now() >= next_accept_warning_) {
-        LOG_WARN("Connection admission failed: {} ({}); retrying with backoff",
-                 error.message(), error.value());
+        LOG_WARN("Connection admission failed: {} ({}) category={} "
+                 "accept_failures_total={}; retry_ms=500 {}",
+                 error.message(), error.value(), error.category().name(),
+                 diagnostics_.accept_failed, DescribeConnectionResources());
         next_accept_warning_ = Clock::now() + std::chrono::seconds(30);
       }
       fd_sampled_at_ = {};
       RetryAccept();
       return;
     }
+    ++diagnostics_.accepted;
     server::connection_ptr con;
     try {
       // Construct SSL only after TCP accept. A pending accept must not pin an
@@ -555,7 +659,7 @@ void SignalServer::AcceptNext() {
       con->get_raw_socket() = std::move(*socket);
       auto state = std::make_shared<ConnectionState>();
       state->id = next_connection_id_++;
-      state->ip = GetClientIp(con->get_handle());
+      state->ip = GetClientIp(con->get_handle(), state->id);
       connections_.emplace(con->get_handle(), state);
       con->set_termination_handler([this](server::connection_ptr finished) {
         FinishConnection(finished);
@@ -569,6 +673,14 @@ void SignalServer::AcceptNext() {
           e.code() != std::errc::too_many_files_open_in_system &&
           e.code() != std::errc::no_buffer_space)
         throw;
+      ++diagnostics_.init_resource_failed;
+      if (Clock::now() >= next_accept_warning_) {
+        LOG_WARN("Connection initialization resource failure: {} ({}) "
+                 "category={} init_resource_failures_total={}; retry_ms=500 {}",
+                 e.code().message(), e.code().value(), e.code().category().name(),
+                 diagnostics_.init_resource_failed, DescribeConnectionResources());
+        next_accept_warning_ = Clock::now() + kDiagnosticWarningInterval;
+      }
       fd_sampled_at_ = {};
       RetryAccept();
       return;
@@ -582,6 +694,7 @@ bool SignalServer::OnOpen(websocketpp::connection_hdl hdl) {
   if (it == connections_.end()) return false;
   auto& state = *it->second;
   state.opened = true;
+  ++diagnostics_.opened;
   state.last_heartbeat = Clock::now();
   LOG_INFO("Websocket connection [{}] opened from [{}]", state.id, state.ip);
   return true;
@@ -622,13 +735,17 @@ void SignalServer::FinishConnection(server::connection_ptr con) {
         state->id, state->device_id, con->get_local_close_code(),
         con->get_ec().message());
   } else if (con->get_ec() != websocketpp::error::http_connection_ended) {
+    ++diagnostics_.preopen_failed;
     // Bound warning volume for failed/unauthenticated connection floods.
     if (Clock::now() >= next_preopen_warning_) {
       LOG_WARN(
           "Connection [{}] failed before websocket open error=[{}] "
-          "transport=[{}]",
+          "transport=[{}] ip=[{}] age_ms={} preopen_failures_total={}",
           state->id, con->get_ec().message(),
-          con->get_transport_ec().message());
+          con->get_transport_ec().message(), state->ip,
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              Clock::now() - state->accepted).count(),
+          diagnostics_.preopen_failed);
       next_preopen_warning_ = Clock::now() + std::chrono::seconds(30);
     }
   }
@@ -772,6 +889,19 @@ void SignalServer::ScheduleMaintenance() {
                                          due](websocketpp::lib::error_code ec) {
     if (ec || stopping_) return;
     const auto now = Clock::now();
+    if (now - due >= std::chrono::milliseconds(check_interval_ms_)) {
+      ++diagnostics_.loop_stalls;
+      if (now >= next_loop_warning_) {
+        LOG_WARN("Signal event loop delayed: delay_ms={} event_loop_stalls_total={}",
+                 std::chrono::duration_cast<std::chrono::milliseconds>(
+                     now - due).count(), diagnostics_.loop_stalls);
+        next_loop_warning_ = now + kDiagnosticWarningInterval;
+      }
+    }
+    if (now >= next_diagnostics_) {
+      LogConnectionDiagnostics();
+      next_diagnostics_ = now + kDiagnosticInterval;
+    }
     // If the loop stalled, give queued ping frames one full check interval to
     // drain before considering expiry; never use a wall-clock timestamp.
     if (now - due < std::chrono::milliseconds(check_interval_ms_)) {
@@ -847,6 +977,8 @@ void SignalServer::WorkerFailed(std::exception_ptr error) {
 void SignalServer::Stop() {
   if (stopping_.exchange(true)) return;
   server_.get_io_service().post([this] {
+    LOG_INFO("Signal server shutdown requested");
+    LogConnectionDiagnostics();
     if (signals_) signals_->cancel();
     websocketpp::lib::error_code ec;
     if (acceptor_) acceptor_->close(ec);
@@ -864,6 +996,7 @@ void SignalServer::Run() {
   ReloadTlsContext();  // Invalid startup configuration is a process-level
                        // error.
   fd_usage_ = ReadFileDescriptorUsage();
+  const auto configured_max_connections = max_connections_;
   if (fd_usage_.soft_limit >= 0) {
     if (fd_usage_.open < 0 ||
         fd_usage_.soft_limit <=
@@ -873,6 +1006,15 @@ void SignalServer::Run() {
     max_connections_ = std::min<size_t>(
         max_connections_, fd_usage_.soft_limit - fd_usage_.open - fd_reserve_);
   }
+  LOG_INFO("Connection capacity: configured_max_connections={} "
+           "effective_max_connections={} fd_open={} fd_soft_limit={} "
+           "fd_reserve={} unopened_limit={} accept_retry_ms=500 listen_backlog=128",
+           configured_max_connections, max_connections_, fd_usage_.open,
+           fd_usage_.soft_limit, fd_reserve_, max_handshakes_);
+  if (max_connections_ < configured_max_connections)
+    LOG_WARN("Configured connection capacity reduced by process nofile limit: "
+             "configured={} effective={} fd_soft_limit={}",
+             configured_max_connections, max_connections_, fd_usage_.soft_limit);
   namespace asio = websocketpp::lib::asio;
   acceptor_ =
       std::make_unique<asio::ip::tcp::acceptor>(server_.get_io_service());
