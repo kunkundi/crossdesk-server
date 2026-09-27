@@ -7,6 +7,12 @@
       'Sessions': '会话',
       'Data management': '数据管理',
       'Type': '类型',
+      'Platform': '平台',
+      'Version': '版本',
+      'Client platform': '客户端平台',
+      'Client version': '客户端版本',
+      'All platforms': '全部平台',
+      'All versions': '全部版本',
       'Sort by': '排序',
       'Connection': '在线信息',
       'Control activity': '控制活动',
@@ -33,7 +39,7 @@
       'Query, export and clean device records': '查询设备记录、导出摘要与清理数据',
       'Durations update every second while this page is visible.': '页面可见时，时长每秒更新。',
       'No matching clients': '没有符合条件的客户端',
-      'Try another device ID, client category or status filter.': '请尝试其他设备 ID、客户端类型或状态筛选。',
+      'Try another device ID, client category, platform, version or status filter.': '请尝试其他设备 ID、客户端类型、平台、版本或状态筛选。',
       'No active sessions': '暂无活动会话',
       'Remote sessions will appear here when a connection starts.': '建立远程连接后，会话将显示在这里。',
       'No matching sessions': '没有匹配的会话',
@@ -164,6 +170,7 @@
       translatePage();
       updateRefreshTime();
       applyDeviceKindCounts();
+      applyDeviceClientFilters();
       renderDevices(currentDevices);
       renderSessions(currentSessions);
       updatePager('devices');
@@ -188,6 +195,8 @@
         search: '',
         filter: 'online',
         kind: 'pc',
+        platform: '',
+        version: '',
         sort: 'status',
         order: 'desc'
       },
@@ -200,6 +209,7 @@
     let devicesCapturedAt = 0;
     let currentSessions = [];
     let deviceKindCounts = null;
+    let deviceClientFilters = {platforms: [], versions: []};
     let lastRefreshAt = 0;
     let listTimer = null;
     let durationTimer = null;
@@ -452,7 +462,7 @@
       syncListScroll('devices', body);
       const fragment = document.createDocumentFragment();
       if (!devices.length) {
-        appendEmptyRow(fragment, 5, 'No matching clients', 'Try another device ID, client category or status filter.');
+        appendEmptyRow(fragment, 5, 'No matching clients', 'Try another device ID, client category, platform, version or status filter.');
         reconcileListRows(body, fragment);
         return;
       }
@@ -467,9 +477,11 @@
         appendText(clientCell, 'div', device.id, 'device-id');
         const clientMeta = document.createElement('div');
         clientMeta.className = 'client-meta';
-        appendText(clientMeta, 'span', device.kind === 'web' ? t('Web client')
-          : platformLabel(device.client_platform) || t('PC client'), 'subline');
-        if (device.kind !== 'web' && device.client_version) {
+        const platform = device.kind === 'web' ? 'web' : device.client_platform;
+        const platformColor = ['windows', 'macos', 'linux', 'web'].includes(platform) ? platform : 'unknown';
+        appendBadge(clientMeta, device.kind === 'web' ? t('Web client')
+          : platformLabel(platform) || t('PC client'), `platform platform-${platformColor}`);
+        if (device.client_version) {
           appendBadge(clientMeta, device.client_version, 'version');
         }
         clientCell.appendChild(clientMeta);
@@ -614,6 +626,8 @@
       params.set('device_offset', state.devices.offset);
       params.set('device_filter', state.devices.filter);
       params.set('device_kind', state.devices.kind);
+      if (state.devices.platform) params.set('device_platform', state.devices.platform);
+      if (state.devices.version) params.set('device_version', state.devices.version);
       params.set('device_sort', state.devices.sort);
       params.set('device_order', state.devices.order);
       params.set('session_limit', state.sessions.limit);
@@ -680,6 +694,32 @@
         option.textContent = count === null ? labels[value] : `${labels[value]} ${count}`;
       });
       kindSelect.value = state.devices.kind;
+    }
+
+    function applyDeviceClientFilters(options) {
+      if (options) deviceClientFilters = options;
+      for (const [field, values, label] of [
+        ['platform', deviceClientFilters.platforms, 'All platforms'],
+        ['version', deviceClientFilters.versions, 'All versions']
+      ]) {
+        const select = document.getElementById(`device-${field}`);
+        const selected = state.devices[field];
+        const choices = Array.from(new Set([...(values || []), selected].filter(Boolean)));
+        choices.sort((a, b) => field === 'version'
+          ? b.localeCompare(a, 'en', {numeric: true}) : a.localeCompare(b, 'en'));
+        const fragment = document.createDocumentFragment();
+        const all = appendText(fragment, 'option', t(label));
+        all.value = '';
+        for (const value of choices) {
+          const option = appendText(fragment, 'option', field === 'platform' ? platformLabel(value) : value);
+          option.value = value;
+        }
+        // Keep native selects intact during polling, including when open.
+        const next = select.cloneNode(false);
+        next.appendChild(fragment);
+        patchListNode(select, next);
+        if (select.value !== selected) select.value = selected;
+      }
     }
 
     function applyStats(stats) {
@@ -788,6 +828,7 @@
       }
       applyDeviceCounts(data.device_counts);
       applyDeviceKindCounts(data.device_kind_counts);
+      applyDeviceClientFilters(data.device_client_filters);
       renderDevices(data.devices || [], Math.floor(Date.now() / 1000));
       renderSessions(data.sessions || []);
       updatePager('devices');
@@ -862,11 +903,22 @@
     });
     document.getElementById('device-kind').addEventListener('change', (event) => {
       state.devices.kind = event.target.value === 'web' ? 'web' : 'pc';
+      state.devices.platform = '';
+      state.devices.version = '';
       state.devices.offset = 0;
       expandedDevices.clear();
       applyDeviceKindCounts();
+      applyDeviceClientFilters({platforms: [], versions: []});
       refreshLists();
     });
+    for (const field of ['platform', 'version']) {
+      document.getElementById(`device-${field}`).addEventListener('change', event => {
+        state.devices[field] = event.target.value;
+        state.devices.offset = 0;
+        expandedDevices.clear();
+        refreshLists();
+      });
+    }
     document.getElementById('device-sort').addEventListener('change', (event) => {
       state.devices.sort = event.target.value;
       state.devices.offset = 0;

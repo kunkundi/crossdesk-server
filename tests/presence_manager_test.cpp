@@ -384,5 +384,54 @@ int main() {
          "login, logout, session end and restart never update legacy totals");
   std::filesystem::remove(db_path);
 
+  {
+    DeviceDBManager filters_db(":memory:");
+    filters_db.SetDeviceOnline("win-1", true);
+    filters_db.SetDeviceOnline("win-2", false);
+    filters_db.SetDeviceOnline("linux-1", true);
+    filters_db.SetDeviceOnline("unreported", true);
+    filters_db.SetDeviceOnline("web-1", true);
+    filters_db.SetDeviceOnline("C-clone", true);
+    filters_db.UpdateDeviceClientInfo("win-1", "1.2.3", "windows");
+    filters_db.UpdateDeviceClientInfo("win-2", "1.2.3", "windows");
+    filters_db.UpdateDeviceClientInfo("linux-1", "1.2.3", "linux");
+    filters_db.UpdateDeviceClientInfo("web-1", "3.0.0", "web");
+    filters_db.UpdateDeviceClientInfo("C-clone", "hidden-version", "hidden-platform");
+    expect(filters_db.CountDevicePresence() == 4 &&
+               filters_db.CountDevicePresence("", "all", "pc", "windows") == 2 &&
+               filters_db.CountDevicePresence("", "all", "pc", "", "1.2.3") == 3,
+           "platform and version filters are optional and compose with category counts");
+    auto filtered_page = filters_db.ListDevicePresence(
+        1, 1, "win-", "all", "device_id", "asc", "pc", "windows", "1.2.3");
+    expect(filtered_page.size() == 1 && filtered_page[0].device_id == "win-2",
+           "combined metadata and search filters apply before limit and offset");
+    auto filtered_counts = filters_db.CountDevicePresenceByFilters(
+        "win-", "pc", "windows", "1.2.3");
+    expect(filtered_counts.all == 2 && filtered_counts.online == 1 &&
+               filtered_counts.offline == 1 && filtered_counts.web == 0,
+           "aggregate metadata counts agree with filtered pages");
+    auto options = filters_db.ListDeviceClientFilterOptions();
+    expect(options.platforms == std::vector<std::string>({"linux", "windows"}) &&
+               options.versions == std::vector<std::string>({"1.2.3"}),
+           "metadata options are unique and exclude unreported, clone and web values");
+    expect(filters_db.ListDeviceClientFilterOptions("web").versions ==
+               std::vector<std::string>({"3.0.0"}),
+           "web metadata options are scoped to web clients");
+    expect(filters_db.CountDevicePresence("", "all", "pc", "%") == 0 &&
+               filters_db.CountDevicePresence("", "all", "pc", "", "1.2") == 0 &&
+               filters_db.ListDevicePresence(10, 0, "", "all", "status", "desc",
+                                              "pc", "' OR 1=1--").empty(),
+           "metadata filters use literal equality and bound parameters");
+    const std::string special_version = "1.2%_'build";
+    filters_db.UpdateDeviceClientInfo("win-1", special_version, "windows");
+    expect(filters_db.CountDevicePresence("win-", "all", "pc", "windows",
+                                           special_version) == 1 &&
+               filters_db.CountDevicePresenceByFilters("", "pc", "windows",
+                                                       special_version).all == 1 &&
+               filters_db.ListDevicePresence(10, 0, "", "all", "device_id", "asc",
+                                              "pc", "windows", special_version).size() == 1,
+           "version punctuation is treated consistently as data by all filter queries");
+  }
+
   return failures == 0 ? 0 : 1;
 }

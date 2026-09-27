@@ -145,7 +145,7 @@ sudo security add-trusted-cert -d -r trustRoot \
 | 区域 / 入口 | 操作 |
 | --- | --- |
 | 顶部指标 | 查看在线设备、Web 客户端与活动连接 |
-| Client Presence | 默认显示在线 PC；可切换 PC / Web，筛选 Online / Controlled / Offline / All，搜索 ID、排序和翻页；Controlled 仅统计和显示正在被控制的设备，同一设备只计一次 |
+| Client Presence | 默认显示在线 PC；可切换 PC / Web，组合筛选平台、版本与 Online / Controlled / Offline / All，搜索 ID、排序和翻页；平台与版本选项来自当前类型的全部已上报记录，统计和分页随筛选同步；Controlled 仅统计和显示正在被控制的设备，同一设备只计一次 |
 | Details | 展开版本、平台、本次在线与远控时长、连接 IP 及远控对端 |
 | Active Sessions → Disconnect | 确认后断开所选会话；设备本身保持在线 |
 | Device data requests / 设备数据请求 | 按精确设备 ID 查询数据库摘要，导出 JSON，或清理离线设备的历史／身份数据 |

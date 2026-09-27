@@ -52,6 +52,11 @@ struct DevicePresenceCounts {
   int64_t web = 0;
 };
 
+struct DeviceClientFilterOptions {
+  std::vector<std::string> platforms;
+  std::vector<std::string> versions;
+};
+
 struct OnlineDurationStats {
   int64_t current_online_seconds = 0;
 };
@@ -126,9 +131,14 @@ class DeviceDBManager {
   int CountOnlineDevices(const std::string& search = "");
   int CountDevicePresence(const std::string& search = "",
                           const std::string& filter = "all",
-                          const std::string& kind = "pc");
+                          const std::string& kind = "pc",
+                          const std::string& platform = "",
+                          const std::string& version = "");
   DevicePresenceCounts CountDevicePresenceByFilters(
-      const std::string& search = "", const std::string& kind = "pc");
+      const std::string& search = "", const std::string& kind = "pc",
+      const std::string& platform = "", const std::string& version = "");
+  DeviceClientFilterOptions ListDeviceClientFilterOptions(
+      const std::string& kind = "pc");
   OnlineDurationStats GetOnlineDurationStats();
   std::vector<OnlineDeviceInfo> ListOnlineDevices();
   std::vector<OnlineDeviceInfo> ListOnlineDevices(
@@ -137,7 +147,8 @@ class DeviceDBManager {
       size_t limit, size_t offset, const std::string& search,
       const std::string& filter = "all",
       const std::string& sort = "status",
-      const std::string& order = "desc", const std::string& kind = "pc");
+      const std::string& order = "desc", const std::string& kind = "pc",
+      const std::string& platform = "", const std::string& version = "");
   std::vector<std::pair<std::string, bool>> BatchQueryOnline(
       const std::vector<std::string>& device_ids);
   bool SetUserDevices(const std::string& user_id,

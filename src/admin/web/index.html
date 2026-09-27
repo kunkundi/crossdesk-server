@@ -197,16 +197,30 @@
                 </select>
               </label>
               <label class="filter-field">
-                <span data-i18n="Sort by">Sort by</span>
-                <select id="device-sort" aria-label="Device sort" data-i18n-aria-label="Device sort">
-                  <option value="status" data-i18n="Status">Status</option>
-                  <option value="updated_at" data-i18n="Last seen">Last seen</option>
-                  <option value="online_since" data-i18n="Online since">Online since</option>
-                  <option value="current_online" data-i18n="Current online">Current online</option>
-                  <option value="device_id" data-i18n="Device ID">Device ID</option>
+                <span data-i18n="Platform">Platform</span>
+                <select id="device-platform" aria-label="Client platform" data-i18n-aria-label="Client platform">
+                  <option value="" data-i18n="All platforms">All platforms</option>
                 </select>
               </label>
-              <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order" data-i18n-aria-label="Toggle sort order" data-i18n="DESC">DESC</button>
+              <label class="filter-field">
+                <span data-i18n="Version">Version</span>
+                <select id="device-version" aria-label="Client version" data-i18n-aria-label="Client version">
+                  <option value="" data-i18n="All versions">All versions</option>
+                </select>
+              </label>
+              <div class="sort-controls">
+                <label class="filter-field">
+                  <span data-i18n="Sort by">Sort by</span>
+                  <select id="device-sort" aria-label="Device sort" data-i18n-aria-label="Device sort">
+                    <option value="status" data-i18n="Status">Status</option>
+                    <option value="updated_at" data-i18n="Last seen">Last seen</option>
+                    <option value="online_since" data-i18n="Online since">Online since</option>
+                    <option value="current_online" data-i18n="Current online">Current online</option>
+                    <option value="device_id" data-i18n="Device ID">Device ID</option>
+                  </select>
+                </label>
+                <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order" data-i18n-aria-label="Toggle sort order" data-i18n="DESC">DESC</button>
+              </div>
             </div>
             <div class="table-wrap list-scroll" tabindex="0" role="region" aria-labelledby="clients-title">
               <table class="presence-table" aria-labelledby="clients-title">

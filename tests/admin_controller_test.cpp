@@ -149,6 +149,11 @@ int main() {
     presence.OnLogout("device-admin-offline");
     presence.OnLogin("device-admin-control", "device-admin-control", hdl);
     presence.OnLogin("web-admin-1", "web-admin-1", hdl);
+    db.UpdateDeviceClientInfo("device-admin-1", "1.2.3", "windows");
+    db.UpdateDeviceClientInfo("device-admin-2", "1.10.0", "macos");
+    db.UpdateDeviceClientInfo("device-admin-offline", "1.2.3", "windows");
+    db.UpdateDeviceClientInfo("device-admin-control", "1.2.3", "linux");
+    db.UpdateDeviceClientInfo("web-admin-1", "3.0.0", "web");
     presence.SetDeviceNetworkInfo(
         "web-admin-1",
         {"198.51.100.10"});
@@ -321,6 +326,58 @@ int main() {
     expect(web_kind_body["devices"].size() == 1 &&
                web_kind_body["devices"][0]["kind"] == "web",
            "overview filters device list by web client kind");
+
+    auto client_filtered = nlohmann::json::parse(db_controller.Handle(
+        {"GET", "/api/admin/overview?device_filter=all&device_platform=windows"
+                "&device_version=1.2.3&device_sort=device_id&device_order=asc"
+                "&device_limit=1&device_offset=1", "",
+         "cd_admin_session=" + *token}).body);
+    expect(client_filtered["devices"].size() == 1 &&
+               client_filtered["devices"][0]["id"] == "device-admin-offline" &&
+               client_filtered["devices_page"]["total"] == 2,
+           "overview applies platform and version filters before pagination");
+    expect(client_filtered["devices_page"]["platform"] == "windows" &&
+               client_filtered["devices_page"]["version"] == "1.2.3",
+           "overview echoes client metadata filters");
+    expect(client_filtered["device_counts"]["all"] == 2 &&
+               client_filtered["device_counts"]["online"] == 1 &&
+               client_filtered["device_counts"]["offline"] == 1 &&
+               client_filtered["device_counts"]["active"] == 1 &&
+               client_filtered["device_kind_counts"]["pc"] == 2 &&
+               client_filtered["device_kind_counts"]["web"] == 0,
+           "overview counts agree with the selected platform and version");
+    expect(client_filtered["device_client_filters"]["platforms"] ==
+               nlohmann::json::array({"linux", "macos", "windows"}) &&
+               client_filtered["device_client_filters"]["versions"] ==
+               nlohmann::json::array({"1.10.0", "1.2.3"}),
+           "client filter options cover the category beyond the selected page and filters");
+    auto version_filtered = nlohmann::json::parse(db_controller.Handle(
+        {"GET", "/api/admin/overview?device_filter=all&device_version=1.2.3", "",
+         "cd_admin_session=" + *token}).body);
+    expect(version_filtered["devices"].size() == 3 &&
+               version_filtered["devices_page"]["total"] == 3,
+           "overview supports filtering by version across platforms");
+    auto search_filtered = nlohmann::json::parse(db_controller.Handle(
+        {"GET", "/api/admin/overview?device_platform=windows&device_version=1.2.3"
+                "&device_search=device-admin-1", "",
+         "cd_admin_session=" + *token}).body);
+    expect(search_filtered["devices"].size() == 1 &&
+               search_filtered["devices_page"]["total"] == 1 &&
+               search_filtered["device_counts"]["all"] == 1,
+           "overview combines client metadata with device ID search and online status");
+    auto no_clients = nlohmann::json::parse(db_controller.Handle(
+        {"GET", "/api/admin/overview?device_platform=windows&device_version=1.10.0",
+         "", "cd_admin_session=" + *token}).body);
+    expect(no_clients["devices"].empty() &&
+               no_clients["devices_page"]["total"] == 0 &&
+               no_clients["device_counts"]["all"] == 0 &&
+               no_clients["device_client_filters"] == client_filtered["device_client_filters"],
+           "empty filter combinations retain options for changing the selection");
+    expect(web_kind_body["device_client_filters"]["platforms"] ==
+               nlohmann::json::array({"web"}) &&
+               web_kind_body["device_client_filters"]["versions"] ==
+               nlohmann::json::array({"3.0.0"}),
+           "web client filter options do not include PC metadata");
 
     auto restored_transmission = std::make_shared<TransmissionManager>();
     AdminController restored_controller(

@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -126,6 +127,24 @@ std::string DevicePresenceSortClause(const std::string& sort,
 
   return expression + " " + direction +
          ", online DESC, updated_at DESC, device_id ASC ";
+}
+
+std::string DeviceClientFilterClause(const std::string& platform,
+                                     const std::string& version) {
+  std::string clause;
+  if (!platform.empty()) clause += "AND client_platform = ? ";
+  if (!version.empty()) clause += "AND client_version = ? ";
+  return clause;
+}
+
+void BindDeviceClientFilters(sqlite3_stmt* stmt, int& bind_index,
+                             const std::string& platform,
+                             const std::string& version) {
+  for (const auto* value : {&platform, &version}) {
+    if (!value->empty()) {
+      sqlite3_bind_text(stmt, bind_index++, value->c_str(), -1, SQLITE_TRANSIENT);
+    }
+  }
 }
 
 bool ColumnExists(sqlite3* db, const std::string& table,
@@ -1395,7 +1414,9 @@ int DeviceDBManager::CountOnlineDevices(const std::string& search) {
 
 int DeviceDBManager::CountDevicePresence(const std::string& search,
                                          const std::string& filter,
-                                         const std::string& kind) {
+                                         const std::string& kind,
+                                         const std::string& platform,
+                                         const std::string& version) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   if (db_ == nullptr) {
     LOG_ERROR("Database is not initialized in CountDevicePresence.");
@@ -1403,7 +1424,8 @@ int DeviceDBManager::CountDevicePresence(const std::string& search,
   }
 
   std::string sql = "SELECT COUNT(*) FROM device_presence WHERE " +
-                    DevicePresenceFilterClause(filter, kind);
+                    DevicePresenceFilterClause(filter, kind) +
+                    DeviceClientFilterClause(platform, version);
   if (!search.empty()) {
     sql += "AND device_id LIKE ? ESCAPE '\\' ";
   }
@@ -1414,9 +1436,11 @@ int DeviceDBManager::CountDevicePresence(const std::string& search,
       SQLITE_OK) {
     return 0;
   }
+  int bind_index = 1;
+  BindDeviceClientFilters(stmt, bind_index, platform, version);
   if (!search.empty()) {
     std::string pattern = "%" + EscapeLikePattern(search) + "%";
-    sqlite3_bind_text(stmt, 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, bind_index++, pattern.c_str(), -1, SQLITE_TRANSIENT);
   }
 
   int count = 0;
@@ -1428,7 +1452,8 @@ int DeviceDBManager::CountDevicePresence(const std::string& search,
 }
 
 DevicePresenceCounts DeviceDBManager::CountDevicePresenceByFilters(
-    const std::string& search, const std::string& kind) {
+    const std::string& search, const std::string& kind,
+    const std::string& platform, const std::string& version) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   DevicePresenceCounts counts;
   if (db_ == nullptr) {
@@ -1456,9 +1481,10 @@ DevicePresenceCounts DeviceDBManager::CountDevicePresenceByFilters(
       "THEN 1 ELSE 0 END), 0), "
       "COALESCE(SUM(CASE WHEN device_id LIKE 'web-%' "
       "THEN 1 ELSE 0 END), 0) "
-      "FROM device_presence ";
+      "FROM device_presence WHERE 1 = 1 " +
+      DeviceClientFilterClause(platform, version);
   if (!search.empty()) {
-    sql += "WHERE device_id LIKE ? ESCAPE '\\' ";
+    sql += "AND device_id LIKE ? ESCAPE '\\' ";
   }
   sql += ";";
 
@@ -1467,9 +1493,11 @@ DevicePresenceCounts DeviceDBManager::CountDevicePresenceByFilters(
       SQLITE_OK) {
     return counts;
   }
+  int bind_index = 1;
+  BindDeviceClientFilters(stmt, bind_index, platform, version);
   if (!search.empty()) {
     std::string pattern = "%" + EscapeLikePattern(search) + "%";
-    sqlite3_bind_text(stmt, 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, bind_index++, pattern.c_str(), -1, SQLITE_TRANSIENT);
   }
 
   if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -1481,6 +1509,34 @@ DevicePresenceCounts DeviceDBManager::CountDevicePresenceByFilters(
   }
   sqlite3_finalize(stmt);
   return counts;
+}
+
+DeviceClientFilterOptions DeviceDBManager::ListDeviceClientFilterOptions(
+    const std::string& kind) {
+  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+  DeviceClientFilterOptions options;
+  if (db_ == nullptr) return options;
+
+  // Options cover the entire client category, independent of pagination and
+  // active filters, so a filter remains available even when no rows match.
+  const std::string sql =
+      "SELECT DISTINCT client_platform, client_version FROM device_presence WHERE " +
+      DevicePresenceKindClause(kind) + ";";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+    return options;
+  }
+  std::set<std::string> platforms, versions;
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    const auto platform = ColumnText(stmt, 0);
+    const auto version = ColumnText(stmt, 1);
+    if (!platform.empty()) platforms.insert(platform);
+    if (!version.empty()) versions.insert(version);
+  }
+  sqlite3_finalize(stmt);
+  options.platforms.assign(platforms.begin(), platforms.end());
+  options.versions.assign(versions.begin(), versions.end());
+  return options;
 }
 
 OnlineDurationStats DeviceDBManager::GetOnlineDurationStats() {
@@ -1575,7 +1631,8 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListOnlineDevices(
 std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
     size_t limit, size_t offset, const std::string& search,
     const std::string& filter, const std::string& sort,
-    const std::string& order, const std::string& kind) {
+    const std::string& order, const std::string& kind,
+    const std::string& platform, const std::string& version) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   std::vector<OnlineDeviceInfo> result;
   if (db_ == nullptr) {
@@ -1619,7 +1676,8 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
       "client_version, client_platform "
       "FROM device_presence "
       "WHERE " +
-      DevicePresenceFilterClause(filter, kind);
+      DevicePresenceFilterClause(filter, kind) +
+      DeviceClientFilterClause(platform, version);
   if (!search.empty()) {
     sql += "AND device_id LIKE ? ESCAPE '\\' ";
   }
@@ -1632,6 +1690,7 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
     return result;
   }
   int bind_index = 1;
+  BindDeviceClientFilters(stmt, bind_index, platform, version);
   if (!search.empty()) {
     std::string pattern = "%" + EscapeLikePattern(search) + "%";
     sqlite3_bind_text(stmt, bind_index++, pattern.c_str(), -1,

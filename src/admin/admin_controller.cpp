@@ -482,6 +482,8 @@ AdminHttpResponse AdminController::HandleOverview(
       QueryStringParam(params, "device_filter", "online");
   std::string device_kind = NormalizeDeviceKind(
       QueryStringParam(params, "device_kind", "pc"));
+  std::string device_platform = QueryStringParam(params, "device_platform");
+  std::string device_version = QueryStringParam(params, "device_version");
   std::string device_sort =
       QueryStringParam(params, "device_sort", "status");
   std::string device_order =
@@ -500,18 +502,23 @@ AdminHttpResponse AdminController::HandleOverview(
                                   {"active", 0},
                                   {"web", 0}};
   nlohmann::json device_kind_counts = {{"pc", 0}, {"web", 0}};
+  DeviceClientFilterOptions client_filter_options;
   size_t online_device_fallback = 0;
   if (db_) {
     DevicePresenceCounts counts =
-        db_->CountDevicePresenceByFilters(device_search, device_kind);
+        db_->CountDevicePresenceByFilters(device_search, device_kind,
+                                          device_platform, device_version);
     DevicePresenceCounts pc_counts =
         device_kind == "pc"
             ? counts
-            : db_->CountDevicePresenceByFilters(device_search, "pc");
+            : db_->CountDevicePresenceByFilters(device_search, "pc",
+                                                device_platform, device_version);
     DevicePresenceCounts web_counts =
         device_kind == "web"
             ? counts
-            : db_->CountDevicePresenceByFilters(device_search, "web");
+            : db_->CountDevicePresenceByFilters(device_search, "web",
+                                                device_platform, device_version);
+    client_filter_options = db_->ListDeviceClientFilterOptions(device_kind);
     device_counts["all"] = counts.all;
     device_counts["online"] = counts.online;
     device_counts["offline"] = counts.offline;
@@ -526,7 +533,7 @@ AdminHttpResponse AdminController::HandleOverview(
     }
     std::vector<OnlineDeviceInfo> device_rows = db_->ListDevicePresence(
         device_limit, device_offset, device_search, device_filter, device_sort,
-        device_order, device_kind);
+        device_order, device_kind, device_platform, device_version);
     for (const auto& device : device_rows) {
       int64_t active_control_count = device.active_control_count;
       int64_t active_controlled_count = device.active_controlled_count;
@@ -594,6 +601,8 @@ AdminHttpResponse AdminController::HandleOverview(
                                  {"search", device_search},
                                  {"filter", device_filter},
                                  {"kind", device_kind},
+                                 {"platform", device_platform},
+                                 {"version", device_version},
                                  {"sort", device_sort},
                                  {"order", device_order}};
   nlohmann::json sessions_page = {{"limit", session_limit},
@@ -606,6 +615,9 @@ AdminHttpResponse AdminController::HandleOverview(
                             {"devices_page", devices_page},
                             {"device_counts", device_counts},
                             {"device_kind_counts", device_kind_counts},
+                            {"device_client_filters",
+                             {{"platforms", client_filter_options.platforms},
+                              {"versions", client_filter_options.versions}}},
                             {"sessions", sessions},
                             {"sessions_page", sessions_page}});
 }

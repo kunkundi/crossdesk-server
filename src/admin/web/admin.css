@@ -85,14 +85,16 @@ main:focus { outline: none; }
 .panel { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
 .presence-panel, .sessions-panel { margin: 0; }
 .section-heading { padding: 16px 18px 14px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
-.filter-toolbar { display: flex; align-items: center; gap: 10px; padding: 0 18px 14px; }
+.filter-toolbar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.5fr); align-items: end; gap: 12px; padding: 0 18px 14px; }
 .search-field { display: flex; align-items: center; position: relative; min-width: 0; flex: 1; }
 .search-field > .icon { position: absolute; left: 12px; color: #7c899b; width: 17px; height: 17px; pointer-events: none; }
 .search-field input { width: 100%; padding-left: 38px; background: #fcfdfe; }
-.filter-toolbar .search-field { margin-right: auto; }
-.filter-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.filter-toolbar .search-field { grid-column: 1 / -1; }
+.filter-field { display: grid; gap: 6px; min-width: 0; }
 .filter-field > span { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.filter-field select { min-width: 110px; font-size: 12px; }
+.filter-field select { width: 100%; min-width: 0; font-size: 12px; text-overflow: ellipsis; }
+.sort-controls { display: flex; align-items: end; gap: 8px; min-width: 0; }
+.sort-controls .filter-field { flex: 1; }
 .sort-order { min-width: 60px; font-size: 12px; padding-left: 10px; padding-right: 10px; }
 .segments { display: flex; gap: 4px; flex-wrap: wrap; }
 .segments button { min-height: 32px; border: 1px solid transparent; border-radius: 6px; padding: 5px 9px; color: #64748b; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
@@ -128,7 +130,13 @@ tbody tr:last-child > td { border-bottom: 0; }
 .badge.offline { background: #f0f3f6; color: #637083; }
 .badge.active { background: #fff6e8; color: #a16513; }
 .badge.online::before, .badge.offline::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.badge.platform, .badge.version { background: #f1f4f8; color: #64748b; padding: 2px 6px; font-size: 10px; }
+.badge.platform, .badge.version { padding: 3px 7px; font-size: 10px; font-weight: 600; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.badge.platform { background: #edf1f7; color: #475569; }
+.badge.platform-windows { background: #eaf3ff; color: #205da8; }
+.badge.platform-macos { background: #fff0f3; color: #a92e5c; }
+.badge.platform-linux { background: #fff3d8; color: #875d0b; }
+.badge.platform-web { background: #e8f5fa; color: #176981; }
+.badge.version { background: #e4f5ef; color: #087563; }
 .presence-table td:nth-child(2) .badge { margin: 2px 4px 2px 0; }
 .details-row td { background: #f7fafb; padding: 16px 18px; border-top: 1px solid #e4eeed; }
 .detail-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px 24px; }
@@ -283,9 +291,7 @@ tbody tr:last-child > td { border-bottom: 0; }
   .segments { margin-top: 10px; gap: 4px; }
   .segments button { flex: 1; justify-content: center; padding: 6px; gap: 4px; min-height: 36px; }
   .segments button span:last-child { padding: 0 4px; }
-  .filter-toolbar { padding: 0 14px 12px; gap: 8px; flex-wrap: wrap; }
-  .filter-toolbar .search-field { flex-basis: 100%; }
-  .filter-field { flex: 1; gap: 6px; }
+  .filter-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 14px 12px; gap: 10px; }
   .filter-field > span { font-size: 10px; }
   .filter-field select { width: 100%; min-width: 0; font-size: 11px; padding-left: 8px; padding-right: 18px; }
   .filter-toolbar input, .filter-toolbar select, .filter-toolbar button { min-height: 40px; }
