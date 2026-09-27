@@ -38,40 +38,12 @@ struct OnlineDeviceInfo {
   int64_t active_controlled_count = 0;
   std::vector<std::string> active_control_targets;
   std::vector<std::string> active_controlled_by;
-  std::string client_ip;
-  std::string country;
-  std::string region;
-  std::string city;
-  std::string location;
   std::string client_version;
   std::string client_platform;
 };
 
 struct ClientNetworkInfo {
   std::string client_ip;
-  std::string country;
-  std::string region;
-  std::string city;
-  std::string location;
-};
-
-struct ProvinceUserCount {
-  std::string province;
-  int64_t count = 0;
-};
-
-struct CountryUserCount {
-  std::string country;
-  int64_t count = 0;
-};
-
-struct ClientGeoDistribution {
-  int64_t total_count = 0;
-  int64_t domestic_count = 0;
-  int64_t foreign_count = 0;
-  int64_t unknown_count = 0;
-  std::vector<ProvinceUserCount> provinces;
-  std::vector<CountryUserCount> countries;
 };
 
 struct DevicePresenceCounts {
@@ -94,6 +66,12 @@ struct RemoteControlSessionInfo {
   std::string host_id;
   std::vector<std::string> guest_ids;
   int64_t started_at = 0;
+};
+
+struct RetentionCleanupResult {
+  size_t devices = 0;
+  size_t associations = 0;
+  bool more = false;
 };
 
 class DeviceDBManager {
@@ -120,12 +98,14 @@ class DeviceDBManager {
   bool RemoveDevice(const std::string& device_id);
 
   bool SetDeviceOnline(const std::string& device_id, bool online);
-  bool UpdateDeviceNetworkInfo(const std::string& device_id,
-                               const ClientNetworkInfo& network_info);
   bool UpdateDeviceClientInfo(const std::string& device_id,
                               const std::string& client_version,
                               const std::string& client_platform);
   bool RecordRuntimeHeartbeat();
+  // Deletes only expired offline metadata; device credentials are retained.
+  // Batches share the writer's transaction ordering with login/logout.
+  RetentionCleanupResult CleanupExpiredMetadata(int retention_days,
+                                                size_t batch_size = 200);
   bool StartRemoteControlSession(const std::string& transmission_id,
                                  const std::string& host_id,
                                  const std::string& guest_id);
@@ -145,7 +125,6 @@ class DeviceDBManager {
   DevicePresenceCounts CountDevicePresenceByFilters(
       const std::string& search = "", const std::string& kind = "pc");
   OnlineDurationStats GetOnlineDurationStats();
-  ClientGeoDistribution GetClientGeoDistribution();
   std::vector<OnlineDeviceInfo> ListOnlineDevices();
   std::vector<OnlineDeviceInfo> ListOnlineDevices(
       size_t limit, size_t offset, const std::string& search);

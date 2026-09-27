@@ -63,76 +63,14 @@ int main() {
 
   presence.SetDeviceNetworkInfo(
       "device-1",
-      {"203.0.113.8", "Testland", "Test Region", "",
-       "Test Region, Testland"});
+      {"203.0.113.8"});
   ClientNetworkInfo network_info;
   expect(presence.GetDeviceNetworkInfo("device-1", &network_info) &&
              network_info.client_ip == "203.0.113.8",
          "presence stores current device network info in memory");
-  presence.OnLogin("device-2", "device-2", hdl);
-  presence.SetDeviceNetworkInfo("device-2", {"203.0.113.8", "", "", "", ""});
-  expect(presence.HasDeviceWithClientIp("203.0.113.8"),
-         "presence tracks devices by current client ip");
-  expect(presence.UpdateDevicesWithClientIp(
-             "203.0.113.8",
-             {"203.0.113.8", "Sharedland", "Shared Region", "",
-              "Shared Region, Sharedland"}) == 2,
-         "presence updates all current devices sharing an ip");
-  expect(presence.GetDeviceNetworkInfo("device-2", &network_info) &&
-             network_info.location == "Shared Region, Sharedland",
-         "presence applies shared ip geo result to all matching devices");
-  presence.OnLogin("web-2", "web-2", hdl);
-  presence.SetDeviceNetworkInfo(
-      "web-2",
-      {"198.51.100.10", "China", "Zhejiang", "Hangzhou",
-       "Hangzhou, Zhejiang, China"});
-  presence.OnLogin("device-country-only", "device-country-only", hdl);
-  presence.SetDeviceNetworkInfo(
-      "device-country-only",
-      {"198.51.100.11", "China", "", "", "China"});
-  auto distribution = presence.GetClientGeoDistribution();
-  expect(distribution.total_count == 4 && distribution.domestic_count == 2 &&
-             distribution.foreign_count == 2 && distribution.unknown_count == 0,
-         "presence geo distribution includes current web client network info");
-  expect(distribution.provinces.size() == 1 &&
-             distribution.provinces[0].province == "zhejiang" &&
-             distribution.provinces[0].count == 1,
-         "presence geo distribution reports domestic province counts");
-  expect(distribution.countries.size() == 1 &&
-             distribution.countries[0].country == "Sharedland" &&
-             distribution.countries[0].count == 2,
-         "presence geo distribution reports foreign country counts");
-  presence.OnLogout("device-country-only");
   presence.OnLogout("device-1");
   expect(!presence.GetDeviceNetworkInfo("device-1", &network_info),
          "presence clears current network info on logout");
-  expect(presence.GetClientGeoDistribution().total_count == 2,
-         "presence geo distribution keeps other online clients");
-  presence.OnLogout("web-2");
-  presence.OnLogout("device-2");
-  expect(!presence.HasDeviceWithClientIp("203.0.113.8"),
-         "presence drops ip tracking after last matching device logs out");
-
-  const auto geo_db_path =
-      std::filesystem::temp_directory_path() /
-      ("crossdesk_geo_distribution_test_" +
-       std::to_string(std::chrono::steady_clock::now()
-                          .time_since_epoch()
-                          .count()) +
-       ".db");
-  {
-    DeviceDBManager geo_db(geo_db_path.string());
-    geo_db.SetDeviceOnline("geo-country-only", true);
-    geo_db.UpdateDeviceNetworkInfo("geo-country-only",
-                                   {"198.51.100.12", "China", "", "", "China"});
-    auto db_country_only = geo_db.GetClientGeoDistribution();
-    expect(db_country_only.total_count == 1 &&
-               db_country_only.domestic_count == 1 &&
-               db_country_only.unknown_count == 0,
-           "database geo distribution treats country-only locations as known");
-  }
-  std::filesystem::remove(geo_db_path);
-
   const auto db_path =
       std::filesystem::temp_directory_path() /
       ("crossdesk_presence_manager_test_" +
@@ -168,23 +106,6 @@ int main() {
     expect(online_devices[0].total_online_seconds >=
                online_devices[0].online_duration_seconds,
            "online device list includes total online duration");
-    db.UpdateDeviceNetworkInfo(
-        "device-1",
-        {"198.51.100.10", "China", "Zhejiang", "Hangzhou",
-         "Hangzhou, Zhejiang, China"});
-    db.UpdateDeviceNetworkInfo(
-        "web-1",
-        {"203.0.113.10", "Webland", "Web Region", "",
-         "Web Region, Webland"});
-    db.UpdateDeviceNetworkInfo(
-        "C-000000",
-        {"203.0.113.11", "Cloneland", "Clone Region", "",
-         "Clone Region, Cloneland"});
-    auto db_distribution = db.GetClientGeoDistribution();
-    expect(db_distribution.total_count == 2 &&
-               db_distribution.domestic_count == 1 &&
-               db_distribution.foreign_count == 1,
-           "database geo distribution includes web clients and excludes clones");
     db.SetDeviceOnline("device-2", true);
     db.SetDeviceOnline("device-3", true);
     expect(db.CountOnlineDevices() == 3,
@@ -242,16 +163,6 @@ int main() {
     expect(!sorted_presence.empty() &&
                sorted_presence[0].device_id == "device-1",
            "presence list supports device id sort");
-    auto known_location_first =
-        db.ListDevicePresence(10, 0, "", "all", "location", "desc");
-    expect(!known_location_first.empty() &&
-               !known_location_first[0].location.empty(),
-           "presence list location sort groups known locations first");
-    auto unknown_location_first =
-        db.ListDevicePresence(10, 0, "", "all", "location", "asc");
-    expect(!unknown_location_first.empty() &&
-               unknown_location_first[0].location.empty(),
-           "presence list location sort groups unknown locations first");
     auto offline_devices = db.ListDevicePresence(10, 0, "device-1");
     expect(offline_devices.size() == 1 && !offline_devices[0].online,
            "presence list includes offline device");

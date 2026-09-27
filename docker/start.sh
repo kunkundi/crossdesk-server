@@ -36,6 +36,15 @@ CERT_BUNDLE="$CERT_DIR/api.crossdesk.cn_bundle.crt"
 CERT_ROOT="$CERT_DIR/api.crossdesk.cn_root.crt"
 
 mkdir -p "$CERT_DIR" "$DB_DIR" "$LOG_DIR"
+# Coturn drops to nobody:nogroup (65534:65534 in the pinned Debian image).
+# Its daily files share the server's retention policy through this mount.
+if [ -L "$LOG_DIR/coturn" ]; then
+  echo "Error: Coturn log directory must not be a symbolic link."
+  exit 1
+fi
+mkdir -p "$LOG_DIR/coturn"
+chown 65534:65534 "$LOG_DIR/coturn"
+chmod 750 "$LOG_DIR/coturn"
 
 if [ ! -f "$CERT_KEY" ] || [ ! -f "$CERT_BUNDLE" ]; then
   echo "Certificate files not found, generating certificates..."

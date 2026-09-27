@@ -12,7 +12,6 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
-#include <unordered_map>
 
 #include "log.h"
 
@@ -45,81 +44,6 @@ std::string ToLower(std::string value) {
                    return static_cast<char>(std::tolower(ch));
                  });
   return value;
-}
-
-std::string Trim(std::string value) {
-  auto is_space = [](unsigned char ch) { return std::isspace(ch); };
-  value.erase(value.begin(),
-              std::find_if(value.begin(), value.end(),
-                           [&](unsigned char ch) { return !is_space(ch); }));
-  value.erase(std::find_if(value.rbegin(), value.rend(),
-                           [&](unsigned char ch) { return !is_space(ch); })
-                  .base(),
-              value.end());
-  return value;
-}
-
-bool ContainsText(const std::string& value, const std::string& pattern) {
-  return value.find(pattern) != std::string::npos;
-}
-
-bool IsChinaCountry(const std::string& country) {
-  std::string normalized = ToLower(Trim(country));
-  return normalized == "china" || normalized == "cn" ||
-         ContainsText(country, "中国");
-}
-
-std::string NormalizeChinaProvince(const std::string& region,
-                                   const std::string& location) {
-  std::string value = ToLower(region + " " + location);
-  const std::vector<std::pair<std::string, std::vector<std::string>>> matchers =
-      {
-          {"anhui", {"anhui", "安徽"}},
-          {"beijing", {"beijing", "北京"}},
-          {"chongqing", {"chongqing", "重庆"}},
-          {"fujian", {"fujian", "福建"}},
-          {"gansu", {"gansu", "甘肃"}},
-          {"guangdong", {"guangdong", "广东"}},
-          {"guangxi", {"guangxi", "广西"}},
-          {"guizhou", {"guizhou", "贵州"}},
-          {"hainan", {"hainan", "海南"}},
-          {"hebei", {"hebei", "河北"}},
-          {"heilongjiang", {"heilongjiang", "黑龙江"}},
-          {"henan", {"henan", "河南"}},
-          {"hongkong", {"hong kong", "hongkong", "香港"}},
-          {"hubei", {"hubei", "湖北"}},
-          {"hunan", {"hunan", "湖南"}},
-          {"inner_mongolia",
-           {"inner mongolia", "neimenggu", "内蒙古"}},
-          {"jiangsu", {"jiangsu", "江苏"}},
-          {"jiangxi", {"jiangxi", "江西"}},
-          {"jilin", {"jilin", "吉林"}},
-          {"liaoning", {"liaoning", "辽宁"}},
-          {"macau", {"macau", "macao", "澳门"}},
-          {"ningxia", {"ningxia", "宁夏"}},
-          {"qinghai", {"qinghai", "青海"}},
-          {"shaanxi", {"shaanxi", "shanxi sheng", "陕西"}},
-          {"shandong", {"shandong", "山东"}},
-          {"shanghai", {"shanghai", "上海"}},
-          {"shanxi", {"shanxi", "山西"}},
-          {"sichuan", {"sichuan", "四川"}},
-          {"taiwan", {"taiwan", "台湾"}},
-          {"tianjin", {"tianjin", "天津"}},
-          {"tibet", {"tibet", "xizang", "西藏"}},
-          {"xinjiang", {"xinjiang", "新疆"}},
-          {"yunnan", {"yunnan", "云南"}},
-          {"zhejiang", {"zhejiang", "浙江"}},
-      };
-
-  for (const auto& matcher : matchers) {
-    for (const auto& pattern : matcher.second) {
-      if (ContainsText(value, pattern) ||
-          ContainsText(region + " " + location, pattern)) {
-        return matcher.first;
-      }
-    }
-  }
-  return "";
 }
 
 std::string NormalizeRemoteDeviceId(const std::string& device_id) {
@@ -204,9 +128,6 @@ std::string DevicePresenceSortClause(const std::string& sort,
     expression = "total_controlled_seconds";
   } else if (normalized == "active_sessions") {
     expression = "active_control_count";
-  } else if (normalized == "location") {
-    expression = "CASE WHEN TRIM(COALESCE(geo_location, '')) = '' "
-                 "THEN 0 ELSE 1 END";
   }
 
   return expression + " " + direction +
@@ -316,6 +237,7 @@ DeviceDBManager::DeviceDBManager(const std::string& db_path, OpenMode mode)
     sqlite3_busy_timeout(db_, 1000);
     if (mode == OpenMode::ReadWrite) {
       ExecuteSchemaStatement(db_, "PRAGMA journal_mode=WAL;", "enable WAL");
+      ExecuteSchemaStatement(db_, "PRAGMA secure_delete=ON;", "enable secure deletion");
       InitDB();
     }
   } catch (...) {
@@ -447,11 +369,6 @@ void DeviceDBManager::InitDB() {
   EnsureIntegerColumn(db_, "device_presence", "total_online_seconds");
   EnsureIntegerColumn(db_, "device_presence", "total_control_seconds");
   EnsureIntegerColumn(db_, "device_presence", "total_controlled_seconds");
-  EnsureTextColumn(db_, "device_presence", "client_ip");
-  EnsureTextColumn(db_, "device_presence", "geo_country");
-  EnsureTextColumn(db_, "device_presence", "geo_region");
-  EnsureTextColumn(db_, "device_presence", "geo_city");
-  EnsureTextColumn(db_, "device_presence", "geo_location");
   EnsureTextColumn(db_, "device_presence", "client_version");
   EnsureTextColumn(db_, "device_presence", "client_platform");
 
@@ -473,6 +390,28 @@ void DeviceDBManager::InitDB() {
     sqlite3_free(err_msg);
     throw std::runtime_error("Failed to create user_devices table: " + error);
   }
+
+  // Old association rows have no timestamp. Start their retention period once,
+  // at migration, rather than guessing their age or deleting them immediately.
+  if (!ColumnExists(db_, "user_devices", "updated_at")) {
+    ExecuteSchemaStatement(db_, "BEGIN IMMEDIATE;", "begin retention migration");
+    try {
+      EnsureIntegerColumn(db_, "user_devices", "updated_at");
+      ExecuteSchemaStatement(db_,
+          "UPDATE user_devices SET updated_at = CAST(strftime('%s','now') AS INTEGER);",
+          "initialize association retention timestamps");
+      ExecuteSchemaStatement(db_, "COMMIT;", "commit retention migration");
+    } catch (...) {
+      sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+      throw;
+    }
+  }
+  ExecuteSchemaStatement(db_,
+      "CREATE INDEX IF NOT EXISTS idx_user_devices_updated_at ON user_devices(updated_at);",
+      "index association retention timestamps");
+  ExecuteSchemaStatement(db_,
+      "CREATE INDEX IF NOT EXISTS idx_user_devices_device_id ON user_devices(device_id);",
+      "index associated device ids");
 
   if (sqlite3_exec(db_, sql_remote_control_sessions, nullptr, nullptr,
                    &err_msg) != SQLITE_OK) {
@@ -506,9 +445,6 @@ void DeviceDBManager::InitDB() {
       {"CREATE INDEX IF NOT EXISTS idx_device_presence_updated_at "
        "ON device_presence(updated_at);",
        "create idx_device_presence_updated_at"},
-      {"CREATE INDEX IF NOT EXISTS idx_device_presence_geo "
-       "ON device_presence(geo_country, geo_region, geo_location);",
-       "create idx_device_presence_geo"},
       {"CREATE INDEX IF NOT EXISTS idx_remote_control_sessions_norm_guest "
        "ON remote_control_sessions(normalized_guest_id);",
        "create idx_remote_control_sessions_norm_guest"},
@@ -978,6 +914,101 @@ bool DeviceDBManager::RecordRuntimeHeartbeat() {
   return true;
 }
 
+RetentionCleanupResult DeviceDBManager::CleanupExpiredMetadata(
+    int retention_days, size_t batch_size) {
+  if (retention_days < 1 || retention_days > 3650 ||
+      batch_size < 1 || batch_size > 1000)
+    throw std::invalid_argument("Invalid metadata retention policy");
+  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+  const int64_t cutoff = NowSeconds() - int64_t{retention_days} * 86400;
+  RetentionCleanupResult result;
+  ExecuteSchemaStatement(db_, "BEGIN IMMEDIATE;", "begin metadata cleanup");
+  sqlite3_stmt* stmt = nullptr;
+  try {
+    // Keep credentials, online identities (including controller clones), and
+    // any identity still referenced by a live or recoverable remote session.
+    const char* candidates =
+        "SELECT p.device_id FROM device_presence p "
+        "WHERE p.online = 0 AND p.updated_at < ? "
+        "AND NOT EXISTS (SELECT 1 FROM device_presence live "
+        "WHERE live.online = 1 AND (live.device_id = 'C-' || p.device_id "
+        "OR live.device_id = CASE WHEN substr(p.device_id,1,2) = 'C-' "
+        "THEN substr(p.device_id,3) ELSE p.device_id END)) "
+        "AND NOT EXISTS (SELECT 1 FROM remote_control_sessions s "
+        "WHERE s.normalized_host_id = CASE WHEN substr(p.device_id,1,2) = 'C-' "
+        "THEN substr(p.device_id,3) ELSE p.device_id END "
+        "OR s.normalized_guest_id = CASE WHEN substr(p.device_id,1,2) = 'C-' "
+        "THEN substr(p.device_id,3) ELSE p.device_id END) "
+        "ORDER BY p.updated_at, p.device_id LIMIT ?;";
+    if (sqlite3_prepare_v2(db_, candidates, -1, &stmt, nullptr) != SQLITE_OK)
+      throw std::runtime_error(sqlite3_errmsg(db_));
+    sqlite3_bind_int64(stmt, 1, cutoff);
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(batch_size));
+    std::vector<std::string> ids;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
+      ids.push_back(ColumnText(stmt, 0));
+    if (rc != SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
+    sqlite3_finalize(stmt);
+    stmt = nullptr;
+
+    const char* remove_associations =
+        "DELETE FROM user_devices WHERE user_id = ? OR device_id = ?;";
+    const char* remove_presence =
+        "DELETE FROM device_presence WHERE device_id = ?;";
+    for (const auto& id : ids) {
+      for (const char* sql : {remove_associations, remove_presence}) {
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+          throw std::runtime_error(sqlite3_errmsg(db_));
+        sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_TRANSIENT);
+        if (sql == remove_associations)
+          sqlite3_bind_text(stmt, 2, id.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) != SQLITE_DONE)
+          throw std::runtime_error(sqlite3_errmsg(db_));
+        if (sql == remove_associations)
+          result.associations += sqlite3_changes(db_);
+        else
+          result.devices += sqlite3_changes(db_);
+        sqlite3_finalize(stmt);
+        stmt = nullptr;
+      }
+    }
+
+    // Also expire old associations whose owner has no presence row. Current
+    // subscriptions live in PresenceManager and are unaffected by this table.
+    const char* orphan_associations =
+        "DELETE FROM user_devices WHERE rowid IN ("
+        "SELECT a.rowid FROM user_devices a WHERE a.updated_at < ? "
+        "AND NOT EXISTS (SELECT 1 FROM device_presence p WHERE "
+        "p.device_id = a.user_id AND (p.online = 1 OR p.updated_at >= ?)) "
+        "AND NOT EXISTS (SELECT 1 FROM remote_control_sessions s WHERE "
+        "s.normalized_host_id = a.user_id OR s.normalized_guest_id = a.user_id) "
+        "ORDER BY a.updated_at LIMIT ?);";
+    if (sqlite3_prepare_v2(db_, orphan_associations, -1, &stmt, nullptr) != SQLITE_OK)
+      throw std::runtime_error(sqlite3_errmsg(db_));
+    sqlite3_bind_int64(stmt, 1, cutoff);
+    sqlite3_bind_int64(stmt, 2, cutoff);
+    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(batch_size));
+    if (sqlite3_step(stmt) != SQLITE_DONE)
+      throw std::runtime_error(sqlite3_errmsg(db_));
+    const size_t orphan_count = sqlite3_changes(db_);
+    result.associations += orphan_count;
+    result.more = ids.size() == batch_size || orphan_count == batch_size;
+    sqlite3_finalize(stmt);
+    stmt = nullptr;
+    ExecuteSchemaStatement(db_, "COMMIT;", "commit metadata cleanup");
+  } catch (...) {
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    throw;
+  }
+  if (result.devices || result.associations) {
+    // Does not wait for readers. Backups and snapshots have independent expiry.
+    sqlite3_wal_checkpoint_v2(db_, nullptr, SQLITE_CHECKPOINT_PASSIVE, nullptr, nullptr);
+  }
+  return result;
+}
+
 bool DeviceDBManager::SetDeviceOnline(const std::string& device_id,
                                       bool online) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
@@ -1019,50 +1050,6 @@ bool DeviceDBManager::SetDeviceOnline(const std::string& device_id,
     return false;
   }
   sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
-  bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
-  sqlite3_finalize(stmt);
-  return ok;
-}
-
-bool DeviceDBManager::UpdateDeviceNetworkInfo(
-    const std::string& device_id, const ClientNetworkInfo& network_info) {
-  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-  if (db_ == nullptr) {
-    LOG_ERROR("Database is not initialized in UpdateDeviceNetworkInfo.");
-    return false;
-  }
-  if (device_id.empty()) {
-    return false;
-  }
-
-  const char* sql =
-      "INSERT INTO device_presence "
-      "(device_id, online, updated_at, online_since, total_online_seconds, "
-      "client_ip, geo_country, geo_region, geo_city, geo_location) "
-      "VALUES (?, 0, CAST(strftime('%s','now') AS INTEGER), 0, 0, ?, ?, ?, ?, "
-      "?) "
-      "ON CONFLICT(device_id) DO UPDATE SET "
-      "client_ip=excluded.client_ip, "
-      "geo_country=excluded.geo_country, "
-      "geo_region=excluded.geo_region, "
-      "geo_city=excluded.geo_city, "
-      "geo_location=excluded.geo_location;";
-
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-    return false;
-  }
-  sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 2, network_info.client_ip.c_str(), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 3, network_info.country.c_str(), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 4, network_info.region.c_str(), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 5, network_info.city.c_str(), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 6, network_info.location.c_str(), -1,
-                    SQLITE_TRANSIENT);
   bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
   sqlite3_finalize(stmt);
   return ok;
@@ -1626,75 +1613,6 @@ OnlineDurationStats DeviceDBManager::GetOnlineDurationStats() {
   return stats;
 }
 
-ClientGeoDistribution DeviceDBManager::GetClientGeoDistribution() {
-  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-  ClientGeoDistribution distribution;
-  if (db_ == nullptr) {
-    LOG_ERROR("Database is not initialized in GetClientGeoDistribution.");
-    return distribution;
-  }
-
-  const char* sql =
-      "SELECT geo_country, geo_region, geo_location, COUNT(*) "
-      "FROM device_presence "
-      "WHERE online = 1 "
-      "AND device_id NOT LIKE 'C-%' "
-      "GROUP BY geo_country, geo_region, geo_location;";
-
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-    return distribution;
-  }
-
-  std::unordered_map<std::string, int64_t> province_counts;
-  std::unordered_map<std::string, int64_t> country_counts;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    std::string country = ColumnText(stmt, 0);
-    std::string region = ColumnText(stmt, 1);
-    std::string location = ColumnText(stmt, 2);
-    int64_t count = sqlite3_column_int64(stmt, 3);
-    distribution.total_count += count;
-
-    std::string province = NormalizeChinaProvince(region, location);
-    country = Trim(country);
-    if (!province.empty()) {
-      distribution.domestic_count += count;
-      province_counts[province] += count;
-    } else if (IsChinaCountry(country)) {
-      distribution.domestic_count += count;
-    } else if (!country.empty()) {
-      distribution.foreign_count += count;
-      country_counts[country] += count;
-    } else {
-      distribution.unknown_count += count;
-    }
-  }
-  sqlite3_finalize(stmt);
-
-  for (const auto& pair : province_counts) {
-    distribution.provinces.push_back({pair.first, pair.second});
-  }
-  for (const auto& pair : country_counts) {
-    distribution.countries.push_back({pair.first, pair.second});
-  }
-  std::sort(distribution.provinces.begin(), distribution.provinces.end(),
-            [](const ProvinceUserCount& lhs, const ProvinceUserCount& rhs) {
-              if (lhs.count != rhs.count) {
-                return lhs.count > rhs.count;
-              }
-              return lhs.province < rhs.province;
-            });
-  std::sort(distribution.countries.begin(), distribution.countries.end(),
-            [](const CountryUserCount& lhs, const CountryUserCount& rhs) {
-              if (lhs.count != rhs.count) {
-                return lhs.count > rhs.count;
-              }
-              return lhs.country < rhs.country;
-            });
-
-  return distribution;
-}
-
 std::vector<OnlineDeviceInfo> DeviceDBManager::ListOnlineDevices() {
   return ListOnlineDevices(static_cast<size_t>(std::numeric_limits<int>::max()),
                            0, "");
@@ -1727,7 +1645,6 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListOnlineDevices(
       "FROM remote_control_sessions "
       "WHERE normalized_host_id = device_presence.device_id), 0) "
       "AS total_controlled_seconds, "
-      "client_ip, geo_country, geo_region, geo_city, geo_location, "
       "client_version, client_platform "
       "FROM device_presence "
       "WHERE online = 1 "
@@ -1762,13 +1679,8 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListOnlineDevices(
     info.total_online_seconds = sqlite3_column_int64(stmt, 5);
     info.total_control_seconds = sqlite3_column_int64(stmt, 6);
     info.total_controlled_seconds = sqlite3_column_int64(stmt, 7);
-    info.client_ip = ColumnText(stmt, 8);
-    info.country = ColumnText(stmt, 9);
-    info.region = ColumnText(stmt, 10);
-    info.city = ColumnText(stmt, 11);
-    info.location = ColumnText(stmt, 12);
-    info.client_version = ColumnText(stmt, 13);
-    info.client_platform = ColumnText(stmt, 14);
+    info.client_version = ColumnText(stmt, 8);
+    info.client_platform = ColumnText(stmt, 9);
     result.push_back(info);
   }
   sqlite3_finalize(stmt);
@@ -1833,7 +1745,6 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
       "FROM remote_control_sessions "
       "WHERE normalized_host_id = device_presence.device_id), '') "
       "AS active_controlled_by, "
-      "client_ip, geo_country, geo_region, geo_city, geo_location, "
       "client_version, client_platform "
       "FROM device_presence "
       "WHERE " +
@@ -1874,13 +1785,8 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
     info.active_controlled_count = sqlite3_column_int64(stmt, 11);
     info.active_control_targets = SplitCommaSeparatedIds(ColumnText(stmt, 12));
     info.active_controlled_by = SplitCommaSeparatedIds(ColumnText(stmt, 13));
-    info.client_ip = ColumnText(stmt, 14);
-    info.country = ColumnText(stmt, 15);
-    info.region = ColumnText(stmt, 16);
-    info.city = ColumnText(stmt, 17);
-    info.location = ColumnText(stmt, 18);
-    info.client_version = ColumnText(stmt, 19);
-    info.client_platform = ColumnText(stmt, 20);
+    info.client_version = ColumnText(stmt, 14);
+    info.client_platform = ColumnText(stmt, 15);
     result.push_back(info);
   }
   sqlite3_finalize(stmt);
@@ -1966,7 +1872,8 @@ bool DeviceDBManager::SetUserDevices(
   }
 
   const char* insert_sql =
-      "INSERT OR IGNORE INTO user_devices (user_id, device_id) VALUES (?, ?);";
+      "INSERT OR IGNORE INTO user_devices (user_id, device_id, updated_at) "
+      "VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER));";
   if (sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr) != SQLITE_OK) {
     sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
     return false;

@@ -55,7 +55,6 @@ class AdminController {
 
   bool IsAuthorized(const AdminHttpRequest& request);
   nlohmann::json BuildStats(size_t online_device_fallback) const;
-  ClientGeoDistribution GetCurrentGeoDistribution() const;
   AdminHttpResponse JsonResponse(int status, const nlohmann::json& body) const;
   AdminHttpResponse HtmlResponse(int status, const std::string& body) const;
   AdminHttpResponse ErrorResponse(int status, const std::string& error) const;

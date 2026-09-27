@@ -154,10 +154,6 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
-bool IsLocationSort(const std::string& sort) {
-  return LowerAscii(sort) == "location";
-}
-
 std::string NormalizeDeviceKind(const std::string& kind) {
   std::string normalized = LowerAscii(kind);
   if (normalized == "web") {
@@ -176,63 +172,6 @@ ClientNetworkInfo CurrentNetworkInfo(PresenceManager* presence,
     presence->GetDeviceNetworkInfo(device.device_id, &network_info);
   }
   return network_info;
-}
-
-bool HasDisplayedLocation(PresenceManager* presence,
-                          const OnlineDeviceInfo& device) {
-  return !CurrentNetworkInfo(presence, device).location.empty();
-}
-
-void SortDevicesByDisplayedLocation(
-    std::vector<OnlineDeviceInfo>* devices, PresenceManager* presence,
-    const std::string& order) {
-  if (!devices) {
-    return;
-  }
-
-  const bool ascending = LowerAscii(order) == "asc";
-  std::unordered_map<std::string, bool> known_location_cache;
-  auto has_location = [&](const OnlineDeviceInfo& device) {
-    auto cached = known_location_cache.find(device.device_id);
-    if (cached != known_location_cache.end()) {
-      return cached->second;
-    }
-    bool known = HasDisplayedLocation(presence, device);
-    known_location_cache.emplace(device.device_id, known);
-    return known;
-  };
-
-  std::sort(devices->begin(), devices->end(),
-            [&](const OnlineDeviceInfo& lhs, const OnlineDeviceInfo& rhs) {
-              const bool lhs_known = has_location(lhs);
-              const bool rhs_known = has_location(rhs);
-              if (lhs_known != rhs_known) {
-                return ascending ? !lhs_known : lhs_known;
-              }
-              if (lhs.online != rhs.online) {
-                return lhs.online > rhs.online;
-              }
-              if (lhs.updated_at != rhs.updated_at) {
-                return lhs.updated_at > rhs.updated_at;
-              }
-              return lhs.device_id < rhs.device_id;
-            });
-}
-
-void ApplyDevicePage(std::vector<OnlineDeviceInfo>* devices, size_t offset,
-                     size_t limit) {
-  if (!devices || offset >= devices->size() || limit == 0) {
-    if (devices) {
-      devices->clear();
-    }
-    return;
-  }
-
-  const size_t available = devices->size() - offset;
-  const size_t count = (std::min)(limit, available);
-  std::vector<OnlineDeviceInfo> page(devices->begin() + offset,
-                                     devices->begin() + offset + count);
-  devices->swap(page);
 }
 
 int64_t CountForDeviceFilter(const DevicePresenceCounts& counts,
@@ -255,27 +194,6 @@ int64_t CountForDeviceFilter(const DevicePresenceCounts& counts,
     return counts.web;
   }
   return counts.all;
-}
-
-nlohmann::json GeoDistributionJson(const ClientGeoDistribution& distribution) {
-  nlohmann::json geo_distribution = {{"total_count", distribution.total_count},
-                                     {"domestic_count",
-                                      distribution.domestic_count},
-                                     {"foreign_count",
-                                      distribution.foreign_count},
-                                     {"unknown_count",
-                                      distribution.unknown_count},
-                                     {"provinces", nlohmann::json::array()},
-                                     {"countries", nlohmann::json::array()}};
-  for (const auto& province : distribution.provinces) {
-    geo_distribution["provinces"].push_back(
-        {{"province", province.province}, {"count", province.count}});
-  }
-  for (const auto& country : distribution.countries) {
-    geo_distribution["countries"].push_back(
-        {{"country", country.country}, {"count", country.count}});
-  }
-  return geo_distribution;
 }
 
 std::vector<std::filesystem::path> AdminWebRootCandidates() {
@@ -302,7 +220,7 @@ std::vector<std::filesystem::path> AdminWebRootCandidates() {
 
 const std::set<std::string>& AdminAllowedWebFiles() {
   static const std::set<std::string> kAllowedFiles = {
-      "index.html", "admin.css", "admin.js", "china-provinces.json"};
+      "index.html", "admin.css", "admin.js"};
   return kAllowedFiles;
 }
 
@@ -374,9 +292,6 @@ std::string AdminAssetContentType(const std::string& file_name) {
   }
   if (file_name == "admin.js") {
     return "application/javascript; charset=utf-8";
-  }
-  if (file_name == "china-provinces.json") {
-    return "application/json; charset=utf-8";
   }
   return "application/octet-stream";
 }
@@ -604,17 +519,9 @@ AdminHttpResponse AdminController::HandleOverview(
     if (!presence_) {
       online_device_fallback = static_cast<size_t>(db_->CountOnlineDevices());
     }
-    const bool location_sort = IsLocationSort(device_sort);
-    size_t query_limit = location_sort ? devices_total : device_limit;
-    size_t query_offset = location_sort ? 0 : device_offset;
-    std::string query_sort = location_sort ? "status" : device_sort;
     std::vector<OnlineDeviceInfo> device_rows = db_->ListDevicePresence(
-        query_limit, query_offset, device_search, device_filter, query_sort,
+        device_limit, device_offset, device_search, device_filter, device_sort,
         device_order, device_kind);
-    if (location_sort) {
-      SortDevicesByDisplayedLocation(&device_rows, presence_, device_order);
-      ApplyDevicePage(&device_rows, device_offset, device_limit);
-    }
     for (const auto& device : device_rows) {
       int64_t active_control_count = device.active_control_count;
       int64_t active_controlled_count = device.active_controlled_count;
@@ -637,10 +544,6 @@ AdminHttpResponse AdminController::HandleOverview(
                          {"total_controlled_seconds",
                           device.total_controlled_seconds},
                          {"client_ip", network_info.client_ip},
-                         {"geo_country", network_info.country},
-                         {"geo_region", network_info.region},
-                         {"geo_city", network_info.city},
-                         {"geo_location", network_info.location},
                          {"current_control_seconds",
                           device.current_control_seconds},
                          {"current_controlled_seconds",
@@ -684,9 +587,6 @@ AdminHttpResponse AdminController::HandleOverview(
     }
   }
 
-  nlohmann::json geo_distribution =
-      GeoDistributionJson(GetCurrentGeoDistribution());
-
   nlohmann::json stats = BuildStats(online_device_fallback);
 
   nlohmann::json devices_page = {{"limit", device_limit},
@@ -707,7 +607,6 @@ AdminHttpResponse AdminController::HandleOverview(
                             {"devices_page", devices_page},
                             {"device_counts", device_counts},
                             {"device_kind_counts", device_kind_counts},
-                            {"geo_distribution", geo_distribution},
                             {"sessions", sessions},
                             {"sessions_page", sessions_page}});
 }
@@ -825,13 +724,6 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
           {"total_controlled_seconds",
            duration_stats.total_controlled_seconds}};
   return stats_cache_;
-}
-
-ClientGeoDistribution AdminController::GetCurrentGeoDistribution() const {
-  if (presence_) {
-    return presence_->GetClientGeoDistribution();
-  }
-  return db_ ? db_->GetClientGeoDistribution() : ClientGeoDistribution{};
 }
 
 AdminHttpResponse AdminController::JsonResponse(

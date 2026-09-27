@@ -53,10 +53,19 @@ int main(int argc, char* argv[]) {
     SignalServer s(ParsePort(port), certs_dir, db_path);
     s.Run();
   } catch (std::exception& e) {
-    LOG_ERROR("Fatal error: {}", e.what());
+    std::cerr << "Fatal error: " << e.what() << std::endl;
+    try {
+      LOG_ERROR("Fatal error: {}", e.what());
+    } catch (...) {
+      // The logger itself may have failed to initialize its required file.
+    }
     return 1;
   } catch (...) {
-    LOG_ERROR("Unknown fatal error occurred");
+    std::cerr << "Unknown fatal error occurred" << std::endl;
+    try {
+      LOG_ERROR("Unknown fatal error occurred");
+    } catch (...) {
+    }
     return 1;
   }
 

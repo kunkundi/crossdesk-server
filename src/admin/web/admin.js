@@ -14,18 +14,6 @@
       'Online time': '累计在线时长',
       'Control time': '累计控制时长',
       'Controlled time': '累计被控时长',
-      'User distribution in China': '中国用户分布',
-      'Total users': '总用户',
-      'China user distribution map': '中国用户分布地图',
-      'CrossDesk uses IP2Location.io': 'CrossDesk 使用 IP2Location.io',
-      'IP geolocation': 'IP 地理位置查询',
-      'web service.': '服务。',
-      'Users in China': '国内用户',
-      'Users outside China': '国外用户',
-      'In China': '国内用户',
-      'Outside China': '国外用户',
-      'Unresolved': '未解析',
-      'User regions': '用户地域范围',
       'Client Presence': '设备在线状态',
       'Search device ID': '搜索设备 ID',
       'Client category': '客户端类型',
@@ -39,7 +27,6 @@
       'Total online': '累计在线',
       'Total control': '累计控制',
       'Total controlled': '累计被控',
-      'Location status': '位置状态',
       'Device ID': '设备 ID',
       'Toggle sort order': '切换排序方向',
       'ASC': '升序',
@@ -60,7 +47,6 @@
       'All': '全部',
       'Client': '客户端',
       'State': '状态',
-      'Location': '位置',
       'Detail': '详情',
       'Previous': '上一页',
       'Next': '下一页',
@@ -78,8 +64,6 @@
       'Current control': '本次控制',
       'Current controlled': '本次被控',
       'Client IP': '客户端 IP',
-      'Region': '地区',
-      'Country': '国家或地区',
       'Last online': '最近在线',
       'Active session': '活动会话',
       'Controlling': '正在控制',
@@ -89,11 +73,6 @@
       'Connection error': '连接失败，请重试',
       'Failed to disconnect session': '断开会话失败',
       'Failed to log out': '退出登录失败，请重试',
-      'Map data could not be loaded': '地图数据加载失败',
-      'Fewest users first': '按人数从少到多',
-      'Most users first': '按人数从多到少',
-      '{scope}, {order}; click to switch to {nextOrder}': '{scope}当前{order}，点击切换为{nextOrder}',
-      '{count} users': '{count} 位用户',
       'controlling {count}': '正在控制 {count} 台设备',
       'controlled by {count}': '有 {count} 个控制方',
       'host {id}': '被控端 {id}',
@@ -149,8 +128,6 @@
       renderSessions(currentSessions);
       updatePager('devices');
       updatePager('sessions');
-      hideGeoTooltip();
-      renderGeoDistribution(state.geo.distribution);
       updateLiveDurations();
     }
 
@@ -173,13 +150,7 @@
         sort: 'status',
         order: 'desc'
       },
-      sessions: {limit: 10, offset: 0, total: 0, search: ''},
-      geo: {
-        list: 'domestic',
-        provinceOrder: 'desc',
-        countryOrder: 'desc',
-        distribution: null
-      }
+      sessions: {limit: 10, offset: 0, total: 0, search: ''}
     };
     const searchTimers = {devices: null, sessions: null};
     const expandedDevices = new Set();
@@ -201,28 +172,6 @@
       activeConnections: 0,
       capturedAt: 0
     };
-    const MAP_NS = 'http://www.w3.org/2000/svg';
-    const CHINA_MAP_URL = '/admin/assets/china-provinces.json';
-    const MAP_WIDTH = 760;
-    const MAP_HEIGHT = 560;
-    const MAP_PADDING = 24;
-    const GEO_COLORS = ['#eef4f7', '#d7edf2', '#a9dce7', '#6fc1d3', '#2f95bd', '#1264a3'];
-    const PROVINCE_LABEL_OFFSETS = {
-      beijing: [0, -9],
-      tianjin: [20, 12],
-      shanghai: [20, 4],
-      chongqing: [-12, 12],
-      hongkong: [22, 16],
-      macau: [-22, 18],
-      hainan: [10, 16]
-    };
-    let geoMapReady = false;
-    let geoMapDataPromise = null;
-    let geoFeatures = [];
-    let geoFeatureByKey = new Map();
-    let geoProvinceCounts = new Map();
-    let geoTotalUsers = 0;
-
     function showDashboard() {
       loginView.classList.add('hidden');
       dashboardView.classList.remove('hidden');
@@ -322,395 +271,6 @@
       return appendText(parent, 'span', value, `badge ${className}`);
     }
 
-    function formatPercent(count, total) {
-      if (!total) return '0%';
-      return `${((Number(count) || 0) * 100 / total).toFixed(1)}%`;
-    }
-
-    function geoColor(count, maxCount) {
-      const value = Number(count) || 0;
-      if (value <= 0 || maxCount <= 0) return GEO_COLORS[0];
-      const index = Math.max(1, Math.ceil((value / maxCount) * (GEO_COLORS.length - 1)));
-      return GEO_COLORS[Math.min(index, GEO_COLORS.length - 1)];
-    }
-
-    function provinceKey(feature) {
-      return feature && feature.properties ? feature.properties.key : '';
-    }
-
-    function provinceName(feature) {
-      if (!feature || !feature.properties) return '';
-      if (language === 'zh') return feature.properties.name;
-      const key = provinceKey(feature);
-      const names = {hongkong: 'Hong Kong', macau: 'Macau'};
-      return names[key] || key.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
-    }
-
-    function provinceTooltipText(feature) {
-      const count = geoProvinceCounts.get(provinceKey(feature)) || 0;
-      return `${provinceName(feature)}: ${count} (${formatPercent(count, geoTotalUsers)})`;
-    }
-
-    function provinceDisplayName(key) {
-      const province = geoFeatureByKey.get(key);
-      return province ? provinceName(province) : key;
-    }
-
-    function currentGeoListMode() {
-      return state.geo.list === 'foreign' ? 'foreign' : 'domestic';
-    }
-
-    function currentGeoListOrder() {
-      return currentGeoListMode() === 'foreign' ? state.geo.countryOrder : state.geo.provinceOrder;
-    }
-
-    function setCurrentGeoListOrder(order) {
-      if (currentGeoListMode() === 'foreign') state.geo.countryOrder = order;
-      else state.geo.provinceOrder = order;
-    }
-
-    function syncGeoListControls() {
-      const mode = currentGeoListMode();
-      document.querySelectorAll('[data-geo-list]').forEach(button => {
-        const active = button.dataset.geoList === mode;
-        button.classList.toggle('active', active);
-        button.setAttribute('aria-selected', active ? 'true' : 'false');
-      });
-
-      const button = document.getElementById('geo-list-order');
-      if (!button) return;
-      const isAsc = currentGeoListOrder() === 'asc';
-      const label = t(mode === 'foreign' ? 'Users outside China' : 'Users in China');
-      button.textContent = '';
-      button.classList.toggle('ascending', isAsc);
-      button.title = t(isAsc ? 'Fewest users first' : 'Most users first');
-      button.setAttribute('aria-label', t('{scope}, {order}; click to switch to {nextOrder}', {
-        scope: label, order: t(isAsc ? 'Ascending' : 'Descending'),
-        nextOrder: t(isAsc ? 'Descending' : 'Ascending')
-      }));
-    }
-
-    function renderGeoUserList(data) {
-      const list = document.getElementById('geo-user-list') || document.getElementById('geo-top-provinces');
-      if (!list) return;
-      syncGeoListControls();
-      list.textContent = '';
-      const isForeign = currentGeoListMode() === 'foreign';
-      const direction = currentGeoListOrder() === 'asc' ? 1 : -1;
-      let geoItems = (Array.isArray(isForeign ? data.countries : data.provinces)
-          ? (isForeign ? data.countries : data.provinces) : [])
-        .map(item => ({
-          key: typeof (isForeign ? item.country : item.province) === 'string'
-            ? (isForeign ? item.country : item.province).trim() : '',
-          count: Number(item.count) || 0
-        }))
-        .filter(item => item.key && item.count > 0)
-        .sort((lhs, rhs) => {
-          if (lhs.count !== rhs.count) return (lhs.count - rhs.count) * direction;
-          const lhsName = isForeign ? lhs.key : provinceDisplayName(lhs.key);
-          const rhsName = isForeign ? rhs.key : provinceDisplayName(rhs.key);
-          const nameCompare = lhsName.localeCompare(rhsName, locale());
-          return currentGeoListOrder() === 'asc' ? nameCompare : -nameCompare;
-        });
-      if (isForeign && !geoItems.length) {
-        const foreignCount = Number(data.foreign_count) || 0;
-        if (foreignCount > 0) geoItems = [{key: t('Users outside China'), count: foreignCount}];
-      }
-      if (!geoItems.length) {
-        const item = document.createElement('li');
-        item.textContent = '-';
-        list.appendChild(item);
-        return;
-      }
-      geoItems.forEach(item => {
-        const li = document.createElement('li');
-        const label = isForeign ? item.key : provinceDisplayName(item.key);
-        li.textContent = `${label}: ${item.count} (${formatPercent(item.count, geoTotalUsers)})`;
-        list.appendChild(li);
-      });
-    }
-
-    function moveGeoTooltip(event) {
-      const wrap = document.querySelector('.china-map-wrap');
-      const tooltip = document.getElementById('geo-tooltip');
-      if (!wrap || !tooltip) return;
-      const rect = wrap.getBoundingClientRect();
-      if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') {
-        tooltip.style.left = '10px';
-        tooltip.style.top = '10px';
-        return;
-      }
-      const left = Math.max(0, Math.min(event.clientX - rect.left, rect.width - 220));
-      const top = Math.max(0, Math.min(event.clientY - rect.top, rect.height - 54));
-      tooltip.style.left = `${left}px`;
-      tooltip.style.top = `${top}px`;
-    }
-
-    function showGeoTooltip(event, feature) {
-      const tooltip = document.getElementById('geo-tooltip');
-      const count = geoProvinceCounts.get(provinceKey(feature)) || 0;
-      tooltip.replaceChildren();
-      appendText(tooltip, 'strong', provinceName(feature));
-      appendText(tooltip, 'span', t('{count} users', {count}));
-      appendText(tooltip, 'small', formatPercent(count, geoTotalUsers));
-      tooltip.classList.add('visible');
-      const label = document.getElementById(`geo-label-${provinceKey(feature)}`);
-      if (label) label.classList.add('visible');
-      moveGeoTooltip(event);
-    }
-
-    function hideGeoTooltip() {
-      document.getElementById('geo-tooltip').classList.remove('visible');
-      document.querySelectorAll('.china-map .map-label.visible').forEach(label => {
-        label.classList.remove('visible');
-      });
-    }
-
-    function walkGeoCoordinates(value, visitor) {
-      if (!Array.isArray(value)) return;
-      if (typeof value[0] === 'number' && typeof value[1] === 'number') {
-        visitor(value);
-        return;
-      }
-      value.forEach(item => walkGeoCoordinates(item, visitor));
-    }
-
-    function mercatorPoint(coord) {
-      const lon = Number(coord[0]);
-      const lat = Math.max(-85, Math.min(85, Number(coord[1])));
-      const x = lon * Math.PI / 180;
-      const y = Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
-      return [x, y];
-    }
-
-    function buildMapProjection(features) {
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      features.forEach(feature => {
-        walkGeoCoordinates(feature.geometry && feature.geometry.coordinates, coord => {
-          const point = mercatorPoint(coord);
-          minX = Math.min(minX, point[0]);
-          minY = Math.min(minY, point[1]);
-          maxX = Math.max(maxX, point[0]);
-          maxY = Math.max(maxY, point[1]);
-        });
-      });
-      const width = Math.max(maxX - minX, 0.0001);
-      const height = Math.max(maxY - minY, 0.0001);
-      const scale = Math.min(
-        (MAP_WIDTH - MAP_PADDING * 2) / width,
-        (MAP_HEIGHT - MAP_PADDING * 2) / height);
-      const offsetX = (MAP_WIDTH - width * scale) / 2;
-      const offsetY = (MAP_HEIGHT - height * scale) / 2;
-      return coord => {
-        const point = mercatorPoint(coord);
-        return [
-          offsetX + (point[0] - minX) * scale,
-          offsetY + (maxY - point[1]) * scale
-        ];
-      };
-    }
-
-    function formatMapPoint(point) {
-      return `${point[0].toFixed(1)} ${point[1].toFixed(1)}`;
-    }
-
-    function ringPath(ring, project) {
-      if (!Array.isArray(ring) || !ring.length) return '';
-      return ring.map((coord, index) => {
-        const command = index === 0 ? 'M' : 'L';
-        return `${command}${formatMapPoint(project(coord))}`;
-      }).join(' ') + ' Z';
-    }
-
-    function geometryPath(geometry, project) {
-      if (!geometry || !Array.isArray(geometry.coordinates)) return '';
-      const paths = [];
-      if (geometry.type === 'Polygon') {
-        geometry.coordinates.forEach(ring => paths.push(ringPath(ring, project)));
-      } else if (geometry.type === 'MultiPolygon') {
-        geometry.coordinates.forEach(polygon => {
-          polygon.forEach(ring => paths.push(ringPath(ring, project)));
-        });
-      }
-      return paths.filter(Boolean).join(' ');
-    }
-
-    function geometryCenter(geometry) {
-      let minLon = Infinity;
-      let minLat = Infinity;
-      let maxLon = -Infinity;
-      let maxLat = -Infinity;
-      walkGeoCoordinates(geometry && geometry.coordinates, coord => {
-        const lon = Number(coord[0]);
-        const lat = Number(coord[1]);
-        if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
-        minLon = Math.min(minLon, lon);
-        minLat = Math.min(minLat, lat);
-        maxLon = Math.max(maxLon, lon);
-        maxLat = Math.max(maxLat, lat);
-      });
-      if (!Number.isFinite(minLon) || !Number.isFinite(minLat)) return null;
-      return [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
-    }
-
-    function featureCenter(feature) {
-      if (feature && feature.properties && Array.isArray(feature.properties.cp)) {
-        return feature.properties.cp;
-      }
-      return geometryCenter(feature && feature.geometry);
-    }
-
-    async function loadChinaMapData() {
-      if (geoFeatures.length) return true;
-      if (!geoMapDataPromise) {
-        geoMapDataPromise = fetch(CHINA_MAP_URL, {credentials: 'same-origin'})
-          .then(response => {
-            if (!response.ok) throw new Error('map data unavailable');
-            return response.json();
-          })
-          .then(data => {
-            geoFeatures = (Array.isArray(data.features) ? data.features : [])
-              .filter(feature => provinceKey(feature) &&
-                feature.geometry && Array.isArray(feature.geometry.coordinates));
-            geoFeatureByKey = new Map(
-              geoFeatures.map(feature => [provinceKey(feature), feature]));
-            return geoFeatures.length > 0;
-          })
-          .catch(() => {
-            geoMapDataPromise = null;
-            return false;
-          });
-      }
-      return geoMapDataPromise;
-    }
-
-    function renderMapStatus(message) {
-      const svg = document.getElementById('china-map');
-      svg.setAttribute('viewBox', `0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`);
-      const text = document.createElementNS(MAP_NS, 'text');
-      text.classList.add('map-status');
-      text.setAttribute('x', MAP_WIDTH / 2);
-      text.setAttribute('y', MAP_HEIGHT / 2);
-      text.textContent = message;
-      svg.replaceChildren(text);
-    }
-
-    async function ensureChinaMap() {
-      if (geoMapReady) return true;
-      if (!await loadChinaMapData()) {
-        renderMapStatus(t('Map data could not be loaded'));
-        return false;
-      }
-      const svg = document.getElementById('china-map');
-      svg.setAttribute('viewBox', `0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`);
-      const project = buildMapProjection(geoFeatures);
-      const provinceLayer = document.createElementNS(MAP_NS, 'g');
-      provinceLayer.classList.add('province-layer');
-      const labelLayer = document.createElementNS(MAP_NS, 'g');
-      labelLayer.classList.add('label-layer');
-
-      geoFeatures.forEach(feature => {
-        const key = provinceKey(feature);
-        const path = document.createElementNS(MAP_NS, 'path');
-        path.id = `geo-province-${key}`;
-        path.classList.add('province');
-        path.setAttribute('d', geometryPath(feature.geometry, project));
-        path.setAttribute('fill', GEO_COLORS[0]);
-        path.setAttribute('fill-rule', 'evenodd');
-        path.setAttribute('tabindex', '0');
-        path.setAttribute('role', 'img');
-        path.setAttribute('aria-label', provinceTooltipText(feature));
-        path.addEventListener('mouseenter', event => showGeoTooltip(event, feature));
-        path.addEventListener('mousemove', moveGeoTooltip);
-        path.addEventListener('mouseleave', hideGeoTooltip);
-        path.addEventListener('focus', event => showGeoTooltip(event, feature));
-        path.addEventListener('blur', hideGeoTooltip);
-        provinceLayer.appendChild(path);
-
-        const label = document.createElementNS(MAP_NS, 'text');
-        const centerCoord = featureCenter(feature);
-        if (!centerCoord) return;
-        const center = project(centerCoord);
-        const offset = PROVINCE_LABEL_OFFSETS[key] || [0, 0];
-        label.id = `geo-label-${key}`;
-        label.classList.add('map-label');
-        if (['beijing', 'tianjin', 'shanghai', 'hongkong', 'macau'].includes(key)) {
-          label.classList.add('small');
-        }
-        label.setAttribute('x', (center[0] + offset[0]).toFixed(1));
-        label.setAttribute('y', (center[1] + offset[1]).toFixed(1));
-        label.textContent = provinceName(feature);
-        labelLayer.appendChild(label);
-      });
-      svg.replaceChildren(provinceLayer, labelLayer);
-      geoMapReady = true;
-      return true;
-    }
-
-    function applyGeoMapColors() {
-      let maxProvinceCount = 0;
-      geoProvinceCounts.forEach(count => {
-        if (count > maxProvinceCount) maxProvinceCount = count;
-      });
-      geoFeatures.forEach(feature => {
-        const key = provinceKey(feature);
-        const count = geoProvinceCounts.get(key) || 0;
-        const path = document.getElementById(`geo-province-${key}`);
-        if (!path) return;
-        const label = document.getElementById(`geo-label-${key}`);
-        if (label) label.textContent = provinceName(feature);
-        path.setAttribute('fill', geoColor(count, maxProvinceCount));
-        path.setAttribute('aria-label', provinceTooltipText(feature));
-      });
-    }
-
-    function renderGeoDistribution(distribution) {
-      const data = distribution || {
-        total_count: 0,
-        domestic_count: 0,
-        foreign_count: 0,
-        unknown_count: 0,
-        provinces: [],
-        countries: []
-      };
-      state.geo.distribution = data;
-      geoTotalUsers = Number(data.total_count) || 0;
-      geoProvinceCounts = new Map();
-      (Array.isArray(data.provinces) ? data.provinces : []).forEach(item => {
-        const count = Number(item.count) || 0;
-        geoProvinceCounts.set(item.province, count);
-      });
-
-      const foreignCount = Number(data.foreign_count) || 0;
-      const unknownCount = Number(data.unknown_count) || 0;
-      const rawDomesticCount = Number(data.domestic_count);
-      const domesticCount = data.domestic_count === undefined
-        ? Math.max(0, geoTotalUsers - foreignCount - unknownCount)
-        : (Number.isFinite(rawDomesticCount) ? rawDomesticCount : 0);
-      document.getElementById('geo-total').textContent = geoTotalUsers;
-      document.getElementById('geo-domestic-count').textContent = domesticCount;
-      document.getElementById('geo-domestic-percent').textContent = formatPercent(domesticCount, geoTotalUsers);
-      document.getElementById('geo-foreign-count').textContent = foreignCount;
-      document.getElementById('geo-foreign-percent').textContent = formatPercent(foreignCount, geoTotalUsers);
-      document.getElementById('geo-unknown-count').textContent = unknownCount;
-      document.getElementById('geo-unknown-percent').textContent = formatPercent(unknownCount, geoTotalUsers);
-
-      renderGeoUserList(data);
-
-      if (!geoMapReady) {
-        ensureChinaMap().then(ok => {
-          if (ok) {
-            renderGeoDistribution(state.geo.distribution);
-          }
-        });
-        return;
-      }
-      applyGeoMapColors();
-    }
-
     function setDurationDataset(cell, kind, device, base, capturedAt, running, rate) {
       const isRunning = typeof running === 'boolean' ? running : device.online;
       cell.dataset.duration = kind;
@@ -734,12 +294,6 @@
 
     function peerList(value) {
       return Array.isArray(value) && value.length ? value.join(', ') : '-';
-    }
-
-    function locationLabel(device) {
-      if (device.geo_location) return device.geo_location;
-      if (device.client_ip) return t('Unknown');
-      return '-';
     }
 
     function activeDuration(value, activeCount) {
@@ -772,7 +326,7 @@
       const body = document.getElementById('devices');
       const fragment = document.createDocumentFragment();
       if (!devices.length) {
-        appendEmptyRow(fragment, 5);
+        appendEmptyRow(fragment, 4);
         body.replaceChildren(fragment);
         return;
       }
@@ -803,11 +357,6 @@
         if (activeSessions > 0) appendBadge(statusCell, t('Remote'), 'active');
         row.appendChild(statusCell);
 
-        const locationCell = document.createElement('td');
-        labelCell(locationCell, 'Location');
-        appendText(locationCell, 'div', locationLabel(device));
-        row.appendChild(locationCell);
-
         const currentCell = appendText(row, 'td', device.online ? formatDuration(device.online_duration_seconds) : '-');
         labelCell(currentCell, 'Current online');
         setDurationDataset(currentCell, 'current', device, device.online_duration_seconds, capturedAt);
@@ -830,7 +379,7 @@
           const detailsRow = document.createElement('tr');
           detailsRow.className = 'details-row';
           const detailsCell = document.createElement('td');
-          detailsCell.colSpan = 5;
+          detailsCell.colSpan = 4;
           const details = document.createElement('div');
           details.className = 'detail-grid';
           const currentOnline = appendDetailItem(
@@ -865,10 +414,7 @@
           setDurationDataset(totalControlled, 'total-controlled', device,
             device.total_controlled_seconds, capturedAt,
             activeControlledCount > 0, activeControlledCount);
-          appendDetailItem(details, 'Location', locationLabel(device));
           appendDetailItem(details, 'Client IP', device.client_ip || '-');
-          appendDetailItem(details, 'Region', device.geo_region || '-');
-          appendDetailItem(details, 'Country', device.geo_country || '-');
           appendDetailItem(details, 'Online since', formatTime(device.online_since));
           appendDetailItem(details, 'Last online', formatTime(device.online ? 0 : device.updated_at));
           appendDetailItem(details, 'Active session', sessionSummary(device));
@@ -1122,7 +668,6 @@
       }
       applyDeviceCounts(data.device_counts);
       applyDeviceKindCounts(data.device_kind_counts);
-      renderGeoDistribution(data.geo_distribution);
       renderDevices(data.devices || [], Math.floor(Date.now() / 1000));
       renderSessions(data.sessions || []);
       updatePager('devices');
@@ -1181,34 +726,6 @@
       state.devices.offset = 0;
       refreshLists();
     });
-    document.querySelectorAll('[data-geo-list]').forEach(button => {
-      button.addEventListener('click', () => {
-        state.geo.list = button.dataset.geoList === 'foreign' ? 'foreign' : 'domestic';
-        renderGeoUserList(state.geo.distribution || {
-          total_count: 0,
-          domestic_count: 0,
-          foreign_count: 0,
-          unknown_count: 0,
-          provinces: [],
-          countries: []
-        });
-        const list = document.getElementById('geo-user-list');
-        if (list) list.scrollTop = 0;
-      });
-    });
-    document.getElementById('geo-list-order').addEventListener('click', () => {
-      setCurrentGeoListOrder(currentGeoListOrder() === 'asc' ? 'desc' : 'asc');
-      renderGeoUserList(state.geo.distribution || {
-        total_count: 0,
-        domestic_count: 0,
-        foreign_count: 0,
-        unknown_count: 0,
-        provinces: [],
-        countries: []
-      });
-      const list = document.getElementById('geo-user-list');
-      if (list) list.scrollTop = 0;
-    });
     document.getElementById('session-search').addEventListener('input', (event) => {
       state.sessions.search = event.target.value.trim();
       state.sessions.offset = 0;
@@ -1255,7 +772,6 @@
     updateRefreshTime();
     applyDeviceCounts();
     applyDeviceKindCounts();
-    renderGeoDistribution();
     refreshStats().then((ok) => {
       if (ok) showDashboard();
       else showLogin('');

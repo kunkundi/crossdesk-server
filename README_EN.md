@@ -18,7 +18,7 @@ Device registration, presence, remote-session signaling, and temporary TURN cred
 | CrossDesk Server | WSS signaling, device identities and password verification, presence, session coordination, and temporary TURN credentials |
 | Coturn | Relays media and data when clients cannot connect directly; runs in a separate container |
 | SQLite | Stores device records, online/control durations, and session information |
-| Web admin dashboard | Metrics, client/session lists, search, filters, sorting, session disconnection, and optional IP geolocation |
+| Web admin dashboard | Metrics, client/session lists, search, filters, sorting, session disconnection |
 
 Clients try P2P connections and use TURN when needed. The current [Compose deployment](compose.yaml) and [CI](.github/workflows/build.yml) target **Linux amd64 / arm64**. Release images use Ubuntu 22.04 as their runtime environment.
 
@@ -146,25 +146,17 @@ Set both `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, then run `sudo docker 
 | --- | --- |
 | Top metrics | View online devices, Web clients, active connections, and cumulative online/control durations |
 | Client Presence | Defaults to online PCs; switch PC/Web, filter Online/Controlled/Offline/All, search IDs, sort, and paginate; Controlled counts and lists only devices currently being controlled, once per device |
-| Details | Expand platform/version, current and cumulative durations, connection IP, location, and remote peers |
+| Details | Expand platform/version, current and cumulative durations, connection IP and remote peers |
 | Active Sessions → Disconnect | Confirm to disconnect the selected session; devices stay online |
 | Refresh lists / Logout | Refresh manually / sign out |
 
 While visible, the page refreshes data every 5 seconds and updates displayed durations every second. Admin sessions are held in memory, expire after 8 hours by default, and require a new login after a server restart. Dashboard login cookies require HTTPS.
 
-**Optional geolocation:** IP lookup is disabled by default. Enable `CROSSDESK_GEOIP_LOOKUP=1` and set `CROSSDESK_GEOIP_KEY` in `.env` to send public connection IPs to IP2Location for country and state/province lookup. The map counts current online clients, including Web clients and excluding `C-*` controller identities; unresolved locations are counted separately. Disabled lookups or unavailable results leave the map without resolved distribution data.
+Connection IPs are held in memory while devices are online and cleared on logout. Connection logs can still contain IPs. The server no longer queries external IP geolocation services or displays regional distributions.
 
-Connection IPs and locations are held in memory as presence state, not written to device profile records. The dashboard retains its IP2Location attribution link. The China map asset, [china-provinces.json](src/admin/web/china-provinces.json), comes from `china-map-geojson@1.0.4` under the ISC license.
+Frontend source lives in [src/admin/web](src/admin/web), installed at `/crossdesk-server/admin` in the container. A custom `CROSSDESK_ADMIN_WEB_DIR` must also be explicitly passed through Compose's `environment` and its directory mounted. Adding it to `.env` alone does not pass it into the container. Restart the service after frontend changes to refresh its asset cache.
 
-<details>
-<summary>Advanced geolocation and frontend configuration</summary>
-
-- Configure the endpoint with `CROSSDESK_GEOIP_SCHEME`, `CROSSDESK_GEOIP_HOST`, `CROSSDESK_GEOIP_PORT`, and `CROSSDESK_GEOIP_PATH`. Defaults are HTTPS, `api.ip2location.io`, `443`, and `/?key={key}&ip={ip}`.
-- `CROSSDESK_GEOIP_TIMEOUT_MS` defaults to `1200`. Failed lookups back off from `60000` to `1800000` milliseconds, controlled by `CROSSDESK_GEOIP_FAILURE_TTL_MS` and `CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS`.
-- Successful results are cached. Failed lookups are deduplicated by IP and retried with backoff; retries stop once no online client uses the IP.
-- Frontend source lives in [src/admin/web](src/admin/web), installed at `/crossdesk-server/admin` in the container. A custom `CROSSDESK_ADMIN_WEB_DIR` must also be explicitly passed through Compose's `environment` and its directory mounted. Adding it to `.env` alone does not pass it into the container. Restart the service after frontend changes to refresh its asset cache.
-
-</details>
+Upgrading requires deploying the new server binary/image and matching admin assets. Remove obsolete `CROSSDESK_GEOIP_*` variables and the unused API key from your deployment environment. Existing database files remain compatible; legacy location columns, if present, are no longer read or written.
 
 <a id="stats"></a>
 
@@ -204,7 +196,9 @@ Run from the configuration directory:
 
 ```bash
 sudo docker compose ps
-sudo docker compose logs --tail 100 crossdesk-server coturn
+# Default log directory; substitute your CROSSDESK_LOG_DIR when customized.
+sudo sh -c 'tail -n 100 /var/log/crossdesk/crossdesk-server_$(date +%F).log'
+sudo sh -c 'tail -n 100 /var/log/crossdesk/coturn/turn_$(date +%F).log'
 ```
 
 Back up before upgrading. Change the fixed image tag in `.env` and use deployment files matching that release:
@@ -215,7 +209,7 @@ sudo docker compose pull
 sudo docker compose up -d --no-build
 ```
 
-`docker compose restart` restarts existing containers without applying changed environment variables or images. Application logs are written to `${CROSSDESK_LOG_DIR}` and stdout; view Coturn logs with `docker compose logs coturn`. Each container's stdout/stderr rotates across three 50 MB files. Application log files rotate separately; restarts create new log groups that need periodic cleanup or archival.
+`docker compose restart` does not apply changed environment variables or images. Signaling logs append to `${CROSSDESK_LOG_DIR}/crossdesk-server_YYYY-MM-DD.log`; Coturn uses `coturn/turn_YYYY-MM-DD.log` in that directory. Filenames follow the process local date (UTC in the default containers); select an existing date file when viewing logs. The new Compose configuration disables Docker log copies so size-only rotation cannot bypass retention. `docker compose logs` no longer serves these logs. To diagnose startup failures, stop the original signaling container to avoid a port conflict, then use `sudo docker compose run --rm --service-ports crossdesk-server` to see attached startup output.
 
 Connection diagnostics help investigate a running process that cannot reliably accept clients:
 
@@ -227,6 +221,24 @@ Connection diagnostics help investigate a running process that cannot reliably a
 | `Signal event loop delayed` | Reports maintenance timer delays of at least 5 seconds |
 
 Warnings for admission pauses, accept/resource errors, peer address failures, pre-open failures, and event loop delays are limited to one per category per 30 seconds. Recovery records are paired only with reported pauses. `*_total` counters accumulate since process startup even when warnings are suppressed; `*_limit_checks_total` counts checks hitting a limit, not rejected clients. `unopened` includes WebSocket handshakes, ordinary HTTPS requests, and their cleanup. `fd_open` is measured when logging; `fd_estimated` is the admission estimate, with its sample age in `fd_sample_age_ms`. A value of `-1` means unavailable or unlimited. `expired_handles` and `oldest_unopened_ms` help identify retained or stalled connections.
+
+### Retention and automatic cleanup
+
+| Data | Default policy |
+| --- | --- |
+| Signaling and Coturn operational/connection logs | Delete closed files **185 days** after their last write; daily files are not overwritten by a size cap |
+| Device presence, version/platform, accumulated online/control durations | Delete after the device has been offline for **180 days**; skip online identities, identities with an online controller clone, and active/recoverable session participants |
+| Historical server-side device associations | Remove with expired devices; other stale associations without current owner presence expire after **180 days**; legacy rows without timestamps start aging at first upgrade |
+| Device IDs, password salts and hashes | Retained for authentication; this cleanup is not an account/data-deletion workflow |
+| Current IPs, subscriptions, admin sessions | Existing logout/disconnect/session-expiry rules continue to apply; connection logs may contain IPs |
+
+Configure `.env` with `CROSSDESK_LOG_RETENTION_DAYS=185`, `CROSSDESK_OFFLINE_RETENTION_DAYS=180` and `CROSSDESK_RETENTION_INTERVAL_SECONDS=3600`. Days must be 1–3650 and the interval 60–86400 seconds. Empty values use defaults; invalid values prevent startup rather than enabling immediate deletion or indefinite retention. Check applicable minimum retention obligations before shortening mixed operational/security logs. These defaults do not certify legal compliance.
+
+The first pass runs about five seconds after the server starts, then hourly by default. Each transaction selects at most 200 expired devices and 200 other stale associations. A backlog triggers another batch about five seconds later; failures roll back and retry. Completion depends on load and uptime. Whole-file expiry can retain the earliest entries for roughly one additional day plus the check interval. Cleanup pauses while the service is stopped and resumes after restart.
+
+Only recognized files in the configured log directory are eligible, including legacy `crossdesk-server-YYYYMMDD-HHMMSS[.N].log` files and `coturn/turn_YYYY-MM-DD.log`. Cleanup does not recurse into unrelated directories, follow symlinks or delete the current signaling log. Use a dedicated directory for each deployment and monitor free disk space and retention completion/failure logs. Failure to initialize file logging prevents server startup. Historical duration totals can decrease after cleanup; returning devices start new statistics while keeping their login ID and password.
+
+SQLite uses `secure_delete` and attempts a nonblocking WAL checkpoint after deletion. This does not securely erase snapshots, backups or underlying storage. Operators must separately expire backups, external log stores and old container log copies; the server never scans or deletes them. Recreate containers when upgrading to apply the new logging configuration and handle old copies according to applicable retention obligations. Update the public privacy policy only once the production deployment actually applies these rules.
 
 ### Backups and migration
 
@@ -252,7 +264,6 @@ For migration, restore the matching files on the destination host, check mount p
 | Server connected, remote device offline | Both clients use the same service, the host is running, and its current ID was copied |
 | P2P and relay both fail | Client relay setting/version, matching TURN shared secrets, and relay/media firewall ports |
 | Dashboard disabled / login fails | Both admin variables reached the container, the container was recreated, and the browser uses HTTPS |
-| No map distribution | Geolocation enabled, API key, and outbound access; lookup is disabled by default |
 
 <a id="build"></a>
 

@@ -15,6 +15,9 @@ services:
     environment:
       EXTERNAL_IP: "${EXTERNAL_IP:?Set EXTERNAL_IP in .env}"
       CROSSDESK_MAX_CONNECTIONS: "${CROSSDESK_MAX_CONNECTIONS:-2048}"
+      CROSSDESK_LOG_RETENTION_DAYS: "${CROSSDESK_LOG_RETENTION_DAYS:-185}"
+      CROSSDESK_OFFLINE_RETENTION_DAYS: "${CROSSDESK_OFFLINE_RETENTION_DAYS:-180}"
+      CROSSDESK_RETENTION_INTERVAL_SECONDS: "${CROSSDESK_RETENTION_INTERVAL_SECONDS:-3600}"
       CROSSDESK_SERVER_PORT: "${CROSSDESK_SERVER_PORT:-9099}"
       COTURN_PUBLIC_HOST: "${COTURN_PUBLIC_HOST:-}"
       COTURN_PORT: "${COTURN_PORT:-3478}"
@@ -23,16 +26,6 @@ services:
       CROSSDESK_ICE_SERVERS: "${CROSSDESK_ICE_SERVERS:-}"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
-      CROSSDESK_GEOIP_LOOKUP: "${CROSSDESK_GEOIP_LOOKUP:-0}"
-      CROSSDESK_GEOIP_KEY: "${CROSSDESK_GEOIP_KEY:-}"
-      CROSSDESK_GEOIP_SCHEME: "${CROSSDESK_GEOIP_SCHEME:-https}"
-      CROSSDESK_GEOIP_HOST: "${CROSSDESK_GEOIP_HOST:-api.ip2location.io}"
-      CROSSDESK_GEOIP_PORT: "${CROSSDESK_GEOIP_PORT:-443}"
-      # An empty value makes CrossDesk use its built-in /?key={key}&ip={ip} template.
-      CROSSDESK_GEOIP_PATH: "${CROSSDESK_GEOIP_PATH:-}"
-      CROSSDESK_GEOIP_TIMEOUT_MS: "${CROSSDESK_GEOIP_TIMEOUT_MS:-1200}"
-      CROSSDESK_GEOIP_FAILURE_TTL_MS: "${CROSSDESK_GEOIP_FAILURE_TTL_MS:-60000}"
-      CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS: "${CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS:-1800000}"
     volumes:
       - "${CROSSDESK_DATA_DIR:-/var/lib/crossdesk}:/var/lib/crossdesk"
       - "${CROSSDESK_LOG_DIR:-/var/log/crossdesk}:/var/log/crossdesk"
@@ -45,10 +38,9 @@ services:
       retries: 12
       start_period: 10s
     logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "3"
+      # Application files have time-based retention. Avoid an unexpired copy
+      # in Docker's json-file driver, which only supports size/count rotation.
+      driver: none
 
   coturn:
     image: "${COTURN_IMAGE:-coturn/coturn:4.17.2-r0-debian@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e}"
@@ -66,6 +58,7 @@ services:
         condition: service_healthy
     volumes:
       - "${CROSSDESK_DATA_DIR:-/var/lib/crossdesk}/certs:/certs:ro"
+      - "${CROSSDESK_LOG_DIR:-/var/log/crossdesk}/coturn:/var/log/coturn"
     command:
       - -n
       - "--listening-port=${COTURN_PORT:-3478}"
@@ -82,7 +75,8 @@ services:
       - "--stateless-nonce-secret=${COTURN_STATELESS_NONCE_SECRET:?Set COTURN_STATELESS_NONCE_SECRET in .env}"
       - --cert=/certs/api.crossdesk.cn_bundle.crt
       - --pkey=/certs/api.crossdesk.cn.key
-      - --log-file=stdout
+      - --log-file=/var/log/coturn/turn.log
+      - --no-stdout-log
       - "--log-min-level=${COTURN_LOG_LEVEL:-warning}"
       - --new-log-timestamp
       - --cli=false
@@ -96,7 +90,4 @@ services:
         soft: 524288
         hard: 524288
     logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "3"
+      driver: none

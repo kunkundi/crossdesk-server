@@ -3,12 +3,17 @@
 #include <atomic>
 #include <spdlog/async.h>
 #include <filesystem>
+#include <regex>
+#include <stdexcept>
+
+#include "spdlog/sinks/daily_file_sink.h"
 
 namespace {
 
 std::string g_log_dir = "logs";
 std::once_flag g_logger_once_flag;
 std::shared_ptr<spdlog::logger> g_logger;
+std::shared_ptr<spdlog::sinks::daily_file_sink_mt> g_file_sink;
 std::atomic<bool> g_logger_created{false};
 
 }  // namespace
@@ -30,35 +35,19 @@ std::shared_ptr<spdlog::logger> get_logger() {
     std::error_code ec;
     std::filesystem::create_directories(g_log_dir, ec);
 
-    auto now = std::chrono::system_clock::now() + std::chrono::hours(8);
-    auto now_time = std::chrono::system_clock::to_time_t(now);
-
-    std::tm tm_info;
-#ifdef _WIN32
-    gmtime_s(&tm_info, &now_time);
-#else
-    gmtime_r(&now_time, &tm_info);
-#endif
-
-    std::stringstream ss;
-    ss << LOGGER_NAME;
-    ss << std::put_time(&tm_info, "-%Y%m%d-%H%M%S.log");
-
-    std::string filename = g_log_dir + "/" + ss.str();
+    std::string filename = g_log_dir + "/" + LOGGER_NAME + ".log";
 
     std::vector<spdlog::sink_ptr> sinks;
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
 
-    try {
-      if (ec) {
-        throw spdlog::spdlog_ex("failed to create log directory: " +
-                                ec.message());
-      }
-      sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-          filename, 5 * 1024 * 1024, 3));
-    } catch (const std::exception& e) {
-      std::cerr << "Warning: file logging disabled: " << e.what() << std::endl;
-    }
+    if (ec)
+      throw spdlog::spdlog_ex("failed to create log directory: " + ec.message());
+    // Append across restarts, rotate daily, and let age-based maintenance
+    // remove closed files. A size/file-count cap would shorten retention.
+    // File initialization must succeed: Compose does not persist stdout copies.
+    g_file_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
+        filename, 0, 0, false, 0);
+    sinks.push_back(g_file_sink);
 
     // Slow disks/stdout must not stall the network loop. The queue is bounded;
     // diagnostic overload drops oldest records instead of blocking signaling.
@@ -72,4 +61,37 @@ std::shared_ptr<spdlog::logger> get_logger() {
   });
 
   return g_logger;
+}
+
+size_t CleanupExpiredLogs(int retention_days) {
+  if (retention_days < 1 || retention_days > 3650)
+    throw std::invalid_argument("Invalid log retention policy");
+  get_logger();  // Publish the active file before considering old files.
+  if (!g_file_sink)
+    throw std::runtime_error("File logging is unavailable; retention cleanup skipped");
+  namespace fs = std::filesystem;
+  const auto cutoff = fs::file_time_type::clock::now() -
+                      std::chrono::hours(int64_t{retention_days} * 24);
+  const auto active = fs::path(g_file_sink->filename()).lexically_normal();
+  static const std::regex server_name(
+      R"(^crossdesk-server(_[0-9]{4}-[0-9]{2}-[0-9]{2}|-[0-9]{8}-[0-9]{6})(\.[0-9]+)?\.log$)");
+  static const std::regex coturn_name(R"(^turn_[0-9]{4}-[0-9]{2}-[0-9]{2}\.log$)");
+  size_t removed = 0;
+  auto clean = [&](const fs::path& directory, const std::regex& pattern) {
+    std::error_code ec;
+    auto status = fs::symlink_status(directory, ec);
+    if (ec == std::errc::no_such_file_or_directory) return;
+    if (ec) throw fs::filesystem_error("Read log directory", directory, ec);
+    if (!fs::is_directory(status) || fs::is_symlink(status)) return;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+      // No recursion or symlink traversal; unrelated logs/backups are untouched.
+      if (!std::regex_match(entry.path().filename().string(), pattern) ||
+          entry.path().lexically_normal() == active ||
+          !fs::is_regular_file(entry.symlink_status())) continue;
+      if (entry.last_write_time() < cutoff && fs::remove(entry.path())) ++removed;
+    }
+  };
+  clean(fs::path(g_log_dir), server_name);
+  clean(fs::path(g_log_dir) / "coturn", coturn_name);
+  return removed;
 }

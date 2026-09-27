@@ -9,17 +9,13 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <queue>
 #include <set>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <vector>
 #include <websocketpp/config/asio.hpp>
 #include <websocketpp/http/constants.hpp>
@@ -29,9 +25,9 @@
 #include "admin_controller.h"
 #include "bounded_executor.h"
 #include "device_db_manager.h"
-#include "geo_location_resolver.h"
 #include "presence_manager.h"
 #include "resource_monitor.h"
+#include "retention_policy.h"
 #include "signal_negotiation.h"
 
 using nlohmann::json;
@@ -94,30 +90,12 @@ class SignalServer {
   void WorkerFailed(std::exception_ptr error);
   void RequestBackpressureClose(websocketpp::connection_hdl hdl);
 
-  struct GeoIpLookupJob {
-    std::string client_ip;
-    std::chrono::steady_clock::time_point run_at =
-        std::chrono::steady_clock::now();
-  };
-
-  struct GeoIpLookupJobLater {
-    bool operator()(const GeoIpLookupJob& lhs,
-                    const GeoIpLookupJob& rhs) const {
-      return lhs.run_at > rhs.run_at;
-    }
-  };
-
   void ScheduleRuntimeHeartbeat();
   void ScheduleRecoveredSessionCleanup();
+  void ScheduleRetentionCleanup();
   std::string GetClientIp(websocketpp::connection_hdl hdl, uint64_t id);
-  void EnqueueClientNetworkInfo(const std::string& client_ip,
-                                const std::string& device_id);
-  void EnqueueGeoIpLookup(const std::string& client_ip,
-                          std::chrono::milliseconds delay);
-  void ProcessGeoIpLookup(const GeoIpLookupJob& job);
-  void StartClientNetworkInfoWorker();
-  void StopClientNetworkInfoWorker();
-  void ProcessClientNetworkInfoJobs();
+  void SetClientNetworkInfo(const std::string& client_ip,
+                            const std::string& device_id);
 
   server server_;
   uint16_t port_;
@@ -153,6 +131,9 @@ class SignalServer {
   std::atomic<bool> stopping_{false};
   bool accept_pending_ = false, accept_retry_pending_ = false;
   bool runtime_job_pending_ = false, tls_job_pending_ = false;
+  const RetentionPolicy retention_policy_ = RetentionPolicy::FromEnvironment();
+  bool metadata_cleanup_pending_ = false, log_cleanup_pending_ = false;
+  Clock::time_point next_metadata_cleanup_{}, next_log_cleanup_{};
   context_ptr
       tls_context_;  // Published atomically; never mutate a live context.
   std::string tls_generation_;
@@ -172,23 +153,11 @@ class SignalServer {
   std::shared_ptr<TransmissionManager> transmission_manager_;
   std::unique_ptr<DeviceDBManager> device_db_manager_;
   std::unique_ptr<SignalNegotiation> signal_negotiation_;
-  std::unique_ptr<GeoLocationResolver> geo_location_resolver_;
   std::unique_ptr<PresenceManager> presence_manager_;
   std::unique_ptr<AdminAuth> admin_auth_;
   std::unique_ptr<AdminController> admin_controller_;
   std::unique_ptr<DeviceDBManager> admin_read_db_;
   std::unique_ptr<AdminController> admin_read_controller_;
-
-  std::mutex network_info_mutex_;
-  std::condition_variable network_info_cv_;
-  std::priority_queue<GeoIpLookupJob, std::vector<GeoIpLookupJob>,
-                      GeoIpLookupJobLater>
-      network_info_jobs_;
-  std::unordered_map<std::string, std::chrono::steady_clock::time_point>
-      pending_ip_lookup_at_;
-  std::unordered_map<std::string, int> geo_ip_failure_counts_;
-  std::thread network_info_worker_;
-  bool network_info_stop_ = false;
 };
 
 #endif

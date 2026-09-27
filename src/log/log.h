@@ -19,7 +19,6 @@
 #include "spdlog/common.h"
 #include "spdlog/logger.h"
 #include "spdlog/sinks/base_sink.h"
-#include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
 
@@ -28,6 +27,8 @@
 constexpr auto LOGGER_NAME = "crossdesk-server";
 
 void InitLogger(const std::string& log_dir);
+// Only recognized, closed log files under log_dir and its coturn subdirectory.
+size_t CleanupExpiredLogs(int retention_days);
 
 std::shared_ptr<spdlog::logger> get_logger();
 

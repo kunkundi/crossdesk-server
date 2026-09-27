@@ -19,38 +19,6 @@
     .metric { background: #ffffff; border: 1px solid #d9dee5; border-radius: 8px; min-width: 0; padding: 16px; }
     .metric span { color: #667085; font-size: 13px; }
     .metric strong { display: block; font-size: 30px; margin-top: 6px; }
-    .geo-panel { margin-bottom: 18px; }
-    .geo-attribution { background: rgba(255, 255, 255, .86); border: 1px solid rgba(208, 213, 221, .78); border-radius: 4px; bottom: 6px; box-shadow: 0 2px 8px rgba(16, 24, 40, .08); color: #475467; font-size: 11px; left: 6px; line-height: 1.3; margin: 0; max-width: calc(100% - 12px); padding: 4px 7px; position: absolute; z-index: 2; }
-    .geo-attribution a { color: #1264a3; font-weight: 600; }
-    .geo-total { color: #667085; font-size: 13px; }
-    .geo-total strong { color: #17202a; font-size: 18px; margin-left: 4px; }
-    .geo-layout { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 18px; align-items: start; }
-    .china-map-wrap { background: linear-gradient(180deg, #f8fbfc 0%, #ffffff 72%); border-radius: 8px; height: clamp(360px, 42vw, 560px); overflow: hidden; position: relative; }
-    .china-map { display: block; height: 100%; width: 100%; }
-    .china-map .province { cursor: pointer; stroke: #c8d5df; stroke-linejoin: round; stroke-width: 1.45; transition: fill .16s ease, stroke .16s ease, stroke-width .16s ease; vector-effect: non-scaling-stroke; }
-    .china-map .province:hover, .china-map .province:focus { outline: none; stroke: #0f5f8d; stroke-width: 2.4; }
-    .china-map .map-label { fill: #25364a; font-size: 12px; font-weight: 700; opacity: 0; paint-order: stroke; pointer-events: none; stroke: rgba(255, 255, 255, .9); stroke-linejoin: round; stroke-width: 4px; text-anchor: middle; transition: opacity .12s ease; }
-    .china-map .map-label.visible { opacity: 1; }
-    .china-map .map-label.small { font-size: 10px; }
-    .china-map .map-status { fill: #667085; font-size: 14px; font-weight: 600; text-anchor: middle; }
-    .geo-tooltip { background: rgba(23, 32, 42, .94); border-radius: 7px; box-shadow: 0 12px 28px rgba(16, 24, 40, .18); color: #ffffff; display: none; font-size: 13px; left: 0; max-width: 220px; padding: 9px 11px; pointer-events: none; position: absolute; top: 0; transform: translate(10px, 10px); z-index: 3; }
-    .geo-tooltip.visible { display: block; }
-    .geo-tooltip strong, .geo-tooltip span, .geo-tooltip small { display: block; }
-    .geo-tooltip strong { font-size: 14px; margin-bottom: 4px; }
-    .geo-tooltip small { color: #cbd5e1; margin-top: 2px; }
-    .geo-side { display: grid; align-content: start; gap: 14px; min-width: 0; }
-    .geo-stat span { color: #667085; display: block; font-size: 12px; }
-    .geo-stat strong { display: block; font-size: 28px; margin-top: 3px; }
-    .geo-stat small { color: #667085; display: block; font-size: 12px; margin-top: 2px; }
-    .geo-list-header { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
-    .geo-list-tabs { display: flex; gap: 4px; min-width: 0; }
-    .geo-list-tab { border-color: transparent; color: #667085; flex: 0 0 auto; font-size: 12px; font-weight: 600; min-height: 28px; padding: 5px 8px; }
-    .geo-list-tab.active { background: #e0f2fe; border-color: #b9e6fe; color: #026aa2; }
-    .geo-sort-order { align-items: center; border-color: #d0d5dd; color: #344054; display: inline-flex; flex: 0 0 auto; font-size: 17px; font-weight: 700; height: 32px; justify-content: center; min-height: 32px; padding: 0; width: 32px; }
-    .geo-sort-order::before { content: "↓"; line-height: 1; }
-    .geo-sort-order.ascending::before { content: "↑"; }
-    .geo-top-list { color: #344054; font-size: 13px; margin: 6px 0 0; max-height: 236px; overflow-y: auto; padding-left: 20px; padding-right: 8px; scrollbar-gutter: stable; }
-    .geo-top-list li { margin: 4px 0; overflow-wrap: anywhere; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 18px; align-items: start; }
     .toolbar { display: flex; gap: 10px; justify-content: space-between; align-items: center; margin-bottom: 12px; min-width: 0; }
     .toolbar h2 { font-size: 18px; margin: 0; }
@@ -74,13 +42,12 @@
     #device-filters span { font-variant-numeric: tabular-nums; }
     .presence-table { table-layout: fixed; }
     .presence-table th, .presence-table td { min-width: 0; overflow-wrap: anywhere; }
-    .presence-table th:nth-child(1), .presence-table td:nth-child(1) { width: 27%; }
-    .presence-table th:nth-child(2), .presence-table td:nth-child(2) { width: 12%; }
-    .presence-table th:nth-child(3), .presence-table td:nth-child(3) { width: 31%; }
-    .presence-table th:nth-child(4), .presence-table td:nth-child(4) { width: 17%; }
-    .presence-table th:nth-child(5), .presence-table td:nth-child(5) { width: 13%; }
+    .presence-table th:nth-child(1), .presence-table td:nth-child(1) { width: 40%; }
+    .presence-table th:nth-child(2), .presence-table td:nth-child(2) { width: 20%; }
+    .presence-table th:nth-child(3), .presence-table td:nth-child(3) { width: 25%; }
+    .presence-table th:nth-child(4), .presence-table td:nth-child(4) { width: 15%; }
     .presence-table th:nth-child(2), .presence-table td:nth-child(2),
-    .presence-table th:nth-child(5), .presence-table td:nth-child(5) { overflow-wrap: normal; }
+    .presence-table th:nth-child(4), .presence-table td:nth-child(4) { overflow-wrap: normal; }
     .detail-action button { min-width: 72px; padding: 6px 8px; white-space: nowrap; }
     .sessions-table td:nth-child(1), .sessions-table td:nth-child(2) { word-break: break-all; }
     .device-id { font-weight: 600; word-break: break-all; }
@@ -115,7 +82,7 @@
     @media (max-width: 860px) {
       header { padding: 12px 16px; }
       main { padding: 16px; }
-      .metrics, .geo-layout, .grid { grid-template-columns: 1fr; }
+      .metrics, .grid { grid-template-columns: 1fr; }
       .toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
       .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; width: 100%; }
       .actions input, .actions select, .actions button { min-width: 0; width: 100%; }
@@ -135,13 +102,13 @@
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
       .metric { padding: 12px; }
       .metric strong { font-size: 24px; margin-top: 4px; }
-      .china-map-wrap { height: 320px; }
       .grid { gap: 12px; }
       .segments { margin: 0 -2px 12px; padding-bottom: 6px; }
       .segments button { min-height: 40px; padding: 8px 10px; }
       #device-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 0 12px; padding-bottom: 0; }
       .table-wrap { overflow: visible; }
       table, tbody, tr, td { display: block; width: 100%; }
+      .presence-table td:nth-child(n) { width: 100%; }
       thead { display: none; }
       tbody tr { background: #ffffff; border: 1px solid #d9dee5; border-radius: 8px; margin-bottom: 10px; padding: 10px 12px; }
       tbody tr.device-row.expanded { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: 0; }

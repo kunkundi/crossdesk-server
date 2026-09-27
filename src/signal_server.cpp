@@ -17,9 +17,6 @@
 namespace {
 
 constexpr long kRecoveredSessionCleanupDelayMs = 120000;
-constexpr size_t kMaxClientNetworkInfoJobs = 1024;
-constexpr int kDefaultGeoIpFailureTtlMs = 60000;
-constexpr int kDefaultGeoIpFailureMaxTtlMs = 1800000;
 constexpr int kDefaultTurnCredentialTtlSeconds = 3600;
 constexpr auto kDiagnosticInterval = std::chrono::seconds(60);
 constexpr auto kDiagnosticWarningInterval = std::chrono::seconds(30);
@@ -68,22 +65,6 @@ std::shared_ptr<IceServerConfigIssuer> CreateIceServerConfigIssuer() {
       servers, EnvString("COTURN_AUTH_SECRET"),
       EnvMillis("COTURN_CREDENTIAL_TTL_SECONDS",
                 kDefaultTurnCredentialTtlSeconds, 60, 86400));
-}
-
-std::chrono::milliseconds GeoIpFailureRetryDelay(int failure_count) {
-  int64_t delay_ms = EnvMillis("CROSSDESK_GEOIP_FAILURE_TTL_MS",
-                               kDefaultGeoIpFailureTtlMs, 0, 3600000);
-  int64_t max_delay_ms = EnvMillis("CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS",
-                                   kDefaultGeoIpFailureMaxTtlMs, 0, 86400000);
-  max_delay_ms = std::max(delay_ms, max_delay_ms);
-  if (delay_ms <= 0) {
-    return std::chrono::milliseconds(0);
-  }
-
-  for (int i = 1; i < failure_count && delay_ms < max_delay_ms; ++i) {
-    delay_ms = delay_ms > max_delay_ms / 2 ? max_delay_ms : delay_ms * 2;
-  }
-  return std::chrono::milliseconds(delay_ms);
 }
 
 void SetJsonResponse(server::connection_ptr con,
@@ -193,9 +174,6 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   signal_negotiation_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg,
                                                     this, std::placeholders::_1,
                                                     std::placeholders::_2));
-  if (GeoLocationResolver::IsEnabled()) {
-    geo_location_resolver_ = std::make_unique<GeoLocationResolver>();
-  }
   presence_manager_ = std::make_unique<PresenceManager>();
   presence_manager_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg, this,
                                                   std::placeholders::_1,
@@ -226,12 +204,10 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   server_.set_max_http_body_size(16 * 1024);
   server_.set_open_handshake_timeout(10000);
   server_.set_close_handshake_timeout(3000);
-  if (geo_location_resolver_) StartClientNetworkInfoWorker();
 }
 
 SignalServer::~SignalServer() {
   stopping_ = true;
-  StopClientNetworkInfoWorker();
   // Join before any manager or endpoint is destroyed. Worker completions only
   // post back to the still-owned io_service; no worker accesses a connection.
   if (admin_worker_) admin_worker_->Stop();
@@ -264,201 +240,10 @@ std::string SignalServer::GetClientIp(websocketpp::connection_hdl hdl,
   return "";
 }
 
-void SignalServer::EnqueueClientNetworkInfo(const std::string& client_ip,
-                                            const std::string& device_id) {
+void SignalServer::SetClientNetworkInfo(const std::string& client_ip,
+                                         const std::string& device_id) {
   if (!presence_manager_ || device_id.empty()) return;
-  ClientNetworkInfo network_info;
-  network_info.client_ip = client_ip;
-  presence_manager_->SetDeviceNetworkInfo(device_id, network_info);
-  if (geo_location_resolver_) {
-    EnqueueGeoIpLookup(client_ip, std::chrono::milliseconds(0));
-  }
-}
-
-void SignalServer::EnqueueGeoIpLookup(const std::string& client_ip,
-                                      std::chrono::milliseconds delay) {
-  if (client_ip.empty()) {
-    return;
-  }
-
-  const auto run_at = std::chrono::steady_clock::now() +
-                      std::max(delay, std::chrono::milliseconds(0));
-  {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    if (network_info_stop_) {
-      return;
-    }
-    auto pending = pending_ip_lookup_at_.find(client_ip);
-    if (pending != pending_ip_lookup_at_.end()) {
-      return;
-    }
-    if (network_info_jobs_.size() >= kMaxClientNetworkInfoJobs) {
-      if (GeoLocationResolver::IsEnabled()) {
-        LOG_WARN("GeoIP lookup queue is full, dropping [{}]", client_ip);
-      }
-      return;
-    }
-    pending_ip_lookup_at_[client_ip] = run_at;
-    network_info_jobs_.push({client_ip, run_at});
-  }
-  network_info_cv_.notify_one();
-}
-
-void SignalServer::ProcessGeoIpLookup(const GeoIpLookupJob& job) {
-  {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    auto pending = pending_ip_lookup_at_.find(job.client_ip);
-    if (pending == pending_ip_lookup_at_.end() ||
-        pending->second != job.run_at) {
-      return;
-    }
-  }
-
-  if (!presence_manager_ ||
-      !presence_manager_->HasDeviceWithClientIp(job.client_ip)) {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    pending_ip_lookup_at_.erase(job.client_ip);
-    geo_ip_failure_counts_.erase(job.client_ip);
-    return;
-  }
-
-  GeoLocationResolveResult resolve_result;
-  resolve_result.info.client_ip = job.client_ip;
-  if (geo_location_resolver_) {
-    resolve_result =
-        geo_location_resolver_->ResolveWithRetryInfo(job.client_ip);
-  }
-
-  if (!presence_manager_->HasDeviceWithClientIp(job.client_ip)) {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    pending_ip_lookup_at_.erase(job.client_ip);
-    geo_ip_failure_counts_.erase(job.client_ip);
-    return;
-  }
-
-  const ClientNetworkInfo& network_info = resolve_result.info;
-  if (resolve_result.resolved) {
-    {
-      std::lock_guard<std::mutex> lock(network_info_mutex_);
-      pending_ip_lookup_at_.erase(job.client_ip);
-      geo_ip_failure_counts_.erase(job.client_ip);
-    }
-    size_t updated = presence_manager_->UpdateDevicesWithClientIp(job.client_ip,
-                                                                  network_info);
-    if (GeoLocationResolver::IsEnabled()) {
-      LOG_INFO("GeoIP lookup for [{}] resolved [{}] and updated {} client(s)",
-               job.client_ip, network_info.location, updated);
-    }
-    return;
-  }
-
-  if (GeoLocationResolver::IsEnabled()) {
-    LOG_INFO("GeoIP lookup for [{}] returned Unknown", job.client_ip);
-  }
-  if (!resolve_result.retryable) {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    pending_ip_lookup_at_.erase(job.client_ip);
-    geo_ip_failure_counts_.erase(job.client_ip);
-    return;
-  }
-
-  int failure_count = 0;
-  {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    failure_count = ++geo_ip_failure_counts_[job.client_ip];
-  }
-  std::chrono::milliseconds retry_delay = GeoIpFailureRetryDelay(failure_count);
-  if (retry_delay.count() > 0 &&
-      presence_manager_->HasDeviceWithClientIp(job.client_ip)) {
-    const auto retry_at = std::chrono::steady_clock::now() + retry_delay;
-    {
-      std::lock_guard<std::mutex> lock(network_info_mutex_);
-      pending_ip_lookup_at_.erase(job.client_ip);
-      if (!network_info_stop_ &&
-          network_info_jobs_.size() < kMaxClientNetworkInfoJobs) {
-        pending_ip_lookup_at_[job.client_ip] = retry_at;
-        network_info_jobs_.push({job.client_ip, retry_at});
-      } else {
-        if (GeoLocationResolver::IsEnabled()) {
-          LOG_WARN("GeoIP lookup queue is full, dropping [{}]", job.client_ip);
-        }
-      }
-    }
-    network_info_cv_.notify_one();
-  } else {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    pending_ip_lookup_at_.erase(job.client_ip);
-    geo_ip_failure_counts_.erase(job.client_ip);
-  }
-}
-
-void SignalServer::StartClientNetworkInfoWorker() {
-  if (network_info_worker_.joinable()) {
-    return;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    network_info_stop_ = false;
-  }
-  network_info_worker_ =
-      std::thread(&SignalServer::ProcessClientNetworkInfoJobs, this);
-}
-
-void SignalServer::StopClientNetworkInfoWorker() {
-  {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    network_info_stop_ = true;
-    decltype(network_info_jobs_) empty_jobs;
-    network_info_jobs_.swap(empty_jobs);
-    pending_ip_lookup_at_.clear();
-    geo_ip_failure_counts_.clear();
-  }
-  network_info_cv_.notify_all();
-  if (network_info_worker_.joinable()) {
-    network_info_worker_.join();
-  }
-}
-
-void SignalServer::ProcessClientNetworkInfoJobs() {
-  while (true) {
-    GeoIpLookupJob job;
-    {
-      std::unique_lock<std::mutex> lock(network_info_mutex_);
-      while (true) {
-        network_info_cv_.wait(lock, [this] {
-          return network_info_stop_ || !network_info_jobs_.empty();
-        });
-        if (network_info_stop_) {
-          return;
-        }
-
-        const auto run_at = network_info_jobs_.top().run_at;
-        const auto now = std::chrono::steady_clock::now();
-        if (run_at <= now) {
-          job = network_info_jobs_.top();
-          network_info_jobs_.pop();
-          break;
-        }
-
-        network_info_cv_.wait_until(lock, run_at, [this, run_at] {
-          return network_info_stop_ ||
-                 (!network_info_jobs_.empty() &&
-                  network_info_jobs_.top().run_at < run_at);
-        });
-        if (network_info_stop_) {
-          return;
-        }
-      }
-    }
-
-    try {
-      ProcessGeoIpLookup(job);
-    } catch (...) {
-      WorkerFailed(std::current_exception());
-      return;
-    }
-  }
+  presence_manager_->SetDeviceNetworkInfo(device_id, {client_ip});
 }
 
 // TLS contexts are immutable once published. Existing SSL streams keep the old
@@ -882,6 +667,55 @@ void SignalServer::ScheduleRecoveredSessionCleanup() {
       });
 }
 
+void SignalServer::ScheduleRetentionCleanup() {
+  if (stopping_) return;
+  const auto now = Clock::now();
+  if (!metadata_cleanup_pending_ && now >= next_metadata_cleanup_) {
+    metadata_cleanup_pending_ = application_worker_->Submit([this] {
+      int retry_seconds = retention_policy_.interval_seconds;
+      try {
+        const auto result = device_db_manager_->CleanupExpiredMetadata(
+            retention_policy_.offline_days);
+        if (result.devices || result.associations)
+          LOG_INFO("Retention cleanup: devices={} associations={} offline_days={}",
+                   result.devices, result.associations, retention_policy_.offline_days);
+        // The network maintenance timer already spaces batches five seconds
+        // apart; adding another delay can miss the next tick.
+        if (result.more) retry_seconds = 0;
+      } catch (const std::bad_alloc&) {
+        throw;
+      } catch (const std::exception& e) {
+        LOG_ERROR("Metadata retention cleanup failed; retrying: {}", e.what());
+        retry_seconds = 60;
+      }
+      server_.get_io_service().post([this, retry_seconds] {
+        metadata_cleanup_pending_ = false;
+        next_metadata_cleanup_ = Clock::now() + std::chrono::seconds(retry_seconds);
+      });
+    });
+  }
+  if (!log_cleanup_pending_ && now >= next_log_cleanup_) {
+    log_cleanup_pending_ = maintenance_worker_->Submit([this] {
+      int retry_seconds = retention_policy_.interval_seconds;
+      try {
+        const auto removed = CleanupExpiredLogs(retention_policy_.log_days);
+        if (removed)
+          LOG_INFO("Retention cleanup: log_files={} log_days={}", removed,
+                   retention_policy_.log_days);
+      } catch (const std::bad_alloc&) {
+        throw;
+      } catch (const std::exception& e) {
+        LOG_ERROR("Log retention cleanup failed; retrying: {}", e.what());
+        retry_seconds = 60;
+      }
+      server_.get_io_service().post([this, retry_seconds] {
+        log_cleanup_pending_ = false;
+        next_log_cleanup_ = Clock::now() + std::chrono::seconds(retry_seconds);
+      });
+    });
+  }
+}
+
 void SignalServer::ScheduleMaintenance() {
   if (stopping_) return;
   const auto due = Clock::now() + std::chrono::milliseconds(check_interval_ms_);
@@ -947,6 +781,7 @@ void SignalServer::ScheduleMaintenance() {
       }
     }
     ScheduleRuntimeHeartbeat();
+    ScheduleRetentionCleanup();
     if (now >= next_tls_reload_ && !tls_job_pending_) {
       tls_job_pending_ = maintenance_worker_->Submit([this] {
         try {
@@ -1011,6 +846,9 @@ void SignalServer::Run() {
            "fd_reserve={} unopened_limit={} accept_retry_ms=500 listen_backlog=128",
            configured_max_connections, max_connections_, fd_usage_.open,
            fd_usage_.soft_limit, fd_reserve_, max_handshakes_);
+  LOG_INFO("Retention policy: log_days={} offline_days={} interval_seconds={} "
+           "device_credentials=retained", retention_policy_.log_days,
+           retention_policy_.offline_days, retention_policy_.interval_seconds);
   if (max_connections_ < configured_max_connections)
     LOG_WARN("Configured connection capacity reduced by process nofile limit: "
              "configured={} effective={} fd_soft_limit={}",
@@ -1145,7 +983,7 @@ void SignalServer::ProcessMessage(
           std::string id = transmission_manager_->GetUserId(hdl);
           if (!id.empty()) {
             presence_manager_->OnLogin(id, id, hdl);
-            EnqueueClientNetworkInfo(state->ip, id);
+            SetClientNetworkInfo(state->ip, id);
           }
         }
         break;

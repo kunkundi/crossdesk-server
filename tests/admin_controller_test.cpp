@@ -70,24 +70,11 @@ int main() {
   expect(admin_page.status == 200, "admin page returns static frontend");
   expect(admin_page.body.find("/admin/assets/admin.js") != std::string::npos,
          "admin page references separated frontend script");
-  expect(admin_page.body.find("CrossDesk uses IP2Location.io") !=
-             std::string::npos,
-         "admin page includes IP2Location attribution");
-  expect(admin_page.body.find("https://www.ip2location.io") !=
-             std::string::npos,
-         "admin page links IP2Location attribution");
   AdminHttpResponse admin_script =
       controller.Handle({"GET", "/admin/assets/admin.js", "", ""});
   expect(admin_script.status == 200, "admin script asset returns ok");
   expect(admin_script.content_type.find("javascript") != std::string::npos,
          "admin script asset uses javascript content type");
-  AdminHttpResponse china_map =
-      controller.Handle({"GET", "/admin/assets/china-provinces.json", "", ""});
-  expect(china_map.status == 200, "china map asset returns ok");
-  expect(china_map.content_type.find("json") != std::string::npos,
-         "china map asset uses json content type");
-  expect(china_map.body.find("FeatureCollection") != std::string::npos,
-         "china map asset returns geojson data");
   AdminHttpResponse unauthorized =
       controller.Handle({"GET", "/api/admin/overview", "", ""});
   expect(unauthorized.status == 401,
@@ -148,31 +135,23 @@ int main() {
     presence.SetDeviceDB(&db);
     websocketpp::connection_hdl hdl;
     presence.OnLogin("device-admin-1", "device-admin-1", hdl);
-    db.UpdateDeviceNetworkInfo(
-        "device-admin-1",
-        {"10.0.0.1", "Stale Country", "Stale Region", "",
-         "Stale Region, Stale Country"});
     presence.SetDeviceNetworkInfo(
         "device-admin-1",
-        {"203.0.113.8", "Testland", "Test Region", "",
-         "Test Region, Testland"});
-    presence.OnLogin("device-admin-zhejiang", "device-admin-zhejiang", hdl);
+        {"203.0.113.8"});
+    presence.OnLogin("device-admin-2", "device-admin-2", hdl);
     presence.SetDeviceNetworkInfo(
-        "device-admin-zhejiang",
-        {"198.51.100.8", "China", "Zhejiang", "",
-         "Zhejiang, China"});
+        "device-admin-2",
+        {"198.51.100.8"});
     presence.OnLogin("device-admin-offline", "device-admin-offline", hdl);
     presence.SetDeviceNetworkInfo(
         "device-admin-offline",
-        {"203.0.113.9", "Offline Country", "Offline Region", "",
-         "Offline Region, Offline Country"});
+        {"203.0.113.9"});
     presence.OnLogout("device-admin-offline");
     presence.OnLogin("device-admin-control", "device-admin-control", hdl);
     presence.OnLogin("web-admin-1", "web-admin-1", hdl);
     presence.SetDeviceNetworkInfo(
         "web-admin-1",
-        {"198.51.100.10", "China", "Shanghai", "",
-         "Shanghai, China"});
+        {"198.51.100.10"});
     db.StartRemoteControlSession("tx-admin", "device-admin-1",
                                  "device-admin-offline");
     db.EndRemoteControlSession("tx-admin", "device-admin-1",
@@ -203,11 +182,6 @@ int main() {
            "overview reports device total controlled duration");
     expect(db_overview_body["devices"][0]["client_ip"] == "203.0.113.8",
            "overview reports current in-memory device client ip");
-    expect(db_overview_body["devices"][0]["geo_city"] == "",
-           "overview leaves geo city empty");
-    expect(db_overview_body["devices"][0]["geo_location"] ==
-               "Test Region, Testland",
-           "overview ignores stale database geo location");
     expect(db_overview_body["devices"][0].contains("current_control_seconds"),
            "overview reports device current control duration");
     expect(db_overview_body["devices"][0].contains(
@@ -233,39 +207,6 @@ int main() {
            "overview reports searched PC client kind count");
     expect(db_overview_body["device_kind_counts"]["web"] == 0,
            "overview reports searched web client kind count");
-    expect(db_overview_body["geo_distribution"]["total_count"] == 4,
-           "overview geo distribution total includes web clients");
-    expect(db_overview_body["geo_distribution"]["domestic_count"] == 2,
-           "overview reports domestic user count");
-    expect(db_overview_body["geo_distribution"]["foreign_count"] == 1,
-           "overview reports foreign user count");
-    expect(db_overview_body["geo_distribution"]["unknown_count"] == 1,
-           "overview keeps unknown user count");
-    bool found_testland = false;
-    for (const auto& country :
-         db_overview_body["geo_distribution"]["countries"]) {
-      if (country["country"] == "Testland" && country["count"] == 1) {
-        found_testland = true;
-      }
-    }
-    expect(found_testland, "overview reports foreign country user count");
-    bool found_zhejiang = false;
-    for (const auto& province :
-         db_overview_body["geo_distribution"]["provinces"]) {
-      if (province["province"] == "zhejiang" && province["count"] == 1) {
-        found_zhejiang = true;
-      }
-    }
-    expect(found_zhejiang, "overview reports china province user count");
-    bool found_shanghai = false;
-    for (const auto& province :
-         db_overview_body["geo_distribution"]["provinces"]) {
-      if (province["province"] == "shanghai" && province["count"] == 1) {
-        found_shanghai = true;
-      }
-    }
-    expect(found_shanghai, "overview includes web client province count");
-
     AdminHttpResponse offline_overview = db_controller.Handle(
         {"GET",
          "/api/admin/overview?device_filter=offline&device_search=device-admin-offline",
@@ -342,45 +283,6 @@ int main() {
                active_control_body["device_counts"]["active"] == 0 &&
                active_control_body["devices"].empty(),
            "overview controlled filter excludes controllers from count and list");
-
-    AdminHttpResponse location_desc_overview = db_controller.Handle(
-        {"GET",
-         "/api/admin/overview?device_filter=all&device_sort=location&device_order=desc&device_limit=2",
-         "",
-         "cd_admin_session=" + *token});
-    expect(location_desc_overview.status == 200,
-           "overview with location status descending sort returns ok");
-    auto location_desc_body =
-        nlohmann::json::parse(location_desc_overview.body);
-    expect(location_desc_body["devices"].size() == 2,
-           "overview applies pagination after location status sort");
-    bool location_desc_has_current_location = false;
-    for (const auto& device : location_desc_body["devices"]) {
-      expect(!device["geo_location"].get<std::string>().empty(),
-             "overview location status descending shows known locations first");
-      if (device["id"] == "device-admin-1" &&
-          device["geo_location"] == "Test Region, Testland") {
-        location_desc_has_current_location = true;
-      }
-    }
-    expect(location_desc_has_current_location,
-           "overview location status sort uses current in-memory location");
-
-    AdminHttpResponse location_asc_overview = db_controller.Handle(
-        {"GET",
-         "/api/admin/overview?device_filter=all&device_sort=location&device_order=asc&device_limit=2",
-         "",
-         "cd_admin_session=" + *token});
-    expect(location_asc_overview.status == 200,
-           "overview with location status ascending sort returns ok");
-    auto location_asc_body =
-        nlohmann::json::parse(location_asc_overview.body);
-    expect(location_asc_body["devices"].size() == 2,
-           "overview returns unknown locations on first ascending page");
-    for (const auto& device : location_asc_body["devices"]) {
-      expect(device["geo_location"].get<std::string>().empty(),
-             "overview location status ascending shows unknown locations first");
-    }
 
     AdminHttpResponse web_overview = db_controller.Handle(
         {"GET", "/api/admin/overview?device_filter=web", "",

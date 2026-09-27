@@ -18,7 +18,7 @@
 | CrossDesk Server | WSS 信令、设备身份与密码验证、在线状态、会话协调、临时 TURN 凭据 |
 | Coturn | 在客户端无法直连时中继媒体与数据；由独立容器运行 |
 | SQLite | 保存设备记录、在线与远控时长及会话信息 |
-| Web 管理后台 | 查看指标、客户端与活动会话，搜索 / 筛选 / 排序，断开选定会话，可选 IP 地域分布 |
+| Web 管理后台 | 查看指标、客户端与活动会话，搜索 / 筛选 / 排序，断开选定会话 |
 
 客户端优先尝试 P2P 直连，必要时通过 TURN 中继。当前 [Compose](compose.yaml) 和 [CI](.github/workflows/build.yml) 面向 **Linux amd64 / arm64**；发布镜像以 Ubuntu 22.04 为运行环境。
 
@@ -146,25 +146,17 @@ sudo security add-trusted-cert -d -r trustRoot \
 | --- | --- |
 | 顶部指标 | 查看在线设备、Web 客户端、活动连接与累计在线 / 远控时长 |
 | Client Presence | 默认显示在线 PC；可切换 PC / Web，筛选 Online / Controlled / Offline / All，搜索 ID、排序和翻页；Controlled 仅统计和显示正在被控制的设备，同一设备只计一次 |
-| Details | 展开版本、平台、当前与累计时长、连接 IP、地域及远控对端 |
+| Details | 展开版本、平台、当前与累计时长、连接 IP 及远控对端 |
 | Active Sessions → Disconnect | 确认后断开所选会话；设备本身保持在线 |
 | Refresh lists / Logout | 手动刷新列表 / 退出管理登录 |
 
 页面可见时每 5 秒刷新数据，时长每秒更新显示。管理登录会话保存在内存中，默认有效期 8 小时；服务重启后需要重新登录。后台使用 HTTPS 登录 Cookie。
 
-**可选地域分布：** 默认关闭 IP 地理查询。在 `.env` 中启用 `CROSSDESK_GEOIP_LOOKUP=1` 并填写 `CROSSDESK_GEOIP_KEY` 后，公网连接 IP 会发送给 IP2Location 查询国家和省 / 州。图表统计当前在线客户端，包含 Web、排除 `C-*` 控制分身；未解析位置单独统计。关闭查询或无可用结果时，地图不会显示已解析的分布。
+连接 IP 仅作为在线状态保存在内存中，登出时清除设备关联；连接日志仍可能包含 IP。服务端不再查询外部 IP 定位服务或展示地域分布。
 
-连接 IP 和地域只作为在线状态保存在内存，不写入设备资料数据库。后台保留 IP2Location 归因链接；中国地图资源 [china-provinces.json](src/admin/web/china-provinces.json) 来自 ISC 许可的 `china-map-geojson@1.0.4`。
+前端源码位于 [src/admin/web](src/admin/web)，容器内为 `/crossdesk-server/admin`。自定义 `CROSSDESK_ADMIN_WEB_DIR` 时，还需在 Compose 的 `environment` 中显式传入并挂载对应目录；仅添加到 `.env` 不会自动传入容器。修改前端资源后重启服务以刷新资源缓存。
 
-<details>
-<summary>地域查询与后台资源的高级配置</summary>
-
-- `CROSSDESK_GEOIP_SCHEME`、`CROSSDESK_GEOIP_HOST`、`CROSSDESK_GEOIP_PORT`、`CROSSDESK_GEOIP_PATH` 配置查询端点；默认 HTTPS、`api.ip2location.io`、`443`、`/?key={key}&ip={ip}`。
-- `CROSSDESK_GEOIP_TIMEOUT_MS` 默认 `1200`；失败重试由 `CROSSDESK_GEOIP_FAILURE_TTL_MS` 和 `CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS` 控制，默认从 `60000` 毫秒退避至 `1800000` 毫秒。
-- 成功结果缓存；失败按 IP 去重并退避重试，该 IP 已无在线设备时停止重试。
-- 前端源码位于 [src/admin/web](src/admin/web)，容器内为 `/crossdesk-server/admin`。自定义 `CROSSDESK_ADMIN_WEB_DIR` 时，还需在 Compose 的 `environment` 中显式传入并挂载对应目录；仅添加到 `.env` 不会自动传入容器。修改前端资源后重启服务以刷新资源缓存。
-
-</details>
+升级时需部署新版服务端二进制或镜像及配套后台资源，并从部署环境中移除旧 `CROSSDESK_GEOIP_*` 配置和不再使用的 API 密钥。已有数据库可继续使用，其中历史地域列（如存在）不再读写。
 
 <a id="stats"></a>
 
@@ -204,7 +196,9 @@ curl --fail https://your-domain.example.com:9099/stats
 
 ```bash
 sudo docker compose ps
-sudo docker compose logs --tail 100 crossdesk-server coturn
+# 默认日志目录；自定义 CROSSDESK_LOG_DIR 时替换路径。
+sudo sh -c 'tail -n 100 /var/log/crossdesk/crossdesk-server_$(date +%F).log'
+sudo sh -c 'tail -n 100 /var/log/crossdesk/coturn/turn_$(date +%F).log'
 ```
 
 更新时先备份，再修改 `.env` 中的固定镜像 tag，并使用与该版本匹配的部署文件：
@@ -215,7 +209,7 @@ sudo docker compose pull
 sudo docker compose up -d --no-build
 ```
 
-`docker compose restart` 用于重启现有容器，不会应用修改后的环境变量或镜像。业务日志写入 `${CROSSDESK_LOG_DIR}` 并同时输出到控制台；Coturn 日志通过 `docker compose logs coturn` 查看。两个容器的控制台日志均按 3 个、每个 50 MB 轮转。业务文件日志另行轮转，多次重启会产生新的日志组，需定期清理或归档。
+`docker compose restart` 用于重启现有容器，不会应用修改后的环境变量或镜像。信令日志按服务进程的本地日期追加到 `${CROSSDESK_LOG_DIR}/crossdesk-server_YYYY-MM-DD.log`；Coturn 日志写入同目录下的 `coturn/turn_YYYY-MM-DD.log`，默认容器时区为 UTC，查看时请选择实际存在的日期文件。新版 Compose 关闭 Docker 日志副本，避免只按容量轮转的副本绕过保存期限；`docker compose logs` 不再提供这两个服务的日志。启动失败时，可用 `sudo docker compose run --rm --service-ports crossdesk-server` 在前台查看启动输出，运行前先停止原信令容器以避免端口冲突。
 
 信令服务的连接诊断日志可用于排查“进程仍在运行，但客户端无法连接”：
 
@@ -227,6 +221,24 @@ sudo docker compose up -d --no-build
 | `Signal event loop delayed` | 事件循环定时检查延迟至少 5 秒时记录延迟量 |
 
 接入暂停、accept/资源错误、对端地址失败、握手前失败及事件循环延迟的同类告警最多每 30 秒输出一次；恢复日志只与已输出的暂停告警配对。`*_total` 是进程启动以来的累计计数，限频不影响计数；`*_limit_checks_total` 统计触发限制的检查次数，并非被拒客户端数。`unopened` 包括尚未打开的 WebSocket、普通 HTTPS 请求及其清理阶段。`fd_open` 是日志生成时实测值，`fd_estimated` 是接入检查使用的估计值，`fd_sample_age_ms` 表示其采样年龄；`-1` 表示不可用或无限制。`expired_handles` 和 `oldest_unopened_ms` 可帮助发现残留或长时间未完成的连接。
+
+### 数据保存与自动清理
+
+| 数据 | 默认规则 |
+| --- | --- |
+| 信令与 Coturn 的运行／连接日志 | 已关闭文件最后写入满 **185 天**后删除；按日切分，不按容量提前覆盖 |
+| 设备在线状态、版本／平台、累计在线和远控时长 | 设备离线超过 **180 天**后清理；在线身份、在线控制分身对应身份及仍被活动／恢复中会话引用的记录跳过 |
+| 服务端历史设备关联 | 随过期设备清理；无有效设备状态的旧关联按更新时间满 **180 天**后清理；旧库无时间戳的关联从首次升级开始计时 |
+| 设备 ID、密码盐和密码摘要 | 不参加本轮自动清理，保留供后续认证；该机制不替代主动注销／数据删除流程 |
+| 当前 IP、订阅关系、管理员会话 | 仍按原有登出／连接断开／会话过期规则清理；IP 可能出现在上述连接日志中 |
+
+通过 `.env` 的 `CROSSDESK_LOG_RETENTION_DAYS=185`、`CROSSDESK_OFFLINE_RETENTION_DAYS=180`、`CROSSDESK_RETENTION_INTERVAL_SECONDS=3600` 调整。天数范围为 1–3650，间隔范围为 60–86400 秒；空值使用默认值，非法值阻止启动，不会被解释为立即删除或永久保留。混合日志包含网络安全信息，缩短期限前须核对适用的法定留存要求；默认值不是对完整法律合规的保证。
+
+服务开始运行后约 5 秒执行第一轮，此后默认每小时执行。数据库每批最多选取 200 个过期设备和 200 条其他过期关联，有积压时约 5 秒后继续，事务失败回滚并重试。实际完成时间受积压和运行状态影响。按整份日志文件清理，因此文件首条记录可能比配置期限多保留约一天，再加一次检查间隔。服务停止期间不执行清理，重新启动后继续。
+
+清理只处理指定日志目录中的已知日志文件，包括旧版 `crossdesk-server-YYYYMMDD-HHMMSS[.N].log`，以及 `coturn/turn_YYYY-MM-DD.log`；不递归扫描其他目录、不跟随符号链接，也不删除当前信令日志。确保该目录仅供这一组实例使用，并监控磁盘空间和 `Retention cleanup`／清理失败日志。文件日志无法初始化时服务启动失败。清理历史统计会使累计指标降低，再次上线时从新记录开始统计，但原设备 ID 和密码仍可登录。
+
+SQLite 启用 `secure_delete`，删除后尝试非阻塞 WAL 检查点；这不等于对文件系统快照、备份或底层介质的安全擦除。备份、外部日志平台、旧容器及其日志副本由部署方单独设置到期删除；本程序不会扫描或删除它们。升级时应重新创建容器应用日志配置，并按实际留存义务处置旧副本。隐私政策中的期限需在生产环境部署生效后同步更新。
 
 ### 备份与迁移
 
@@ -252,7 +264,6 @@ sudo docker compose up -d --no-build
 | 已连服务器但对端离线 | 两端是否使用同一服务，被控端是否运行，是否复制了当前 ID |
 | P2P 失败且无法中继 | 客户端中继选项、客户端版本、共享密钥一致性、TURN 与媒体端口是否放通 |
 | 后台未启用 / 登录失败 | 两个管理环境变量是否均已传入，是否重新创建容器，是否使用 HTTPS |
-| 地图无分布 | 地理查询是否启用、API key 和出站网络是否可用；默认关闭查询 |
 
 <a id="build"></a>
 

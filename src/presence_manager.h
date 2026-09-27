@@ -48,10 +48,6 @@ class PresenceManager {
                             const ClientNetworkInfo& network_info);
   bool GetDeviceNetworkInfo(const std::string& device_id,
                             ClientNetworkInfo* network_info) const;
-  bool HasDeviceWithClientIp(const std::string& client_ip) const;
-  size_t UpdateDevicesWithClientIp(const std::string& client_ip,
-                                   const ClientNetworkInfo& network_info);
-  ClientGeoDistribution GetClientGeoDistribution() const;
   std::vector<std::pair<std::string, bool>> BatchQuery(
       const std::vector<std::string>& device_ids) const;
   void NotifyUserDevices(const std::string& user_id,

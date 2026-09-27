@@ -43,50 +43,6 @@
         <div class="metric"><span data-i18n="Control time">Control time</span><strong id="metric-control">0s</strong></div>
         <div class="metric"><span data-i18n="Controlled time">Controlled time</span><strong id="metric-controlled">0s</strong></div>
       </div>
-      <section class="panel geo-panel">
-        <div class="toolbar">
-          <h2 data-i18n="User distribution in China">User distribution in China</h2>
-          <div class="geo-total"><span data-i18n="Total users">Total users</span> <strong id="geo-total">0</strong></div>
-        </div>
-        <div class="geo-layout">
-          <div class="china-map-wrap">
-            <svg id="china-map" class="china-map" viewBox="0 0 760 560" role="img" aria-label="China user distribution map" data-i18n-aria-label="China user distribution map"></svg>
-            <p class="geo-attribution">
-              <span data-i18n="CrossDesk uses IP2Location.io">CrossDesk uses IP2Location.io</span>
-              <a href="https://www.ip2location.io" target="_blank" rel="noopener noreferrer" data-i18n="IP geolocation">IP geolocation</a>
-              <span data-i18n="web service.">web service.</span>
-            </p>
-            <div id="geo-tooltip" class="geo-tooltip"></div>
-          </div>
-          <aside class="geo-side">
-            <div class="geo-stat">
-              <span data-i18n="Users in China">Users in China</span>
-              <strong id="geo-domestic-count">0</strong>
-              <small id="geo-domestic-percent">0%</small>
-            </div>
-            <div class="geo-stat">
-              <span data-i18n="Users outside China">Users outside China</span>
-              <strong id="geo-foreign-count">0</strong>
-              <small id="geo-foreign-percent">0%</small>
-            </div>
-            <div class="geo-stat">
-              <span data-i18n="Unresolved">Unresolved</span>
-              <strong id="geo-unknown-count">0</strong>
-              <small id="geo-unknown-percent">0%</small>
-            </div>
-            <div class="geo-list">
-              <div class="geo-list-header">
-                <div class="geo-list-tabs" role="tablist" aria-label="User regions" data-i18n-aria-label="User regions">
-                  <button id="geo-domestic-tab" class="geo-list-tab active" type="button" data-geo-list="domestic" aria-selected="true" data-i18n="In China">In China</button>
-                  <button id="geo-foreign-tab" class="geo-list-tab" type="button" data-geo-list="foreign" aria-selected="false" data-i18n="Outside China">Outside China</button>
-                </div>
-                <button id="geo-list-order" class="geo-sort-order" type="button" aria-label="Users in China, descending; click to sort ascending" title="Most users first" data-i18n-title="Most users first"></button>
-              </div>
-              <ol id="geo-user-list" class="geo-top-list"></ol>
-            </div>
-          </aside>
-        </div>
-      </section>
       <div class="grid">
         <section class="panel presence-panel">
           <div class="toolbar">
@@ -105,7 +61,6 @@
                 <option value="total_online" data-i18n="Total online">Total online</option>
                 <option value="total_control" data-i18n="Total control">Total control</option>
                 <option value="total_controlled" data-i18n="Total controlled">Total controlled</option>
-                <option value="location" data-i18n="Location status">Location status</option>
                 <option value="device_id" data-i18n="Device ID">Device ID</option>
               </select>
               <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order" data-i18n-aria-label="Toggle sort order" data-i18n="DESC">DESC</button>
@@ -125,7 +80,7 @@
           </div>
           <div class="table-wrap">
             <table class="presence-table">
-              <thead><tr><th data-i18n="Client">Client</th><th data-i18n="State">State</th><th data-i18n="Location">Location</th><th data-i18n="Current online">Current online</th><th data-i18n="Detail">Detail</th></tr></thead>
+              <thead><tr><th data-i18n="Client">Client</th><th data-i18n="State">State</th><th data-i18n="Current online">Current online</th><th data-i18n="Detail">Detail</th></tr></thead>
               <tbody id="devices"></tbody>
             </table>
           </div>
