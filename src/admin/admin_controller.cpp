@@ -369,6 +369,11 @@ AdminHttpResponse AdminController::Handle(const AdminHttpRequest& request) {
     return ErrorResponse(401, "unauthorized");
   }
 
+  if (path == "/api/admin/data-session" ||
+      path.rfind("/api/admin/device-data/", 0) == 0) {
+    return HandleDeviceData(request);
+  }
+
   if (path == "/api/admin/logout") {
     return HandleLogout(request);
   }
@@ -732,6 +737,7 @@ AdminHttpResponse AdminController::JsonResponse(
   response.status = status;
   response.content_type = JsonContentType();
   response.headers.push_back({"Cache-Control", "no-store"});
+  response.headers.push_back({"X-Content-Type-Options", "nosniff"});
   response.body = body.dump();
   return response;
 }
@@ -742,6 +748,10 @@ AdminHttpResponse AdminController::HtmlResponse(
   response.status = status;
   response.content_type = "text/html; charset=utf-8";
   response.headers.push_back({"Cache-Control", "no-store"});
+  response.headers.push_back({"Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self'; "
+      "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});
+  response.headers.push_back({"Referrer-Policy", "no-referrer"});
   response.body = body;
   return response;
 }

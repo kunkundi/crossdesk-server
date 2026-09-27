@@ -8,6 +8,7 @@
 #define _DEVICE_DB_MANAGER_H_
 
 #include <sqlite3.h>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -106,6 +107,13 @@ class DeviceDBManager {
   // Batches share the writer's transaction ordering with login/logout.
   RetentionCleanupResult CleanupExpiredMetadata(int retention_days,
                                                 size_t batch_size = 200);
+  // Admin-only writer operation. All actions audit in the same transaction;
+  // cleanup requires an unchanged preview and no online/recoverable sessions.
+  nlohmann::json AdminDeviceData(const std::string& device_id,
+      const std::string& action, const std::string& scope,
+      const std::string& expected_revision, const std::string& actor,
+      const std::string& request_ref);
+  bool CleanupAdminDataAudit(int retention_days);
   bool StartRemoteControlSession(const std::string& transmission_id,
                                  const std::string& host_id,
                                  const std::string& guest_id);

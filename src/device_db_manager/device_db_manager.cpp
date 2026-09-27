@@ -277,6 +277,16 @@ void DeviceDBManager::InitDB() {
     throw std::runtime_error("Database is not initialized in InitDB.");
   }
 
+  ExecuteSchemaStatement(db_,
+      "CREATE TABLE IF NOT EXISTS admin_data_audit ("
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,"
+      "actor TEXT NOT NULL, request_ref TEXT NOT NULL, action TEXT NOT NULL,"
+      "scope TEXT NOT NULL, result TEXT NOT NULL);",
+      "create admin data audit");
+  ExecuteSchemaStatement(db_,
+      "CREATE INDEX IF NOT EXISTS idx_admin_data_audit_created_at "
+      "ON admin_data_audit(created_at);", "index admin data audit");
+
   const char* sql_devices =
       "CREATE TABLE IF NOT EXISTS devices ("
       "id INTEGER PRIMARY KEY AUTOINCREMENT,"

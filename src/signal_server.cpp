@@ -191,6 +191,9 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       });
   admin_read_db_ = std::make_unique<DeviceDBManager>(
       db_path, DeviceDBManager::OpenMode::ReadOnly);
+  admin_controller_->SetDeviceDataCleanupCallback([this](const std::string& id) {
+    signal_negotiation_->ForgetPasswordChangeResults(id);
+  });
   admin_read_controller_ = std::make_unique<AdminController>(
       admin_auth_.get(), presence_manager_.get(), transmission_manager_,
       admin_read_db_.get(), nullptr, std::chrono::milliseconds(1000));
@@ -575,7 +578,9 @@ void SignalServer::OnHttp(websocketpp::connection_hdl hdl) {
   }
   AdminHttpRequest request{con->get_request().get_method(), resource,
                            con->get_request_body(),
-                           con->get_request_header("Cookie")};
+                           con->get_request_header("Cookie"),
+                           con->get_request_header("X-CrossDesk-CSRF"),
+                           con->get_request_header("Content-Type")};
   auto state = it->second;
   // Explicitly retain deferred connections: defer_http_response cancels the
   // library's handshake timer. Our deadline below bounds their lifetime.
@@ -676,12 +681,14 @@ void SignalServer::ScheduleRetentionCleanup() {
       try {
         const auto result = device_db_manager_->CleanupExpiredMetadata(
             retention_policy_.offline_days);
+        const bool more_audit = device_db_manager_->CleanupAdminDataAudit(
+            retention_policy_.log_days);
         if (result.devices || result.associations)
           LOG_INFO("Retention cleanup: devices={} associations={} offline_days={}",
                    result.devices, result.associations, retention_policy_.offline_days);
         // The network maintenance timer already spaces batches five seconds
         // apart; adding another delay can miss the next tick.
-        if (result.more) retry_seconds = 0;
+        if (result.more || more_audit) retry_seconds = 0;
       } catch (const std::bad_alloc&) {
         throw;
       } catch (const std::exception& e) {

@@ -76,6 +76,17 @@
     .error { color: #b42318; min-height: 20px; }
     .empty { color: #667085; text-align: center; padding: 16px 8px; }
     .hidden { display: none; }
+    .data-tools { margin-bottom: 18px; }
+    .data-tools summary { font-weight: 600; cursor: pointer; }
+    .data-tools p { font-size: 13px; line-height: 1.6; }
+    .data-fields { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+    .data-tools label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
+    .data-tools input, .data-tools select { max-width: 100%; }
+    .data-fields .data-verification { display: flex; align-items: center; flex: 1 1 220px; }
+    .data-verification input { min-height: 20px; }
+    .data-cleanup { margin-top: 18px; border-top: 1px solid #d9dee5; padding-top: 18px; display: grid; gap: 10px; max-width: 560px; }
+    #data-summary { margin: 12px 0; }
+    #data-status { overflow-wrap: anywhere; color: #067647; }
     @media (max-width: 1100px) {
       .grid { grid-template-columns: 1fr; }
     }

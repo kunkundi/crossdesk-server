@@ -1,6 +1,7 @@
 #include "admin_auth.h"
 
 #include <openssl/rand.h>
+#include <openssl/crypto.h>
 
 #include <cstdlib>
 #include <iomanip>
@@ -9,6 +10,11 @@
 namespace {
 
 constexpr char kSessionCookieName[] = "cd_admin_session";
+
+bool SecretEqual(const std::string& a, const std::string& b) {
+  return a.size() == b.size() && !a.empty() &&
+         CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
+}
 
 std::string GetEnvString(const char* name) {
   const char* value = std::getenv(name);
@@ -42,14 +48,16 @@ bool AdminAuth::IsEnabled() const {
 
 std::optional<std::string> AdminAuth::Login(const std::string& username,
                                             const std::string& password) {
-  if (!IsEnabled() || username != username_ || password != password_) {
+  if (!IsEnabled() || username != username_ || !SecretEqual(password, password_)) {
     return std::nullopt;
   }
 
   std::string token = GenerateToken();
+  std::string csrf = GenerateToken();
+  if (token.empty() || csrf.empty()) return std::nullopt;
   std::lock_guard<std::mutex> lock(sessions_mutex_);
   RemoveExpiredSessions();
-  sessions_[token] = std::chrono::system_clock::now() + session_ttl_;
+  sessions_[token] = {std::chrono::system_clock::now() + session_ttl_, csrf};
   return token;
 }
 
@@ -65,11 +73,42 @@ bool AdminAuth::ValidateSession(const std::string& token) {
     return false;
   }
 
-  if (it->second <= std::chrono::system_clock::now()) {
+  if (it->second.expires <= std::chrono::system_clock::now()) {
     sessions_.erase(it);
     return false;
   }
 
+  return true;
+}
+
+std::optional<std::string> AdminAuth::CsrfToken(const std::string& token) {
+  std::lock_guard<std::mutex> lock(sessions_mutex_);
+  RemoveExpiredSessions();
+  auto it = sessions_.find(token);
+  if (it == sessions_.end()) return std::nullopt;
+  return it->second.csrf;
+}
+
+bool AdminAuth::ValidateCsrf(const std::string& token, const std::string& csrf) {
+  const auto expected = CsrfToken(token);
+  return expected && SecretEqual(*expected, csrf);
+}
+
+bool AdminAuth::Reauthenticate(const std::string& token,
+                               const std::string& password) {
+  std::lock_guard<std::mutex> lock(sessions_mutex_);
+  RemoveExpiredSessions();
+  if (!sessions_.count(token)) return false;
+  const auto now = std::chrono::steady_clock::now();
+  if (now < reauth_retry_at_) return false;
+  if (!SecretEqual(password, password_)) {
+    if (++reauth_failures_ >= 5) {
+      reauth_failures_ = 0;
+      reauth_retry_at_ = now + std::chrono::minutes(1);
+    }
+    return false;
+  }
+  reauth_failures_ = 0;
   return true;
 }
 
@@ -127,7 +166,7 @@ std::string AdminAuth::GenerateToken() const {
 void AdminAuth::RemoveExpiredSessions() {
   auto now = std::chrono::system_clock::now();
   for (auto it = sessions_.begin(); it != sessions_.end();) {
-    if (it->second <= now) {
+    if (it->second.expires <= now) {
       it = sessions_.erase(it);
     } else {
       ++it;

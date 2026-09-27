@@ -639,6 +639,18 @@ bool SignalNegotiation::change_password(websocketpp::connection_hdl hdl,
   return true;
 }
 
+void SignalNegotiation::ForgetPasswordChangeResults(const std::string& device_id) {
+  std::lock_guard<std::mutex> lock(password_change_mutex_);
+  const auto prefix = device_id + "\n";
+  for (auto it = password_change_result_order_.begin();
+       it != password_change_result_order_.end();) {
+    if (it->rfind(prefix, 0) == 0) {
+      password_change_results_.erase(*it);
+      it = password_change_result_order_.erase(it);
+    } else ++it;
+  }
+}
+
 bool SignalNegotiation::turn_credentials(websocketpp::connection_hdl hdl,
                                          const json& j) {
   (void)j;

@@ -19,6 +19,8 @@ struct AdminHttpRequest {
   std::string resource;
   std::string body;
   std::string cookie;
+  std::string csrf_token;
+  std::string content_type;
 };
 
 struct AdminHttpResponse {
@@ -41,6 +43,9 @@ class AdminController {
       const std::string& resource);
 
   AdminHttpResponse Handle(const AdminHttpRequest& request);
+  void SetDeviceDataCleanupCallback(std::function<void(const std::string&)> fn) {
+    device_data_cleanup_ = std::move(fn);
+  }
   void InvalidateStatsCache() { stats_cache_ = nullptr; }
   nlohmann::json GetPublicStats() const { return BuildStats(0); }
 
@@ -52,6 +57,7 @@ class AdminController {
   AdminHttpResponse HandleOverview(const AdminHttpRequest& request);
   AdminHttpResponse HandleAdminAsset(const AdminHttpRequest& request);
   AdminHttpResponse HandleDisconnect(const AdminHttpRequest& request);
+  AdminHttpResponse HandleDeviceData(const AdminHttpRequest& request);
 
   bool IsAuthorized(const AdminHttpRequest& request);
   nlohmann::json BuildStats(size_t online_device_fallback) const;
@@ -68,6 +74,7 @@ class AdminController {
   std::shared_ptr<TransmissionManager> transmission_;
   DeviceDBManager* db_ = nullptr;
   std::function<void(const std::string&, nlohmann::json)> send_to_user_;
+  std::function<void(const std::string&)> device_data_cleanup_;
 };
 
 #endif  // _ADMIN_CONTROLLER_H_

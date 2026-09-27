@@ -42,6 +42,8 @@ class PresenceManager {
                websocketpp::connection_hdl hdl);
   void OnLogout(const std::string& device_id);
   bool IsOnline(const std::string& device_id) const;
+  // Called by the admin writer only after the identity is confirmed offline.
+  void ForgetOfflineDeviceData(const std::string& device_id);
   size_t GetOnlineDeviceCount() const;
   size_t GetOnlineWebClientCount() const;
   void SetDeviceNetworkInfo(const std::string& device_id,

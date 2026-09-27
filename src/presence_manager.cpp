@@ -69,6 +69,22 @@ bool PresenceManager::IsOnline(const std::string& device_id) const {
   return !res.empty() && res[0].second;
 }
 
+void PresenceManager::ForgetOfflineDeviceData(const std::string& device_id) {
+  const auto clone = "C-" + device_id;
+  {
+    std::lock_guard<std::mutex> lock(associations_mutex_);
+    associations_.erase(device_id);
+    associations_.erase(clone);
+    for (auto& entry : associations_) {
+      entry.second.erase(device_id);
+      entry.second.erase(clone);
+    }
+  }
+  std::lock_guard<std::mutex> lock(network_info_mutex_);
+  device_network_info_.erase(device_id);
+  device_network_info_.erase(clone);
+}
+
 size_t PresenceManager::GetOnlineDeviceCount() const {
   std::lock_guard<std::mutex> lock(online_devices_mutex_);
   return online_devices_.size();

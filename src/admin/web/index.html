@@ -43,6 +43,34 @@
         <div class="metric"><span data-i18n="Control time">Control time</span><strong id="metric-control">0s</strong></div>
         <div class="metric"><span data-i18n="Controlled time">Controlled time</span><strong id="metric-controlled">0s</strong></div>
       </div>
+      <details class="panel data-tools" id="data-tools">
+        <summary data-i18n="Device data requests">Device data requests</summary>
+        <p class="muted" data-i18n="Query one device and its controller identity. Export a database summary or clean offline records after verifying the requester's authority.">Query one device and its controller identity. Export a database summary or clean offline records after verifying the requester's authority.</p>
+        <form id="data-query-form" class="data-fields">
+          <label><span data-i18n="Device ID">Device ID</span><input id="data-device-id" maxlength="128" pattern="[A-Za-z0-9_-]+" autocomplete="off" required></label>
+          <label><span data-i18n="Request reference">Request reference</span><input id="data-request-ref" maxlength="64" pattern="[A-Za-z0-9_-]+" autocomplete="off" required></label>
+          <button id="data-query" type="submit" class="primary" data-i18n="Query data">Query data</button>
+        </form>
+        <p class="muted" data-i18n="Use an opaque case reference, not a name, email, password or verification evidence. For C- identities, enter the original device ID.">Use an opaque case reference, not a name, email, password or verification evidence. For C- identities, enter the original device ID.</p>
+        <div id="data-error" class="error" role="alert"></div>
+        <div id="data-status" role="status"></div>
+        <div id="data-result" class="hidden">
+          <div id="data-summary" class="detail-grid"></div>
+          <div class="table-wrap"><table><thead><tr><th data-i18n="Device ID">Device ID</th><th data-i18n="State">State</th><th data-i18n="Last seen">Last seen</th><th data-i18n="Client">Client</th><th data-i18n="Total online">Total online</th><th data-i18n="Total control">Total control</th><th data-i18n="Total controlled">Total controlled</th></tr></thead><tbody id="data-presence"></tbody></table></div>
+          <p class="muted" data-i18n="Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime IPs, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.">Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime IPs, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.</p>
+          <div class="data-fields">
+            <label><span data-i18n="Admin password">Admin password</span><input id="data-admin-password" type="password" autocomplete="off"></label>
+            <label class="data-verification"><input id="data-verified" type="checkbox"><span data-i18n="I have verified the requester's authority and the requested scope.">I have verified the requester's authority and the requested scope.</span></label>
+            <button id="data-export" type="button" data-i18n="Export summary (JSON)">Export summary (JSON)</button>
+          </div>
+          <div class="data-cleanup">
+            <label><span data-i18n="Cleanup scope">Cleanup scope</span><select id="data-scope"><option value="history" data-i18n="History only — keep device identity">History only — keep device identity</option><option value="identity" data-i18n="History and device identity">History and device identity</option></select></label>
+            <p id="data-cleanup-help" class="muted"></p>
+            <label><span data-i18n="Type the device ID again to confirm">Type the device ID again to confirm</span><input id="data-confirm-id" autocomplete="off" maxlength="128"></label>
+            <button id="data-cleanup" type="button" class="danger" data-i18n="Clean selected data">Clean selected data</button>
+          </div>
+        </div>
+      </details>
       <div class="grid">
         <section class="panel presence-panel">
           <div class="toolbar">
