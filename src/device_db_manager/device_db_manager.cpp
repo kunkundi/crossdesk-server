@@ -120,12 +120,6 @@ std::string DevicePresenceSortClause(const std::string& sort,
     expression = "online_since";
   } else if (normalized == "current_online") {
     expression = "online_duration_seconds";
-  } else if (normalized == "total_online") {
-    expression = "total_online_seconds";
-  } else if (normalized == "total_control") {
-    expression = "total_control_seconds";
-  } else if (normalized == "total_controlled") {
-    expression = "total_controlled_seconds";
   } else if (normalized == "active_sessions") {
     expression = "active_control_count";
   }
@@ -307,10 +301,7 @@ void DeviceDBManager::InitDB() {
       "device_id TEXT PRIMARY KEY,"
       "online INTEGER NOT NULL,"
       "updated_at INTEGER NOT NULL,"
-      "online_since INTEGER NOT NULL DEFAULT 0,"
-      "total_online_seconds INTEGER NOT NULL DEFAULT 0,"
-      "total_control_seconds INTEGER NOT NULL DEFAULT 0,"
-      "total_controlled_seconds INTEGER NOT NULL DEFAULT 0"
+      "online_since INTEGER NOT NULL DEFAULT 0"
       ");";
 
   const char* sql_user_devices =
@@ -376,9 +367,6 @@ void DeviceDBManager::InitDB() {
   }
 
   EnsureIntegerColumn(db_, "device_presence", "online_since");
-  EnsureIntegerColumn(db_, "device_presence", "total_online_seconds");
-  EnsureIntegerColumn(db_, "device_presence", "total_control_seconds");
-  EnsureIntegerColumn(db_, "device_presence", "total_controlled_seconds");
   EnsureTextColumn(db_, "device_presence", "client_version");
   EnsureTextColumn(db_, "device_presence", "client_platform");
 
@@ -494,37 +482,6 @@ void DeviceDBManager::InitDB() {
       now - stale_cutoff <= kRemoteControlRecoveryWindowSeconds;
 
   if (!recover_remote_sessions) {
-    if (stale_cutoff > 0) {
-      std::string cutoff = std::to_string(stale_cutoff);
-      std::string sql_finalize_remote =
-          "UPDATE device_presence SET "
-          "total_control_seconds = total_control_seconds + COALESCE(("
-          "SELECT SUM(MAX(0, " +
-          cutoff +
-          " - started_at)) "
-          "FROM remote_control_sessions "
-          "WHERE normalized_guest_id = device_presence.device_id), 0), "
-          "total_controlled_seconds = total_controlled_seconds + COALESCE(("
-          "SELECT SUM(MAX(0, " +
-          cutoff +
-          " - started_at)) "
-          "FROM remote_control_sessions "
-          "WHERE normalized_host_id = device_presence.device_id), 0) "
-          "WHERE EXISTS ("
-          "SELECT 1 FROM remote_control_sessions "
-          "WHERE normalized_guest_id = device_presence.device_id "
-          "OR normalized_host_id = device_presence.device_id);";
-      if (sqlite3_exec(db_, sql_finalize_remote.c_str(), nullptr, nullptr,
-                       &err_msg) != SQLITE_OK) {
-        std::string error = SqliteExecError(db_, err_msg);
-        LOG_ERROR("Failed to finalize stale remote control sessions: {}",
-                  error);
-        sqlite3_free(err_msg);
-        throw std::runtime_error(
-            "Failed to finalize stale remote control sessions: " + error);
-      }
-    }
-
     if (sqlite3_exec(db_, "DELETE FROM remote_control_sessions;", nullptr,
                      nullptr, &err_msg) != SQLITE_OK) {
       std::string error = SqliteExecError(db_, err_msg);
@@ -539,16 +496,8 @@ void DeviceDBManager::InitDB() {
   }
 
   int64_t offline_time = stale_cutoff > 0 ? stale_cutoff : now;
-  std::string sql_presence_startup_reset = "UPDATE device_presence SET ";
-  if (stale_cutoff > 0) {
-    std::string cutoff = std::to_string(stale_cutoff);
-    sql_presence_startup_reset +=
-        "total_online_seconds = total_online_seconds + "
-        "CASE WHEN online_since > 0 THEN MAX(0, " +
-        cutoff +
-        " - online_since) ELSE 0 END, ";
-  }
-  sql_presence_startup_reset +=
+  std::string sql_presence_startup_reset =
+      "UPDATE device_presence SET "
       "online = 0, "
       "updated_at = " +
       std::to_string(offline_time) +
@@ -1029,9 +978,9 @@ bool DeviceDBManager::SetDeviceOnline(const std::string& device_id,
 
   const char* online_sql =
       "INSERT INTO device_presence "
-      "(device_id, online, updated_at, online_since, total_online_seconds) "
+      "(device_id, online, updated_at, online_since) "
       "VALUES (?, 1, CAST(strftime('%s','now') AS INTEGER), "
-      "CAST(strftime('%s','now') AS INTEGER), 0) "
+      "CAST(strftime('%s','now') AS INTEGER)) "
       "ON CONFLICT(device_id) DO UPDATE SET "
       "online=1, "
       "updated_at=CAST(strftime('%s','now') AS INTEGER), "
@@ -1042,14 +991,9 @@ bool DeviceDBManager::SetDeviceOnline(const std::string& device_id,
 
   const char* offline_sql =
       "INSERT INTO device_presence "
-      "(device_id, online, updated_at, online_since, total_online_seconds) "
-      "VALUES (?, 0, CAST(strftime('%s','now') AS INTEGER), 0, 0) "
+      "(device_id, online, updated_at, online_since) "
+      "VALUES (?, 0, CAST(strftime('%s','now') AS INTEGER), 0) "
       "ON CONFLICT(device_id) DO UPDATE SET "
-      "total_online_seconds=device_presence.total_online_seconds + "
-      "CASE WHEN device_presence.online = 1 AND "
-      "device_presence.online_since > 0 THEN "
-      "MAX(0, CAST(strftime('%s','now') AS INTEGER) - "
-      "device_presence.online_since) ELSE 0 END, "
       "online=0, "
       "updated_at=CAST(strftime('%s','now') AS INTEGER), "
       "online_since=0;";
@@ -1128,9 +1072,8 @@ bool DeviceDBManager::StartRemoteControlSession(
   auto ensure_presence = [this](const std::string& device_id) {
     const char* sql =
         "INSERT INTO device_presence "
-        "(device_id, online, updated_at, online_since, total_online_seconds, "
-        "total_control_seconds, total_controlled_seconds) "
-        "VALUES (?, 0, CAST(strftime('%s','now') AS INTEGER), 0, 0, 0, 0) "
+        "(device_id, online, updated_at, online_since) "
+        "VALUES (?, 0, CAST(strftime('%s','now') AS INTEGER), 0) "
         "ON CONFLICT(device_id) DO NOTHING;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1185,7 +1128,7 @@ bool DeviceDBManager::StartRemoteControlSession(
 }
 
 bool DeviceDBManager::EndRemoteControlSession(
-    const std::string& transmission_id, const std::string& host_id,
+    const std::string& transmission_id, const std::string&,
     const std::string& guest_id) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   if (db_ == nullptr) {
@@ -1196,105 +1139,18 @@ bool DeviceDBManager::EndRemoteControlSession(
     return false;
   }
 
-  const char* select_sql =
-      "SELECT host_id, started_at FROM remote_control_sessions "
-      "WHERE transmission_id = ? AND guest_id = ?;";
-  sqlite3_stmt* select_stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, select_sql, -1, &select_stmt, nullptr) !=
-      SQLITE_OK) {
-    return false;
-  }
-  sqlite3_bind_text(select_stmt, 1, transmission_id.c_str(), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(select_stmt, 2, guest_id.c_str(), -1, SQLITE_TRANSIENT);
-
-  std::string stored_host_id;
-  int64_t started_at = 0;
-  bool found = false;
-  if (sqlite3_step(select_stmt) == SQLITE_ROW) {
-    stored_host_id = ColumnText(select_stmt, 0);
-    started_at = sqlite3_column_int64(select_stmt, 1);
-    found = true;
-  }
-  sqlite3_finalize(select_stmt);
-  if (!found) {
-    return true;
-  }
-
-  std::string effective_host_id =
-      stored_host_id.empty() ? host_id : stored_host_id;
-  if (effective_host_id.empty()) {
-    return false;
-  }
-  int64_t duration = std::max<int64_t>(0, NowSeconds() - started_at);
-
-  char* err_msg = nullptr;
-  if (sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, &err_msg) !=
-      SQLITE_OK) {
-    LOG_ERROR("Failed to begin EndRemoteControlSession transaction: {}",
-              err_msg ? err_msg : sqlite3_errmsg(db_));
-    sqlite3_free(err_msg);
-    return false;
-  }
-
-  auto rollback = [this]() {
-    char* rollback_err = nullptr;
-    sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, &rollback_err);
-    sqlite3_free(rollback_err);
-  };
-
-  auto add_duration = [this](const char* column, const std::string& device_id,
-                             int64_t value) {
-    std::string sql =
-        std::string("UPDATE device_presence SET ") + column + " = " + column +
-        " + ? WHERE device_id = ?;";
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
-        SQLITE_OK) {
-      return false;
-    }
-    sqlite3_bind_int64(stmt, 1, value);
-    sqlite3_bind_text(stmt, 2, device_id.c_str(), -1, SQLITE_TRANSIENT);
-    bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
-    sqlite3_finalize(stmt);
-    return ok;
-  };
-
-  if (!add_duration("total_control_seconds",
-                    NormalizeRemoteDeviceId(guest_id), duration) ||
-      !add_duration("total_controlled_seconds",
-                    NormalizeRemoteDeviceId(effective_host_id), duration)) {
-    rollback();
-    return false;
-  }
-
-  const char* delete_sql =
+  const char* sql =
       "DELETE FROM remote_control_sessions "
       "WHERE transmission_id = ? AND guest_id = ?;";
-  sqlite3_stmt* delete_stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, delete_sql, -1, &delete_stmt, nullptr) !=
-      SQLITE_OK) {
-    rollback();
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
     return false;
   }
-  sqlite3_bind_text(delete_stmt, 1, transmission_id.c_str(), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(delete_stmt, 2, guest_id.c_str(), -1, SQLITE_TRANSIENT);
-  bool ok = (sqlite3_step(delete_stmt) == SQLITE_DONE);
-  sqlite3_finalize(delete_stmt);
-  if (!ok) {
-    rollback();
-    return false;
-  }
-
-  if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, &err_msg) != SQLITE_OK) {
-    LOG_ERROR("Failed to commit EndRemoteControlSession transaction: {}",
-              err_msg ? err_msg : sqlite3_errmsg(db_));
-    sqlite3_free(err_msg);
-    rollback();
-    return false;
-  }
-  return true;
+  sqlite3_bind_text(stmt, 1, transmission_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, guest_id.c_str(), -1, SQLITE_TRANSIENT);
+  const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+  sqlite3_finalize(stmt);
+  return ok;
 }
 
 bool DeviceDBManager::EndRemoteControlTransmission(
@@ -1590,19 +1446,7 @@ OnlineDurationStats DeviceDBManager::GetOnlineDurationStats() {
       "SELECT "
       "COALESCE(SUM(CASE WHEN online = 1 AND online_since > 0 THEN "
       "MAX(0, CAST(strftime('%s','now') AS INTEGER) - online_since) "
-      "ELSE 0 END), 0), "
-      "COALESCE(SUM(total_online_seconds + "
-      "CASE WHEN online = 1 AND online_since > 0 THEN "
-      "MAX(0, CAST(strftime('%s','now') AS INTEGER) - online_since) "
-      "ELSE 0 END), 0), "
-      "COALESCE(SUM(total_control_seconds + COALESCE(("
-      "SELECT SUM(MAX(0, CAST(strftime('%s','now') AS INTEGER) - started_at)) "
-      "FROM remote_control_sessions "
-      "WHERE normalized_guest_id = device_presence.device_id), 0)), 0), "
-      "COALESCE(SUM(total_controlled_seconds + COALESCE(("
-      "SELECT SUM(MAX(0, CAST(strftime('%s','now') AS INTEGER) - started_at)) "
-      "FROM remote_control_sessions "
-      "WHERE normalized_host_id = device_presence.device_id), 0)), 0) "
+      "ELSE 0 END), 0) "
       "FROM device_presence "
       "WHERE device_id NOT LIKE 'web-%' "
       "AND device_id NOT LIKE 'C-%';";
@@ -1615,9 +1459,6 @@ OnlineDurationStats DeviceDBManager::GetOnlineDurationStats() {
 
   if (sqlite3_step(stmt) == SQLITE_ROW) {
     stats.current_online_seconds = sqlite3_column_int64(stmt, 0);
-    stats.total_online_seconds = sqlite3_column_int64(stmt, 1);
-    stats.total_control_seconds = sqlite3_column_int64(stmt, 2);
-    stats.total_controlled_seconds = sqlite3_column_int64(stmt, 3);
   }
   sqlite3_finalize(stmt);
   return stats;
@@ -1642,19 +1483,6 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListOnlineDevices(
       "CASE WHEN online = 1 AND online_since > 0 THEN "
       "MAX(0, CAST(strftime('%s','now') AS INTEGER) - online_since) "
       "ELSE 0 END AS online_duration_seconds, "
-      "total_online_seconds + CASE WHEN online = 1 AND online_since > 0 "
-      "THEN MAX(0, CAST(strftime('%s','now') AS INTEGER) - online_since) "
-      "ELSE 0 END AS total_online_seconds, "
-      "total_control_seconds + COALESCE(("
-      "SELECT SUM(MAX(0, CAST(strftime('%s','now') AS INTEGER) - started_at)) "
-      "FROM remote_control_sessions "
-      "WHERE normalized_guest_id = device_presence.device_id), 0) "
-      "AS total_control_seconds, "
-      "total_controlled_seconds + COALESCE(("
-      "SELECT SUM(MAX(0, CAST(strftime('%s','now') AS INTEGER) - started_at)) "
-      "FROM remote_control_sessions "
-      "WHERE normalized_host_id = device_presence.device_id), 0) "
-      "AS total_controlled_seconds, "
       "client_version, client_platform "
       "FROM device_presence "
       "WHERE online = 1 "
@@ -1686,11 +1514,8 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListOnlineDevices(
     info.updated_at = sqlite3_column_int64(stmt, 2);
     info.online_since = sqlite3_column_int64(stmt, 3);
     info.online_duration_seconds = sqlite3_column_int64(stmt, 4);
-    info.total_online_seconds = sqlite3_column_int64(stmt, 5);
-    info.total_control_seconds = sqlite3_column_int64(stmt, 6);
-    info.total_controlled_seconds = sqlite3_column_int64(stmt, 7);
-    info.client_version = ColumnText(stmt, 8);
-    info.client_platform = ColumnText(stmt, 9);
+    info.client_version = ColumnText(stmt, 5);
+    info.client_platform = ColumnText(stmt, 6);
     result.push_back(info);
   }
   sqlite3_finalize(stmt);
@@ -1714,19 +1539,6 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
       "CASE WHEN online = 1 AND online_since > 0 THEN "
       "MAX(0, CAST(strftime('%s','now') AS INTEGER) - online_since) "
       "ELSE 0 END AS online_duration_seconds, "
-      "total_online_seconds + CASE WHEN online = 1 AND online_since > 0 "
-      "THEN MAX(0, CAST(strftime('%s','now') AS INTEGER) - online_since) "
-      "ELSE 0 END AS total_online_seconds, "
-      "total_control_seconds + COALESCE(("
-      "SELECT SUM(MAX(0, CAST(strftime('%s','now') AS INTEGER) - started_at)) "
-      "FROM remote_control_sessions "
-      "WHERE normalized_guest_id = device_presence.device_id), 0) "
-      "AS total_control_seconds, "
-      "total_controlled_seconds + COALESCE(("
-      "SELECT SUM(MAX(0, CAST(strftime('%s','now') AS INTEGER) - started_at)) "
-      "FROM remote_control_sessions "
-      "WHERE normalized_host_id = device_presence.device_id), 0) "
-      "AS total_controlled_seconds, "
       "COALESCE(("
       "SELECT SUM(MAX(0, CAST(strftime('%s','now') AS INTEGER) - started_at)) "
       "FROM remote_control_sessions "
@@ -1786,17 +1598,14 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
     info.updated_at = sqlite3_column_int64(stmt, 2);
     info.online_since = sqlite3_column_int64(stmt, 3);
     info.online_duration_seconds = sqlite3_column_int64(stmt, 4);
-    info.total_online_seconds = sqlite3_column_int64(stmt, 5);
-    info.total_control_seconds = sqlite3_column_int64(stmt, 6);
-    info.total_controlled_seconds = sqlite3_column_int64(stmt, 7);
-    info.current_control_seconds = sqlite3_column_int64(stmt, 8);
-    info.current_controlled_seconds = sqlite3_column_int64(stmt, 9);
-    info.active_control_count = sqlite3_column_int64(stmt, 10);
-    info.active_controlled_count = sqlite3_column_int64(stmt, 11);
-    info.active_control_targets = SplitCommaSeparatedIds(ColumnText(stmt, 12));
-    info.active_controlled_by = SplitCommaSeparatedIds(ColumnText(stmt, 13));
-    info.client_version = ColumnText(stmt, 14);
-    info.client_platform = ColumnText(stmt, 15);
+    info.current_control_seconds = sqlite3_column_int64(stmt, 5);
+    info.current_controlled_seconds = sqlite3_column_int64(stmt, 6);
+    info.active_control_count = sqlite3_column_int64(stmt, 7);
+    info.active_controlled_count = sqlite3_column_int64(stmt, 8);
+    info.active_control_targets = SplitCommaSeparatedIds(ColumnText(stmt, 9));
+    info.active_controlled_by = SplitCommaSeparatedIds(ColumnText(stmt, 10));
+    info.client_version = ColumnText(stmt, 11);
+    info.client_platform = ColumnText(stmt, 12);
     result.push_back(info);
   }
   sqlite3_finalize(stmt);

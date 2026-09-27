@@ -145,7 +145,6 @@ nlohmann::json DeviceDBManager::AdminDeviceData(
     Statement s(
         db_,
         "SELECT device_id,online,updated_at,online_since,"
-        "total_online_seconds,total_control_seconds,total_controlled_seconds,"
         "client_version,client_platform FROM device_presence "
         "WHERE device_id IN (?,?) ORDER BY device_id;");
     s.Bind(1, id);
@@ -156,11 +155,8 @@ nlohmann::json DeviceDBManager::AdminDeviceData(
                           {"online", s.Number(1) != 0},
                           {"updated_at", s.Number(2)},
                           {"online_since", s.Number(3)},
-                          {"total_online_seconds", s.Number(4)},
-                          {"total_control_seconds", s.Number(5)},
-                          {"total_controlled_seconds", s.Number(6)},
-                          {"client_version", s.Text(7)},
-                          {"client_platform", s.Text(8)}});
+                          {"client_version", s.Text(4)},
+                          {"client_platform", s.Text(5)}});
     }
   }
   {

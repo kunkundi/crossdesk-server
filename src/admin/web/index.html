@@ -1,151 +1,360 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CrossDesk Admin</title>
-  <link rel="stylesheet" href="/admin/assets/admin.css">
-</head>
-<body>
-  <header>
-    <h1>CrossDesk Admin <span id="server-version" class="server-version">{{SERVER_VERSION}}</span></h1>
-    <div class="header-actions">
-      <select id="language" aria-label="Language" data-i18n-aria-label="Language">
-        <option value="zh">中文</option>
-        <option value="en">English</option>
-      </select>
-      <button id="logout" class="hidden" data-i18n="Logout">Logout</button>
-    </div>
-  </header>
-  <main>
-    <section id="login-view" class="login">
-      <form id="login-form" class="panel">
-        <h2 data-i18n="Admin Login">Admin Login</h2>
-        <input id="username" autocomplete="username" placeholder="Username" data-i18n-placeholder="Username" aria-label="Username" data-i18n-aria-label="Username" required>
-        <input id="password" autocomplete="current-password" placeholder="Password" data-i18n-placeholder="Password" aria-label="Password" data-i18n-aria-label="Password" type="password" required>
-        <button class="primary" type="submit" data-i18n="Login">Login</button>
-        <div id="login-error" class="error"></div>
-      </form>
-    </section>
-    <section id="dashboard-view" class="hidden">
-      <div class="toolbar">
-        <div class="muted"><span data-i18n="Last refresh:">Last refresh:</span> <span id="last-refresh">never</span></div>
-        <div class="actions">
-          <button id="list-refresh" type="button" data-i18n="Refresh lists">Refresh lists</button>
-          <div id="refresh-error" class="error"></div>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>CrossDesk Admin</title>
+    <link rel="stylesheet" href="/admin/assets/admin.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content" data-i18n="Skip to content">Skip to content</a>
+    <header class="app-header">
+      <div class="header-inner">
+        <div class="brand">
+          <span class="brand-mark">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="13" height="10" rx="2"/>
+              <path d="M7 18h6M10 14v4"/>
+              <rect x="15" y="10" width="6" height="10" rx="1.5"/>
+            </svg>
+          </span>
+          <div>
+            <span class="brand-name">CrossDesk</span>
+            <span class="brand-caption" data-i18n="Administration">Administration</span>
+          </div>
+          <span id="server-version" class="server-version">{{SERVER_VERSION}}</span>
+        </div>
+        <nav id="dashboard-nav" class="header-nav hidden" aria-label="Main navigation" data-i18n-aria-label="Main navigation">
+          <a href="#overview" data-i18n="Overview">Overview</a>
+          <a href="#clients" data-i18n="Clients">Clients</a>
+          <a href="#session-panel" data-i18n="Sessions">Sessions</a>
+          <a href="#data-tools" data-i18n="Data management">Data management</a>
+        </nav>
+        <div class="header-actions">
+          <select id="language" aria-label="Language" data-i18n-aria-label="Language">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+          <button id="logout" class="hidden" data-i18n="Logout">Logout</button>
         </div>
       </div>
-      <div class="metrics">
-        <div class="metric"><span data-i18n="Online devices">Online devices</span><strong id="metric-devices">0</strong></div>
-        <div class="metric"><span data-i18n="Web clients">Web clients</span><strong id="metric-web">0</strong></div>
-        <div class="metric"><span data-i18n="Active sessions">Active sessions</span><strong id="metric-sessions">0</strong></div>
-        <div class="metric"><span data-i18n="Online time">Online time</span><strong id="metric-duration">0s</strong></div>
-        <div class="metric"><span data-i18n="Control time">Control time</span><strong id="metric-control">0s</strong></div>
-        <div class="metric"><span data-i18n="Controlled time">Controlled time</span><strong id="metric-controlled">0s</strong></div>
-      </div>
-      <details class="panel data-tools" id="data-tools">
-        <summary data-i18n="Device data requests">Device data requests</summary>
-        <p class="muted" data-i18n="Query one device and its controller identity. Export a database summary or clean offline records after verifying the requester's authority.">Query one device and its controller identity. Export a database summary or clean offline records after verifying the requester's authority.</p>
-        <form id="data-query-form" class="data-fields">
-          <label><span data-i18n="Device ID">Device ID</span><input id="data-device-id" maxlength="128" pattern="[A-Za-z0-9_-]+" autocomplete="off" required></label>
-          <label><span data-i18n="Request reference">Request reference</span><input id="data-request-ref" maxlength="64" pattern="[A-Za-z0-9_-]+" autocomplete="off" required></label>
-          <button id="data-query" type="submit" class="primary" data-i18n="Query data">Query data</button>
+    </header>
+    <main id="main-content" tabindex="-1">
+      <section id="auth-loading" class="auth-loading" role="status">
+        <span class="loading-spinner" aria-hidden="true"></span>
+        <span data-i18n="Loading console…">Loading console…</span>
+      </section>
+      <section id="login-view" class="login hidden">
+        <div class="login-intro">
+          <span class="eyebrow" data-i18n="SERVER CONSOLE">SERVER CONSOLE</span>
+          <h1 data-i18n="Your connections, at a glance.">Your connections, at a glance.</h1>
+          <p data-i18n="Monitor clients, manage remote sessions and keep device records in one place.">Monitor clients, manage remote sessions and keep device records in one place.</p>
+          <div class="login-features">
+            <span>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="13" rx="2"/>
+                <path d="M8 21h8M12 17v4"/>
+              </svg>
+              <span data-i18n="Client Presence">Client Presence</span>
+            </span>
+            <span>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 7h14l-4-4M19 17H5l4 4M19 7l-4 4M5 17l4-4"/>
+              </svg>
+              <span data-i18n="Active sessions">Active sessions</span>
+            </span>
+            <span>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="5" y="10" width="14" height="11" rx="2"/>
+                <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>
+              </svg>
+              <span data-i18n="Device data requests">Device data requests</span>
+            </span>
+          </div>
+        </div>
+        <form id="login-form" class="panel login-card">
+          <span class="login-icon">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="5" y="10" width="14" height="11" rx="2"/>
+              <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>
+            </svg>
+          </span>
+          <div>
+            <h2 data-i18n="Admin Login">Admin Login</h2>
+            <p class="section-description" data-i18n="Sign in with your server administrator account.">Sign in with your server administrator account.</p>
+          </div>
+          <label for="username" data-i18n="Username">Username</label>
+          <input id="username" autocomplete="username" placeholder="Username" data-i18n-placeholder="Username" required>
+          <label for="password" data-i18n="Password">Password</label>
+          <input id="password" autocomplete="current-password" placeholder="Password" data-i18n-placeholder="Password" type="password" required>
+          <div id="login-error" class="error" role="alert"></div>
+          <button id="login-submit" class="primary" type="submit" data-i18n="Login">Login</button>
         </form>
-        <p class="muted" data-i18n="Use an opaque case reference, not a name, email, password or verification evidence. For C- identities, enter the original device ID.">Use an opaque case reference, not a name, email, password or verification evidence. For C- identities, enter the original device ID.</p>
-        <div id="data-error" class="error" role="alert"></div>
-        <div id="data-status" role="status"></div>
-        <div id="data-result" class="hidden">
-          <div id="data-summary" class="detail-grid"></div>
-          <div class="table-wrap"><table><thead><tr><th data-i18n="Device ID">Device ID</th><th data-i18n="State">State</th><th data-i18n="Last seen">Last seen</th><th data-i18n="Client">Client</th><th data-i18n="Total online">Total online</th><th data-i18n="Total control">Total control</th><th data-i18n="Total controlled">Total controlled</th></tr></thead><tbody id="data-presence"></tbody></table></div>
-          <p class="muted" data-i18n="Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime IPs, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.">Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime IPs, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.</p>
-          <div class="data-fields">
-            <label><span data-i18n="Admin password">Admin password</span><input id="data-admin-password" type="password" autocomplete="off"></label>
-            <label class="data-verification"><input id="data-verified" type="checkbox"><span data-i18n="I have verified the requester's authority and the requested scope.">I have verified the requester's authority and the requested scope.</span></label>
-            <button id="data-export" type="button" data-i18n="Export summary (JSON)">Export summary (JSON)</button>
+      </section>
+      <section id="dashboard-view" class="hidden">
+        <section id="overview" aria-labelledby="overview-title">
+          <div class="page-heading">
+            <div>
+              <h1 id="overview-title" data-i18n="Overview">Overview</h1>
+            </div>
+            <div class="refresh-controls">
+              <div class="refresh-meta">
+                <span id="refresh-status" class="refresh-status" role="status" data-i18n="Auto-refresh · 5s">Auto-refresh · 5s</span>
+                <span class="last-refresh">
+                  <span data-i18n="Last refresh:">Last refresh:</span>
+                  <time id="last-refresh">—</time>
+                </span>
+              </div>
+              <button id="list-refresh" type="button" class="refresh-button">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M20 7v5h-5M4 17v-5h5"/>
+                  <path d="M6 6a8 8 0 0 1 13 3M18 18A8 8 0 0 1 5 15"/>
+                </svg>
+                <span data-i18n="Refresh lists">Refresh lists</span>
+              </button>
+            </div>
           </div>
-          <div class="data-cleanup">
-            <label><span data-i18n="Cleanup scope">Cleanup scope</span><select id="data-scope"><option value="history" data-i18n="History only — keep device identity">History only — keep device identity</option><option value="identity" data-i18n="History and device identity">History and device identity</option></select></label>
-            <p id="data-cleanup-help" class="muted"></p>
-            <label><span data-i18n="Type the device ID again to confirm">Type the device ID again to confirm</span><input id="data-confirm-id" autocomplete="off" maxlength="128"></label>
-            <button id="data-cleanup" type="button" class="danger" data-i18n="Clean selected data">Clean selected data</button>
+          <div id="refresh-error" class="error refresh-error" role="alert"></div>
+          <div class="metrics">
+            <article class="metric teal">
+              <span class="metric-icon">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="13" rx="2"/>
+                  <path d="M8 21h8M12 17v4"/>
+                </svg>
+              </span>
+              <div class="metric-copy">
+                <span data-i18n="Online devices">Online devices</span>
+                <span class="metric-description" data-i18n="PC clients online">PC clients online</span>
+              </div>
+              <strong id="metric-devices">—</strong>
+            </article>
+            <article class="metric blue">
+              <span class="metric-icon">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9"/>
+                  <path d="M3 12h18M12 3a18 18 0 0 1 0 18 18 18 0 0 1 0-18Z"/>
+                </svg>
+              </span>
+              <div class="metric-copy">
+                <span data-i18n="Web clients">Web clients</span>
+                <span class="metric-description" data-i18n="Browser clients online">Browser clients online</span>
+              </div>
+              <strong id="metric-web">—</strong>
+            </article>
+            <article class="metric violet">
+              <span class="metric-icon">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M5 7h14l-4-4M19 17H5l4 4M19 7l-4 4M5 17l4-4"/>
+                </svg>
+              </span>
+              <div class="metric-copy">
+                <span data-i18n="Active sessions">Active sessions</span>
+                <span class="metric-description" data-i18n="Remote control connections">Remote control connections</span>
+              </div>
+              <strong id="metric-sessions">—</strong>
+            </article>
           </div>
-        </div>
-      </details>
-      <div class="grid">
-        <section class="panel presence-panel">
-          <div class="toolbar">
-            <h2 data-i18n="Client Presence">Client Presence</h2>
-            <div class="actions">
-              <input id="device-search" placeholder="Search device ID" data-i18n-placeholder="Search device ID">
-              <select id="device-kind" aria-label="Client category" data-i18n-aria-label="Client category">
-                <option value="pc" data-i18n="PC">PC</option>
-                <option value="web" data-i18n="Web">Web</option>
-              </select>
-              <select id="device-sort" aria-label="Device sort" data-i18n-aria-label="Device sort">
-                <option value="status" data-i18n="Status">Status</option>
-                <option value="updated_at" data-i18n="Last seen">Last seen</option>
-                <option value="online_since" data-i18n="Online since">Online since</option>
-                <option value="current_online" data-i18n="Current online">Current online</option>
-                <option value="total_online" data-i18n="Total online">Total online</option>
-                <option value="total_control" data-i18n="Total control">Total control</option>
-                <option value="total_controlled" data-i18n="Total controlled">Total controlled</option>
-                <option value="device_id" data-i18n="Device ID">Device ID</option>
-              </select>
+        </section>
+        <div class="monitoring-grid">
+          <section id="clients" class="panel presence-panel" aria-labelledby="clients-title">
+            <div class="section-heading">
+              <h2 id="clients-title" data-i18n="Client Presence">Client Presence</h2>
+              <div class="segments" id="device-filters" role="group" aria-label="Device filters" data-i18n-aria-label="Device filters">
+                <button type="button" data-device-filter="online">
+                  <span data-i18n="Online">Online</span>
+                  <span id="device-count-online">0</span>
+                </button>
+                <button type="button" data-device-filter="active" title="Devices currently being controlled; each device is counted once" data-i18n-title="Devices currently being controlled; each device is counted once">
+                  <span data-i18n="Controlled">Controlled</span>
+                  <span id="device-count-active">0</span>
+                </button>
+                <button type="button" data-device-filter="offline">
+                  <span data-i18n="Offline">Offline</span>
+                  <span id="device-count-offline">0</span>
+                </button>
+                <button type="button" data-device-filter="all">
+                  <span data-i18n="All">All</span>
+                  <span id="device-count-all">0</span>
+                </button>
+              </div>
+            </div>
+            <div class="filter-toolbar">
+              <label class="search-field">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="10.5" cy="10.5" r="6.5"/>
+                  <path d="m16 16 4 4"/>
+                </svg>
+                <span class="sr-only" data-i18n="Search device ID">Search device ID</span>
+                <input id="device-search" type="search" placeholder="Search device ID" data-i18n-placeholder="Search device ID" autocomplete="off">
+              </label>
+              <label class="filter-field">
+                <span data-i18n="Type">Type</span>
+                <select id="device-kind" aria-label="Client category" data-i18n-aria-label="Client category">
+                  <option value="pc" data-i18n="PC">PC</option>
+                  <option value="web" data-i18n="Web">Web</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span data-i18n="Sort by">Sort by</span>
+                <select id="device-sort" aria-label="Device sort" data-i18n-aria-label="Device sort">
+                  <option value="status" data-i18n="Status">Status</option>
+                  <option value="updated_at" data-i18n="Last seen">Last seen</option>
+                  <option value="online_since" data-i18n="Online since">Online since</option>
+                  <option value="current_online" data-i18n="Current online">Current online</option>
+                  <option value="device_id" data-i18n="Device ID">Device ID</option>
+                </select>
+              </label>
               <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order" data-i18n-aria-label="Toggle sort order" data-i18n="DESC">DESC</button>
-              <select id="device-limit" aria-label="Devices per page" data-i18n-aria-label="Devices per page">
-                <option value="10" data-i18n="10 / page">10 / page</option>
-                <option value="50" data-i18n="50 / page">50 / page</option>
-                <option value="100" data-i18n="100 / page">100 / page</option>
-                <option value="200" data-i18n="200 / page">200 / page</option>
-              </select>
+            </div>
+            <div class="table-wrap list-scroll" tabindex="0" role="region" aria-labelledby="clients-title">
+              <table class="presence-table" aria-labelledby="clients-title">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="Client">Client</th>
+                    <th scope="col" data-i18n="State">State</th>
+                    <th scope="col" data-i18n="Current online">Current online</th>
+                    <th scope="col" data-i18n="Last seen">Last seen</th>
+                    <th scope="col" data-i18n="Detail">Detail</th>
+                  </tr>
+                </thead>
+                <tbody id="devices"></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <span id="device-page-info" class="page-info">0-0 of 0</span>
+              <div class="pager-actions">
+                <select id="device-limit" aria-label="Devices per page" data-i18n-aria-label="Devices per page">
+                  <option value="10" data-i18n="10 / page">10 / page</option>
+                  <option value="50" data-i18n="50 / page">50 / page</option>
+                  <option value="100" data-i18n="100 / page">100 / page</option>
+                  <option value="200" data-i18n="200 / page">200 / page</option>
+                </select>
+                <button id="device-prev" type="button" data-i18n="Previous">Previous</button>
+                <button id="device-next" type="button" data-i18n="Next">Next</button>
+              </div>
+            </div>
+          </section>
+          <section id="session-panel" class="panel sessions-panel" aria-labelledby="sessions-title">
+            <div class="section-heading">
+              <h2 id="sessions-title" data-i18n="Active sessions">Active sessions</h2>
+            </div>
+            <div class="session-search-toolbar">
+              <label class="search-field">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="10.5" cy="10.5" r="6.5"/>
+                  <path d="m16 16 4 4"/>
+                </svg>
+                <span class="sr-only" data-i18n="Search session or user">Search session or user</span>
+                <input id="session-search" type="search" placeholder="Search session or user" data-i18n-placeholder="Search session or user" autocomplete="off">
+              </label>
+            </div>
+            <div class="table-wrap list-scroll" tabindex="0" role="region" aria-labelledby="sessions-title">
+              <table class="sessions-table" aria-labelledby="sessions-title">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="Host / session">Host / session</th>
+                    <th scope="col" data-i18n="Participants">Participants</th>
+                    <th scope="col" data-i18n="Action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sessions"></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <span id="session-page-info" class="page-info">0-0 of 0</span>
+              <div class="pager-actions">
+                <select id="session-limit" aria-label="Sessions per page" data-i18n-aria-label="Sessions per page">
+                  <option value="10" data-i18n="10 / page">10 / page</option>
+                  <option value="50" data-i18n="50 / page">50 / page</option>
+                  <option value="100" data-i18n="100 / page">100 / page</option>
+                  <option value="200" data-i18n="200 / page">200 / page</option>
+                </select>
+                <button id="session-prev" type="button" data-i18n="Previous">Previous</button>
+                <button id="session-next" type="button" data-i18n="Next">Next</button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <details class="panel data-tools" id="data-tools">
+          <summary>
+            <span class="summary-copy">
+              <span class="section-title" data-i18n="Device data requests">Device data requests</span>
+              <span class="section-description" data-i18n="Query, export and clean device records">Query, export and clean device records</span>
+            </span>
+            <span class="summary-chevron" aria-hidden="true">⌄</span>
+          </summary>
+          <div class="data-content">
+            <p class="muted" data-i18n="Query one device and its controller identity. Export a database summary or clean offline records after verifying the requester's authority.">Query one device and its controller identity. Export a database summary or clean offline records after verifying the requester's authority.</p>
+            <form id="data-query-form" class="data-fields">
+              <label>
+                <span data-i18n="Device ID">Device ID</span>
+                <input id="data-device-id" maxlength="128" pattern="[A-Za-z0-9_\-]+" autocomplete="off" required>
+              </label>
+              <label>
+                <span data-i18n="Request reference">Request reference</span>
+                <input id="data-request-ref" maxlength="64" pattern="[A-Za-z0-9_\-]+" autocomplete="off" required>
+              </label>
+              <button id="data-query" type="submit" class="primary" data-i18n="Query data">Query data</button>
+            </form>
+            <p class="muted" data-i18n="Use an opaque case reference, not a name, email, password or verification evidence. For C- identities, enter the original device ID.">Use an opaque case reference, not a name, email, password or verification evidence. For C- identities, enter the original device ID.</p>
+            <div id="data-error" class="error" role="alert"></div>
+            <div id="data-status" role="status"></div>
+            <div id="data-result" class="hidden">
+              <div id="data-summary" class="detail-grid"></div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th data-i18n="Device ID">Device ID</th>
+                      <th data-i18n="State">State</th>
+                      <th data-i18n="Last seen">Last seen</th>
+                      <th data-i18n="Client">Client</th>
+                    </tr>
+                  </thead>
+                  <tbody id="data-presence"></tbody>
+                </table>
+              </div>
+              <p class="muted" data-i18n="Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime IPs, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.">Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime IPs, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.</p>
+              <div class="data-fields">
+                <label>
+                  <span data-i18n="Admin password">Admin password</span>
+                  <input id="data-admin-password" type="password" autocomplete="off">
+                </label>
+                <label class="data-verification">
+                  <input id="data-verified" type="checkbox">
+                  <span data-i18n="I have verified the requester's authority and the requested scope.">I have verified the requester's authority and the requested scope.</span>
+                </label>
+                <button id="data-export" type="button" data-i18n="Export summary (JSON)">Export summary (JSON)</button>
+              </div>
+              <div class="data-cleanup">
+                <label>
+                  <span data-i18n="Cleanup scope">Cleanup scope</span>
+                  <select id="data-scope">
+                    <option value="history" data-i18n="History only — keep device identity">History only — keep device identity</option>
+                    <option value="identity" data-i18n="History and device identity">History and device identity</option>
+                  </select>
+                </label>
+                <p id="data-cleanup-help" class="muted"></p>
+                <label>
+                  <span data-i18n="Type the device ID again to confirm">Type the device ID again to confirm</span>
+                  <input id="data-confirm-id" autocomplete="off" maxlength="128">
+                </label>
+                <button id="data-cleanup" type="button" class="danger" data-i18n="Clean selected data">Clean selected data</button>
+              </div>
             </div>
           </div>
-          <div class="segments" id="device-filters" role="tablist" aria-label="Device filters" data-i18n-aria-label="Device filters">
-            <button type="button" data-device-filter="online"><span data-i18n="Online">Online</span> <span id="device-count-online">0</span></button>
-            <button type="button" data-device-filter="active" title="Devices currently being controlled; each device is counted once" data-i18n-title="Devices currently being controlled; each device is counted once"><span data-i18n="Controlled">Controlled</span> <span id="device-count-active">0</span></button>
-            <button type="button" data-device-filter="offline"><span data-i18n="Offline">Offline</span> <span id="device-count-offline">0</span></button>
-            <button type="button" data-device-filter="all"><span data-i18n="All">All</span> <span id="device-count-all">0</span></button>
-          </div>
-          <div class="table-wrap">
-            <table class="presence-table">
-              <thead><tr><th data-i18n="Client">Client</th><th data-i18n="State">State</th><th data-i18n="Current online">Current online</th><th data-i18n="Detail">Detail</th></tr></thead>
-              <tbody id="devices"></tbody>
-            </table>
-          </div>
-          <div class="pager">
-            <button id="device-prev" type="button" data-i18n="Previous">Previous</button>
-            <span id="device-page-info">0-0 of 0</span>
-            <button id="device-next" type="button" data-i18n="Next">Next</button>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="toolbar">
-            <h2 data-i18n="Active sessions">Active sessions</h2>
-            <div class="actions">
-              <input id="session-search" placeholder="Search session or user" data-i18n-placeholder="Search session or user">
-              <select id="session-limit" aria-label="Sessions per page" data-i18n-aria-label="Sessions per page">
-                <option value="10" data-i18n="10 / page">10 / page</option>
-                <option value="50" data-i18n="50 / page">50 / page</option>
-                <option value="100" data-i18n="100 / page">100 / page</option>
-                <option value="200" data-i18n="200 / page">200 / page</option>
-              </select>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table class="sessions-table">
-              <thead><tr><th data-i18n="Transmission">Transmission</th><th data-i18n="Participants">Participants</th><th data-i18n="Action">Action</th></tr></thead>
-              <tbody id="sessions"></tbody>
-            </table>
-          </div>
-          <div class="pager">
-            <button id="session-prev" type="button" data-i18n="Previous">Previous</button>
-            <span id="session-page-info">0-0 of 0</span>
-            <button id="session-next" type="button" data-i18n="Next">Next</button>
-          </div>
-        </section>
-      </div>
-    </section>
-  </main>
-  <script defer src="/admin/assets/admin.js"></script>
-</body>
+        </details>
+        <footer class="page-footer">
+          <span>
+            CrossDesk
+            <span data-i18n="Administration">Administration</span>
+          </span>
+          <span data-i18n="Durations update every second while this page is visible.">Durations update every second while this page is visible.</span>
+        </footer>
+      </section>
+    </main>
+    <script defer src="/admin/assets/admin.js"></script>
+  </body>
 </html>

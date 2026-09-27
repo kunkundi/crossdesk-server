@@ -542,12 +542,6 @@ AdminHttpResponse AdminController::HandleOverview(
                          {"online_since", device.online_since},
                          {"online_duration_seconds",
                           device.online_duration_seconds},
-                         {"total_online_seconds",
-                          device.total_online_seconds},
-                         {"total_control_seconds",
-                          device.total_control_seconds},
-                         {"total_controlled_seconds",
-                          device.total_controlled_seconds},
                          {"client_ip", network_info.client_ip},
                          {"current_control_seconds",
                           device.current_control_seconds},
@@ -723,11 +717,7 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
            presence_ ? presence_->GetOnlineWebClientCount() : 0},
           {"active_connection_count", active_connection_count},
           {"online_duration_seconds",
-           duration_stats.current_online_seconds},
-          {"total_online_seconds", duration_stats.total_online_seconds},
-          {"total_control_seconds", duration_stats.total_control_seconds},
-          {"total_controlled_seconds",
-           duration_stats.total_controlled_seconds}};
+           duration_stats.current_online_seconds}};
   return stats_cache_;
 }
 

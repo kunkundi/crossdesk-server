@@ -1,4 +1,43 @@
     const chinese = {
+      'Skip to content': '跳转到主要内容',
+      'Administration': '服务端管理',
+      'Main navigation': '主要导航',
+      'Overview': '运行概览',
+      'Clients': '客户端',
+      'Sessions': '会话',
+      'Data management': '数据管理',
+      'Type': '类型',
+      'Sort by': '排序',
+      'Connection': '在线信息',
+      'Control activity': '控制活动',
+      'Controlled activity': '被控活动',
+      'Host / session': '被控端 / 会话',
+      'Host': '被控端',
+      'Session {id}': '会话 {id}',
+      '{count} participants': '{count} 位参与者',
+      'Controllers': '控制方',
+      'SERVER CONSOLE': '服务端控制台',
+      'Loading console…': '正在加载管理控制台…',
+      'Your connections, at a glance.': '连接状态，一目了然。',
+      'Monitor clients, manage remote sessions and keep device records in one place.': '集中查看客户端状态、管理远程会话与设备记录。',
+      'Sign in with your server administrator account.': '使用服务端管理员账户登录。',
+      'Signing in…': '正在登录…',
+      'A live view of your clients and remote connections.': '实时掌握客户端在线状态与远程连接情况。',
+      'Auto-refresh · 5s': '每 5 秒自动刷新',
+      'Refresh failed': '刷新失败，等待重试',
+      'PC clients online': '当前在线的电脑客户端',
+      'Browser clients online': '当前在线的浏览器客户端',
+      'Remote control connections': '当前进行中的远程控制连接',
+      'Find clients and inspect their connection activity.': '筛选客户端，查看在线时长与远程连接详情。',
+      'Inspect participants and manage ongoing remote sessions.': '查看会话参与者，管理正在进行的远程会话。',
+      'Query, export and clean device records': '查询设备记录、导出摘要与清理数据',
+      'Durations update every second while this page is visible.': '页面可见时，时长每秒更新。',
+      'No matching clients': '没有符合条件的客户端',
+      'Try another device ID, client category or status filter.': '请尝试其他设备 ID、客户端类型或状态筛选。',
+      'No active sessions': '暂无活动会话',
+      'Remote sessions will appear here when a connection starts.': '建立远程连接后，会话将显示在这里。',
+      'No matching sessions': '没有匹配的会话',
+      'Try another session or user ID.': '请尝试其他会话或用户 ID。',
       'Language': '语言',
       'Logout': '退出登录',
       'Admin Login': '管理员登录',
@@ -11,9 +50,6 @@
       'Online devices': '在线设备',
       'Web clients': '网页客户端',
       'Active sessions': '活动会话',
-      'Online time': '累计在线时长',
-      'Control time': '累计控制时长',
-      'Controlled time': '累计被控时长',
       'Client Presence': '设备在线状态',
       'Search device ID': '搜索设备 ID',
       'Client category': '客户端类型',
@@ -24,9 +60,6 @@
       'Last seen': '最近活动',
       'Online since': '上线时间',
       'Current online': '本次在线',
-      'Total online': '累计在线',
-      'Total control': '累计控制',
-      'Total controlled': '累计被控',
       'Device ID': '设备 ID',
       'Toggle sort order': '切换排序方向',
       'ASC': '升序',
@@ -116,6 +149,13 @@
       const element = document.getElementById(id);
       element.dataset.i18n = key;
       element.textContent = t(key);
+      if (id === 'refresh-error' && ['', 'Connection error', 'Failed to refresh lists'].includes(key)) {
+        const status = document.getElementById('refresh-status');
+        status.classList.toggle('failed', Boolean(key));
+        status.dataset.i18n = key ? 'Refresh failed' : 'Auto-refresh · 5s';
+        const statusText = t(status.dataset.i18n);
+        if (status.textContent !== statusText) status.textContent = statusText;
+      }
     }
 
     function setLanguage(value) {
@@ -165,24 +205,21 @@
     let listRefreshSerial = 0;
     let listRefreshInFlight = false;
     let listRefreshPending = false;
-    let statsSnapshot = {
-      onlineDuration: 0,
-      onlineCount: 0,
-      controlDuration: 0,
-      controlledDuration: 0,
-      activeConnections: 0,
-      capturedAt: 0
-    };
     function showDashboard() {
+      document.getElementById('auth-loading').classList.add('hidden');
+      document.getElementById('dashboard-nav').classList.remove('hidden');
       loginView.classList.add('hidden');
       dashboardView.classList.remove('hidden');
       logoutButton.classList.remove('hidden');
+      updateNavigation();
       refreshLists();
       if (!listTimer) listTimer = setInterval(refreshLists, 5000);
       if (!durationTimer) durationTimer = setInterval(updateLiveDurations, 1000);
     }
 
     function showLogin(message) {
+      document.getElementById('auth-loading').classList.add('hidden');
+      document.getElementById('dashboard-nav').classList.add('hidden');
       resetDeviceData();
       ++listRefreshSerial;
       listRefreshPending = false;
@@ -198,6 +235,11 @@
 
     async function login(event) {
       event.preventDefault();
+      const button = document.getElementById('login-submit');
+      if (button.disabled) return;
+      button.disabled = true;
+      setMessage('login-submit', 'Signing in…');
+      setMessage('login-error', '');
       const body = JSON.stringify({
         username: document.getElementById('username').value,
         password: document.getElementById('password').value
@@ -207,13 +249,17 @@
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           credentials: 'same-origin',
+          signal: AbortSignal.timeout(12000),
           body
         });
-        document.getElementById('password').value = '';
         if (response.ok) showDashboard();
         else showLogin(response.status === 401 ? 'Invalid username or password' : 'Connection error');
       } catch (_) {
         showLogin('Connection error');
+      } finally {
+        document.getElementById('password').value = '';
+        button.disabled = false;
+        setMessage('login-submit', 'Login');
       }
     }
 
@@ -247,12 +293,13 @@
       return t('{seconds}s', {seconds});
     }
 
-    function appendEmptyRow(body, colSpan) {
+    function appendEmptyRow(body, colSpan, title = 'No records', hint = '') {
       const row = document.createElement('tr');
       const cell = document.createElement('td');
       cell.className = 'empty';
       cell.colSpan = colSpan;
-      cell.textContent = t('No records');
+      appendText(cell, 'span', t(title), 'empty-title');
+      if (hint) appendText(cell, 'span', t(hint), 'empty-hint');
       row.appendChild(cell);
       body.appendChild(row);
     }
@@ -323,13 +370,36 @@
       return strong;
     }
 
+    function appendDetailGroup(parent, title) {
+      const group = document.createElement('section');
+      group.className = 'detail-group';
+      appendText(group, 'h3', t(title));
+      const fields = document.createElement('div');
+      fields.className = 'detail-grid';
+      group.appendChild(fields);
+      parent.appendChild(group);
+      return fields;
+    }
+
+    function syncListScroll(kind, body) {
+      const {total, ...query} = state[kind];
+      const key = JSON.stringify(query);
+      if (body.dataset.query !== key) {
+        body.closest('.table-wrap').scrollTop = 0;
+        body.dataset.query = key;
+      }
+    }
+
     function renderDevices(devices, capturedAt = devicesCapturedAt) {
       currentDevices = devices;
       devicesCapturedAt = capturedAt;
       const body = document.getElementById('devices');
+      syncListScroll('devices', body);
+      const focusedDevice = body.contains(document.activeElement)
+        ? document.activeElement.dataset.deviceId : null;
       const fragment = document.createDocumentFragment();
       if (!devices.length) {
-        appendEmptyRow(fragment, 4);
+        appendEmptyRow(fragment, 5, 'No matching clients', 'Try another device ID, client category or status filter.');
         body.replaceChildren(fragment);
         return;
       }
@@ -343,10 +413,8 @@
         appendText(clientCell, 'div', device.id, 'device-id');
         const clientMeta = document.createElement('div');
         clientMeta.className = 'client-meta';
-        appendText(clientMeta, 'span', t(device.kind === 'web' ? 'Web client' : 'PC client'), 'subline');
-        if (device.kind !== 'web' && device.client_platform) {
-          appendBadge(clientMeta, platformLabel(device.client_platform), 'platform');
-        }
+        appendText(clientMeta, 'span', device.kind === 'web' ? t('Web client')
+          : platformLabel(device.client_platform) || t('PC client'), 'subline');
         if (device.kind !== 'web' && device.client_version) {
           appendBadge(clientMeta, device.client_version, 'version');
         }
@@ -357,17 +425,32 @@
         labelCell(statusCell, 'State');
         appendBadge(statusCell, t(device.online ? 'Online' : 'Offline'),
           device.online ? 'online' : 'offline');
-        if (activeSessions > 0) appendBadge(statusCell, t('Remote'), 'active');
+        if (activeSessions > 0) {
+          appendText(statusCell, 'span', sessionSummary(device), 'session-summary');
+        }
         row.appendChild(statusCell);
 
         const currentCell = appendText(row, 'td', device.online ? formatDuration(device.online_duration_seconds) : '-');
         labelCell(currentCell, 'Current online');
         setDurationDataset(currentCell, 'current', device, device.online_duration_seconds, capturedAt);
+        const lastSeenCell = labelCell(document.createElement('td'), 'Last seen');
+        if (device.updated_at) {
+          const date = new Date(device.updated_at * 1000);
+          const time = appendText(lastSeenCell, 'time', date.toLocaleTimeString(locale(),
+            {hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false}));
+          time.dateTime = date.toISOString();
+          time.title = formatTime(device.updated_at);
+          appendText(lastSeenCell, 'span', date.toLocaleDateString(locale()), 'subline');
+        } else lastSeenCell.textContent = '-';
+        row.appendChild(lastSeenCell);
         const detailCell = document.createElement('td');
         detailCell.className = 'detail-action';
         labelCell(detailCell, 'Detail');
         const detailButton = document.createElement('button');
         detailButton.type = 'button';
+        detailButton.dataset.deviceId = device.id;
+        detailButton.setAttribute('aria-expanded', String(isExpanded));
+        detailButton.setAttribute('aria-label', `${t(isExpanded ? 'Hide' : 'Details')} · ${device.id}`);
         detailButton.textContent = t(isExpanded ? 'Hide' : 'Details');
         detailButton.addEventListener('click', () => {
           if (expandedDevices.has(device.id)) expandedDevices.delete(device.id);
@@ -382,85 +465,87 @@
           const detailsRow = document.createElement('tr');
           detailsRow.className = 'details-row';
           const detailsCell = document.createElement('td');
-          detailsCell.colSpan = 4;
+          detailsCell.colSpan = 5;
           const details = document.createElement('div');
-          details.className = 'detail-grid';
+          details.className = 'device-details';
+          const connection = appendDetailGroup(details, 'Connection');
           const currentOnline = appendDetailItem(
-            details, 'Current online',
+            connection, 'Current online',
             device.online ? formatDuration(device.online_duration_seconds) : '-');
           setDurationDataset(currentOnline, 'current-online', device,
             device.online_duration_seconds, capturedAt);
-          const totalOnline = appendDetailItem(
-            details, 'Total online', formatDuration(device.total_online_seconds));
-          setDurationDataset(totalOnline, 'total', device, device.total_online_seconds, capturedAt);
+          appendDetailItem(connection, 'Client IP', device.client_ip || '-');
+          appendDetailItem(connection, 'Online since', formatTime(device.online_since));
+          appendDetailItem(connection, 'Last online', formatTime(device.online ? 0 : device.updated_at));
           const activeControlCount = Number(device.active_control_count) || 0;
           const activeControlledCount = Number(device.active_controlled_count) || 0;
+          const controlling = appendDetailGroup(details, 'Control activity');
           const currentControl = appendDetailItem(
-            details, 'Current control',
+            controlling, 'Current control',
             activeDuration(device.current_control_seconds, activeControlCount));
           setDurationDataset(currentControl, 'current-control', device,
             device.current_control_seconds, capturedAt,
             activeControlCount > 0, activeControlCount);
-          const totalControl = appendDetailItem(
-            details, 'Total control', formatDuration(device.total_control_seconds));
-          setDurationDataset(totalControl, 'total-control', device,
-            device.total_control_seconds, capturedAt,
-            activeControlCount > 0, activeControlCount);
+          appendDetailItem(controlling, 'Controlling', peerList(device.active_control_targets), 'peer-list');
+          const controlled = appendDetailGroup(details, 'Controlled activity');
           const currentControlled = appendDetailItem(
-            details, 'Current controlled',
+            controlled, 'Current controlled',
             activeDuration(device.current_controlled_seconds, activeControlledCount));
           setDurationDataset(currentControlled, 'current-controlled', device,
             device.current_controlled_seconds, capturedAt,
             activeControlledCount > 0, activeControlledCount);
-          const totalControlled = appendDetailItem(
-            details, 'Total controlled', formatDuration(device.total_controlled_seconds));
-          setDurationDataset(totalControlled, 'total-controlled', device,
-            device.total_controlled_seconds, capturedAt,
-            activeControlledCount > 0, activeControlledCount);
-          appendDetailItem(details, 'Client IP', device.client_ip || '-');
-          appendDetailItem(details, 'Online since', formatTime(device.online_since));
-          appendDetailItem(details, 'Last online', formatTime(device.online ? 0 : device.updated_at));
-          appendDetailItem(details, 'Active session', sessionSummary(device));
-          appendDetailItem(details, 'Controlling', peerList(device.active_control_targets), 'peer-list');
-          appendDetailItem(details, 'Controlled by', peerList(device.active_controlled_by), 'peer-list');
+          appendDetailItem(controlled, 'Controlled by', peerList(device.active_controlled_by), 'peer-list');
           detailsCell.appendChild(details);
           detailsRow.appendChild(detailsCell);
           fragment.appendChild(detailsRow);
         }
       });
       body.replaceChildren(fragment);
+      if (focusedDevice) {
+        Array.from(body.querySelectorAll('[data-device-id]'))
+          .find(button => button.dataset.deviceId === focusedDevice)?.focus({preventScroll: true});
+      }
       updateLiveDurations();
     }
 
     function renderSessions(sessions) {
       currentSessions = sessions;
       const body = document.getElementById('sessions');
+      syncListScroll('sessions', body);
+      const focusedSession = body.contains(document.activeElement)
+        ? document.activeElement.dataset.id : null;
       const fragment = document.createDocumentFragment();
       if (!sessions.length) {
-        appendEmptyRow(fragment, 3);
+        appendEmptyRow(fragment, 3, state.sessions.search ? 'No matching sessions' : 'No active sessions',
+          state.sessions.search ? 'Try another session or user ID.' : 'Remote sessions will appear here when a connection starts.');
         body.replaceChildren(fragment);
         return;
       }
       sessions.forEach(session => {
-        const guests = session.guest_ids.join(', ') || '-';
         const row = document.createElement('tr');
         row.className = 'session-row';
         const transmissionCell = document.createElement('td');
-        labelCell(transmissionCell, 'Transmission');
-        appendText(transmissionCell, 'div', session.transmission_id);
-        appendText(transmissionCell, 'span', t('host {id}', {id: session.host_id}), 'muted');
+        labelCell(transmissionCell, 'Host');
+        appendText(transmissionCell, 'div', session.host_id, 'device-id');
+        appendText(transmissionCell, 'span', t('Session {id}', {id: session.transmission_id}), 'subline session-id');
         row.appendChild(transmissionCell);
 
         const participantsCell = document.createElement('td');
-        labelCell(participantsCell, 'Participants');
-        appendText(participantsCell, 'div', session.participant_count);
-        appendText(participantsCell, 'span', guests, 'muted');
+        labelCell(participantsCell, 'Controllers');
+        appendText(participantsCell, 'span', t('{count} participants', {count: session.participant_count}), 'participant-count');
+        const guests = document.createElement('div');
+        guests.className = 'session-guests';
+        for (const guest of session.guest_ids) appendText(guests, 'span', guest);
+        if (!session.guest_ids.length) guests.textContent = '-';
+        participantsCell.appendChild(guests);
         row.appendChild(participantsCell);
 
         const actionCell = document.createElement('td');
         labelCell(actionCell, 'Action');
         const button = document.createElement('button');
         button.className = 'danger';
+        button.type = 'button';
+        button.setAttribute('aria-label', `${t('Disconnect')} · ${session.transmission_id}`);
         button.textContent = t('Disconnect');
         button.dataset.id = session.transmission_id;
         button.dataset.host = session.host_id;
@@ -470,6 +555,10 @@
         fragment.appendChild(row);
       });
       body.replaceChildren(fragment);
+      if (focusedSession) {
+        Array.from(body.querySelectorAll('button[data-id]'))
+          .find(button => button.dataset.id === focusedSession)?.focus({preventScroll: true});
+      }
     }
 
     function buildOverviewUrl() {
@@ -526,7 +615,7 @@
       }
       document.querySelectorAll('[data-device-filter]').forEach(button => {
         button.classList.toggle('active', button.dataset.deviceFilter === state.devices.filter);
-        button.setAttribute('aria-selected', button.dataset.deviceFilter === state.devices.filter ? 'true' : 'false');
+        button.setAttribute('aria-pressed', button.dataset.deviceFilter === state.devices.filter ? 'true' : 'false');
       });
     }
 
@@ -551,19 +640,8 @@
       document.getElementById('metric-devices').textContent = stats.online_device_count;
       document.getElementById('metric-web').textContent = stats.online_web_client_count;
       document.getElementById('metric-sessions').textContent = stats.active_connection_count;
-      document.getElementById('metric-duration').textContent = formatDuration(stats.total_online_seconds);
-      document.getElementById('metric-control').textContent = formatDuration(stats.total_control_seconds);
-      document.getElementById('metric-controlled').textContent = formatDuration(stats.total_controlled_seconds);
       lastRefreshAt = Date.now();
       updateRefreshTime();
-      statsSnapshot = {
-        onlineDuration: Number(stats.total_online_seconds) || 0,
-        onlineCount: Number(stats.online_device_count) || 0,
-        controlDuration: Number(stats.total_control_seconds) || 0,
-        controlledDuration: Number(stats.total_controlled_seconds) || 0,
-        activeConnections: Number(stats.active_connection_count) || 0,
-        capturedAt: Math.floor(Date.now() / 1000)
-      };
     }
 
     function updateLiveDurations() {
@@ -575,25 +653,13 @@
         const rate = Number(cell.dataset.rate) || 1;
         cell.textContent = formatDuration(base + rate * (now - capturedAt));
       });
-      if (statsSnapshot.capturedAt > 0) {
-        const elapsed = now - statsSnapshot.capturedAt;
-        document.getElementById('metric-duration').textContent =
-          formatDuration(statsSnapshot.onlineDuration +
-            statsSnapshot.onlineCount * elapsed);
-        document.getElementById('metric-control').textContent =
-          formatDuration(statsSnapshot.controlDuration +
-            statsSnapshot.activeConnections * elapsed);
-        document.getElementById('metric-controlled').textContent =
-          formatDuration(statsSnapshot.controlledDuration +
-            statsSnapshot.activeConnections * elapsed);
-      }
     }
 
     async function refreshStats() {
       if (document.hidden) return true;
       let response;
       try {
-        response = await fetch('/api/admin/stats', {credentials: 'same-origin'});
+        response = await fetch('/api/admin/stats', {credentials: 'same-origin', signal: AbortSignal.timeout(12000)});
       } catch (_) {
         setMessage('refresh-error', 'Connection error');
         return false;
@@ -622,6 +688,7 @@
       const serial = ++listRefreshSerial;
       const refreshButton = document.getElementById('list-refresh');
       refreshButton.disabled = true;
+      refreshButton.setAttribute('aria-busy', 'true');
       try {
         await loadLists(serial);
       } catch (_) {
@@ -631,6 +698,7 @@
       } finally {
         listRefreshInFlight = false;
         refreshButton.disabled = false;
+        refreshButton.setAttribute('aria-busy', 'false');
         if (listRefreshPending && !dashboardView.classList.contains('hidden')) {
           listRefreshPending = false;
           void refreshLists();
@@ -695,6 +763,31 @@
     }
 
     document.getElementById('language').addEventListener('change', event => setLanguage(event.target.value));
+    const navigationLinks = Array.from(document.querySelectorAll('#dashboard-nav a'));
+    function updateNavigation() {
+      if (dashboardView.classList.contains('hidden')) return;
+      const headerBottom = document.querySelector('.app-header').getBoundingClientRect().bottom;
+      let current = navigationLinks[0];
+      let currentTop = -Infinity;
+      for (const link of navigationLinks) {
+        const top = document.querySelector(link.hash).getBoundingClientRect().top;
+        if (top <= headerBottom + 60 && (top > currentTop ||
+            (top === currentTop && link.hash === window.location.hash))) {
+          current = link;
+          currentTop = top;
+        }
+      }
+      for (const link of navigationLinks) {
+        if (link === current) link.setAttribute('aria-current', 'location');
+        else link.removeAttribute('aria-current');
+      }
+    }
+    navigationLinks.forEach(link => link.addEventListener('click', () => {
+      if (link.hash === '#data-tools') document.getElementById('data-tools').open = true;
+    }));
+    window.addEventListener('scroll', updateNavigation, {passive: true});
+    window.addEventListener('resize', updateNavigation);
+    window.addEventListener('hashchange', updateNavigation);
     document.getElementById('login-form').addEventListener('submit', login);
     document.getElementById('logout').addEventListener('click', logout);
     document.getElementById('device-search').addEventListener('input', (event) => {
@@ -792,7 +885,7 @@
       'Cleanup available': '是否可清理',
       'Yes': '是',
       'No — device or session is active': '否，设备或会话仍在使用',
-      'Removes offline state, version/platform, accumulated durations and historical associations. The device ID and admission password remain valid.': '清理离线状态、版本／平台、累计时长和历史关联；设备 ID 与准入密码保持有效。',
+      'Removes offline state, version/platform and historical associations. The device ID and admission password remain valid.': '清理离线状态、版本／平台和历史关联；设备 ID 与准入密码保持有效。',
       'Also removes the registered device ID and password digest. This cannot be undone; reconnecting may register a new device ID.': '同时删除设备登记及密码摘要。此操作不可撤销；再次连接可能登记为新的设备 ID。',
       'Enter the admin password and confirm that you have verified the request.': '请输入管理员密码，并勾选已核验请求权限。',
       'The confirmation device ID does not match.': '确认设备 ID 与当前查询目标不一致。',
@@ -848,7 +941,7 @@
       const scope = dataElement('scope').value;
       setMessage('data-cleanup-help', scope === 'identity'
         ? 'Also removes the registered device ID and password digest. This cannot be undone; reconnecting may register a new device ID.'
-        : 'Removes offline state, version/platform, accumulated durations and historical associations. The device ID and admission password remain valid.');
+        : 'Removes offline state, version/platform and historical associations. The device ID and admission password remain valid.');
       if (!dataPreview) return;
       const summary = dataElement('summary');
       summary.replaceChildren();
@@ -864,12 +957,10 @@
       for (const record of dataPreview.presence) {
         const row = document.createElement('tr');
         for (const value of [record.device_id, t(record.online ? 'Online' : 'Offline'),
-          formatTime(record.updated_at), `${record.client_platform || '-'} / ${record.client_version || '-'}`,
-          formatDuration(record.total_online_seconds), formatDuration(record.total_control_seconds),
-          formatDuration(record.total_controlled_seconds)]) appendText(row, 'td', value);
+          formatTime(record.updated_at), `${record.client_platform || '-'} / ${record.client_version || '-'}`]) appendText(row, 'td', value);
         rows.appendChild(row);
       }
-      if (!dataPreview.presence.length) appendEmptyRow(rows, 7);
+      if (!dataPreview.presence.length) appendEmptyRow(rows, 4);
       dataElement('result').classList.remove('hidden');
       updateDataButtons();
     }

@@ -78,11 +78,35 @@ int main() {
                           .time_since_epoch()
                           .count()) +
        ".db");
-  int64_t total_online_before_restart = 0;
-  int64_t total_control_before_restart = 0;
-  int64_t total_controlled_before_restart = 0;
+  auto execute_sql = [&](const std::string& sql) {
+    sqlite3* connection = nullptr;
+    const bool opened = sqlite3_open(db_path.string().c_str(), &connection) == SQLITE_OK;
+    const bool ok = opened && sqlite3_exec(connection, sql.c_str(), nullptr,
+                                           nullptr, nullptr) == SQLITE_OK;
+    expect(ok, "prepare database fixture");
+    sqlite3_close(connection);
+  };
+  auto scalar = [&](const std::string& sql) -> int64_t {
+    sqlite3* connection = nullptr;
+    sqlite3_stmt* statement = nullptr;
+    int64_t result = -1;
+    if (sqlite3_open(db_path.string().c_str(), &connection) == SQLITE_OK &&
+        sqlite3_prepare_v2(connection, sql.c_str(), -1, &statement, nullptr) == SQLITE_OK &&
+        sqlite3_step(statement) == SQLITE_ROW) {
+      result = sqlite3_column_int64(statement, 0);
+    } else {
+      expect(false, "read database fixture");
+    }
+    sqlite3_finalize(statement);
+    sqlite3_close(connection);
+    return result;
+  };
   {
     DeviceDBManager db(db_path.string());
+    expect(scalar("SELECT COUNT(*) FROM pragma_table_info('device_presence') "
+                  "WHERE name IN ('total_online_seconds', 'total_control_seconds', "
+                  "'total_controlled_seconds');") == 0,
+           "new databases do not store cumulative durations");
     db.SetDeviceOnline("device-1", true);
     db.SetDeviceOnline("web-1", true);
     db.SetDeviceOnline("C-000000", true);
@@ -103,9 +127,6 @@ int main() {
            "online device list includes online_since");
     expect(online_devices[0].online_duration_seconds >= 0,
            "online device list includes current online duration");
-    expect(online_devices[0].total_online_seconds >=
-               online_devices[0].online_duration_seconds,
-           "online device list includes total online duration");
     db.SetDeviceOnline("device-2", true);
     db.SetDeviceOnline("device-3", true);
     expect(db.CountOnlineDevices() == 3,
@@ -127,9 +148,6 @@ int main() {
     expect(duration_stats.current_online_seconds >= 1,
            "database sums current online duration");
     db.SetDeviceOnline("device-1", false);
-    auto accumulated_stats = db.GetOnlineDurationStats();
-    expect(accumulated_stats.total_online_seconds >= 1,
-           "database accumulates total online duration after logout");
     expect(db.CountOnlineDevices() == 2,
            "offline device no longer counts as online");
     expect(db.CountDevicePresence("device-1") == 1,
@@ -172,8 +190,6 @@ int main() {
            "offline device clears current online start");
     expect(offline_devices[0].online_duration_seconds == 0,
            "offline device current online duration is zero");
-    expect(offline_devices[0].total_online_seconds >= 1,
-           "offline device keeps accumulated online duration");
     expect(db.StartRemoteControlSession("tx-1", "device-2", "device-1"),
            "remote control session starts");
     std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -262,44 +278,19 @@ int main() {
            "controlled device pagination excludes controller-only devices");
     expect(db.EndRemoteControlSession("tx-chain", "device-3", "device-2"),
            "chained remote control session ends");
-    auto clone_persisted = db.ListDevicePresence(10, 0, "device-4");
-    expect(!clone_persisted.empty() &&
-               clone_persisted[0].total_control_seconds >= 1,
-           "clone guest control duration persists on base device");
-    auto guest_control = db.ListDevicePresence(10, 0, "device-1");
-    auto host_controlled = db.ListDevicePresence(10, 0, "device-2");
-    expect(!guest_control.empty() &&
-               guest_control[0].total_control_seconds >= 1,
-           "guest accumulates active control duration");
-    expect(!host_controlled.empty() &&
-               host_controlled[0].total_controlled_seconds >= 1,
-           "host accumulates active controlled duration");
-    auto active_remote_stats = db.GetOnlineDurationStats();
-    expect(active_remote_stats.total_control_seconds >= 1,
-           "stats include active control duration");
-    expect(active_remote_stats.total_controlled_seconds >= 1,
-           "stats include active controlled duration");
+    auto clone_ended = db.ListDevicePresence(10, 0, "device-4");
+    expect(!clone_ended.empty() && clone_ended[0].current_control_seconds == 0 &&
+               clone_ended[0].active_control_count == 0,
+           "ending a clone session clears its current duration and count");
     expect(db.EndRemoteControlSession("tx-1", "device-2", "device-1"),
            "remote control session ends");
     expect(db.CountDevicePresence("", "active") == 0 &&
                db.CountDevicePresenceByFilters().active == 0 &&
                db.ListDevicePresence(10, 0, "", "active").empty(),
            "controlled device count and list clear after the last connection ends");
-    auto remote_stats = db.GetOnlineDurationStats();
-    expect(remote_stats.total_control_seconds >= 1,
-           "stats persist total control duration");
-    expect(remote_stats.total_controlled_seconds >= 1,
-           "stats persist total controlled duration");
     expect(db.StartRemoteControlSession("tx-stale", "device-2", "device-3"),
            "stale remote control session starts before restart");
     std::this_thread::sleep_for(std::chrono::seconds(1));
-    auto restart_checkpoint_stats = db.GetOnlineDurationStats();
-    total_online_before_restart =
-        restart_checkpoint_stats.total_online_seconds;
-    total_control_before_restart =
-        restart_checkpoint_stats.total_control_seconds;
-    total_controlled_before_restart =
-        restart_checkpoint_stats.total_controlled_seconds;
     expect(db.RecordRuntimeHeartbeat(),
            "database records runtime heartbeat before restart");
   }
@@ -310,15 +301,6 @@ int main() {
     auto restarted_stats = restarted_db.GetOnlineDurationStats();
     expect(restarted_stats.current_online_seconds == 0,
            "database clears stale current online duration on restart");
-    expect(restarted_stats.total_online_seconds >=
-               total_online_before_restart,
-           "database preserves total online duration across restart");
-    expect(restarted_stats.total_control_seconds >=
-               total_control_before_restart,
-           "database preserves total control duration across restart");
-    expect(restarted_stats.total_controlled_seconds >=
-               total_controlled_before_restart,
-           "database preserves total controlled duration across restart");
     expect(restarted_db.CountActiveRemoteControlConnections() == 1,
            "database preserves active remote control across short restart");
     expect(restarted_db.CountRemoteControlTransmissions() == 1,
@@ -342,6 +324,64 @@ int main() {
                restarted_devices[0].online_since == 0,
            "restart clears stale online_since");
   }
+  // Simulate an existing deployment. Legacy columns remain readable by older
+  // tools but are no longer updated or returned by the server.
+  execute_sql(
+      "ALTER TABLE device_presence ADD COLUMN total_online_seconds INTEGER NOT NULL DEFAULT 0;"
+      "ALTER TABLE device_presence ADD COLUMN total_control_seconds INTEGER NOT NULL DEFAULT 0;"
+      "ALTER TABLE device_presence ADD COLUMN total_controlled_seconds INTEGER NOT NULL DEFAULT 0;"
+      "UPDATE device_presence SET total_online_seconds=101, total_control_seconds=202, "
+      "total_controlled_seconds=303, online=1, online_since=strftime('%s','now')-60;");
+  {
+    DeviceDBManager upgraded_db(db_path.string());
+    expect(upgraded_db.CountOnlineDevices() == 0,
+           "legacy database resets online presence on upgrade");
+    expect(upgraded_db.SetDeviceOnline("device-1", true),
+           "legacy database still supports login");
+    execute_sql("UPDATE device_presence SET online_since=strftime('%s','now')-60 "
+                "WHERE device_id='device-1';");
+    auto current = upgraded_db.ListOnlineDevices(10, 0, "device-1");
+    expect(current.size() == 1 && current[0].online_duration_seconds >= 60,
+           "legacy database still reports the current online period");
+    expect(upgraded_db.SetDeviceOnline("device-1", false),
+           "legacy database still supports logout");
+    expect(upgraded_db.StartRemoteControlSession("tx-upgrade", "device-2", "C-device-1"),
+           "legacy database starts remote sessions");
+    execute_sql("UPDATE remote_control_sessions SET started_at=strftime('%s','now')-60 "
+                "WHERE transmission_id='tx-upgrade';");
+    auto controlling = upgraded_db.ListDevicePresence(10, 0, "device-1");
+    expect(controlling.size() == 1 && controlling[0].current_control_seconds >= 60,
+           "legacy database still reports current remote duration");
+    expect(upgraded_db.EndRemoteControlSession("tx-upgrade", "device-2", "C-device-1") &&
+               upgraded_db.EndRemoteControlSession("tx-upgrade", "device-2", "C-device-1"),
+           "ending remote sessions remains idempotent");
+    for (const auto& action : {"query", "export"}) {
+      const auto report = upgraded_db.AdminDeviceData(
+          "device-1", action, "history", "", "test-admin", "REQ-UPGRADE");
+      expect(report.value("ok", false) && !report["data"]["presence"].empty(),
+             "legacy database supports device data query and export");
+      if (report.value("ok", false)) {
+        for (const auto& record : report["data"]["presence"]) {
+          expect(!record.contains("total_online_seconds") &&
+                     !record.contains("total_control_seconds") &&
+                     !record.contains("total_controlled_seconds"),
+                 "device data reports exclude cumulative duration fields");
+        }
+      }
+    }
+  }
+  // Expired recovery sessions must also be cleared without accumulating time.
+  execute_sql("UPDATE server_runtime SET last_seen_at=strftime('%s','now')-3600;"
+              "UPDATE device_presence SET online=1, online_since=strftime('%s','now')-7200;");
+  {
+    DeviceDBManager stale_db(db_path.string());
+    expect(stale_db.CountActiveRemoteControlConnections() == 0 &&
+               stale_db.CountOnlineDevices() == 0,
+           "long restart clears stale sessions and online presence");
+  }
+  expect(scalar("SELECT COUNT(*) FROM device_presence WHERE total_online_seconds!=101 "
+                "OR total_control_seconds!=202 OR total_controlled_seconds!=303;") == 0,
+         "login, logout, session end and restart never update legacy totals");
   std::filesystem::remove(db_path);
 
   return failures == 0 ? 0 : 1;

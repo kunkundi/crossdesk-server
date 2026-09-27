@@ -30,9 +30,6 @@ struct OnlineDeviceInfo {
   int64_t updated_at = 0;
   int64_t online_since = 0;
   int64_t online_duration_seconds = 0;
-  int64_t total_online_seconds = 0;
-  int64_t total_control_seconds = 0;
-  int64_t total_controlled_seconds = 0;
   int64_t current_control_seconds = 0;
   int64_t current_controlled_seconds = 0;
   int64_t active_control_count = 0;
@@ -57,9 +54,6 @@ struct DevicePresenceCounts {
 
 struct OnlineDurationStats {
   int64_t current_online_seconds = 0;
-  int64_t total_online_seconds = 0;
-  int64_t total_control_seconds = 0;
-  int64_t total_controlled_seconds = 0;
 };
 
 struct RemoteControlSessionInfo {

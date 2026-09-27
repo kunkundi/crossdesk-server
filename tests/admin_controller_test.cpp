@@ -168,18 +168,25 @@ int main() {
     expect(db_overview.status == 200,
            "overview with device durations returns ok");
     auto db_overview_body = nlohmann::json::parse(db_overview.body);
+    const auto public_stats = db_controller.GetPublicStats();
+    for (const auto& key : {"total_online_seconds", "total_control_seconds",
+                            "total_controlled_seconds"}) {
+      expect(!public_stats.contains(key) && !db_overview_body["stats"].contains(key),
+             "public stats and admin overview exclude cumulative durations");
+    }
+
     expect(db_overview_body["devices"].size() == 1,
            "overview defaults to filtered online devices");
     expect(db_overview_body["devices"][0]["online_since"] > 0,
            "overview reports device online_since");
     expect(db_overview_body["devices"][0].contains("online_duration_seconds"),
            "overview reports device online duration");
-    expect(db_overview_body["devices"][0].contains("total_online_seconds"),
-           "overview reports device total online duration");
-    expect(db_overview_body["devices"][0].contains("total_control_seconds"),
-           "overview reports device total control duration");
-    expect(db_overview_body["devices"][0].contains("total_controlled_seconds"),
-           "overview reports device total controlled duration");
+    expect(!db_overview_body["devices"][0].contains("total_online_seconds"),
+           "overview excludes device total online duration");
+    expect(!db_overview_body["devices"][0].contains("total_control_seconds"),
+           "overview excludes device total control duration");
+    expect(!db_overview_body["devices"][0].contains("total_controlled_seconds"),
+           "overview excludes device total controlled duration");
     expect(db_overview_body["devices"][0]["client_ip"] == "203.0.113.8",
            "overview reports current in-memory device client ip");
     expect(db_overview_body["devices"][0].contains("current_control_seconds"),
@@ -189,10 +196,10 @@ int main() {
            "overview reports device current controlled duration");
     expect(db_overview_body["stats"].contains("online_duration_seconds"),
            "overview stats include online duration");
-    expect(db_overview_body["stats"].contains("total_control_seconds"),
-           "overview stats include total control duration");
-    expect(db_overview_body["stats"].contains("total_controlled_seconds"),
-           "overview stats include total controlled duration");
+    expect(!db_overview_body["stats"].contains("total_control_seconds"),
+           "overview stats exclude total control duration");
+    expect(!db_overview_body["stats"].contains("total_controlled_seconds"),
+           "overview stats exclude total controlled duration");
     expect(db_overview_body["device_counts"]["all"] == 1,
            "overview search scopes all device count");
     expect(db_overview_body["device_counts"]["online"] == 1,

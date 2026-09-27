@@ -1,6 +1,6 @@
 # CrossDesk Server
 
-Device registration, presence, remote-session signaling, and temporary TURN credentials for [CrossDesk](https://github.com/kunkundi/crossdesk), with a built-in Web admin dashboard. Signaling uses WSS; device records and duration statistics are persisted in SQLite.
+Device registration, presence, remote-session signaling, and temporary TURN credentials for [CrossDesk](https://github.com/kunkundi/crossdesk), with a built-in Web admin dashboard. Signaling uses WSS; device records, presence, and active sessions are persisted in SQLite.
 
 [中文](README.md) · [Release files](https://github.com/kunkundi/crossdesk-server/releases) · [Docker images](https://hub.docker.com/r/crossdesk/crossdesk-server/tags) · [Desktop client](https://github.com/kunkundi/crossdesk) · [Web client](https://github.com/kunkundi/crossdesk-web-client)
 
@@ -17,7 +17,7 @@ Device registration, presence, remote-session signaling, and temporary TURN cred
 | --- | --- |
 | CrossDesk Server | WSS signaling, device identities and password verification, presence, session coordination, and temporary TURN credentials |
 | Coturn | Relays media and data when clients cannot connect directly; runs in a separate container |
-| SQLite | Stores device records, online/control durations, and session information |
+| SQLite | Stores device records, presence, and active session information |
 | Web admin dashboard | Metrics, client/session lists, search, filters, sorting, session disconnection |
 
 Clients try P2P connections and use TURN when needed. The current [Compose deployment](compose.yaml) and [CI](.github/workflows/build.yml) target **Linux amd64 / arm64**. Release images use Ubuntu 22.04 as their runtime environment.
@@ -144,9 +144,9 @@ Set both `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, then run `sudo docker 
 
 | Area / control | Action |
 | --- | --- |
-| Top metrics | View online devices, Web clients, active connections, and cumulative online/control durations |
+| Top metrics | View online devices, Web clients, and active connections |
 | Client Presence | Defaults to online PCs; switch PC/Web, filter Online/Controlled/Offline/All, search IDs, sort, and paginate; Controlled counts and lists only devices currently being controlled, once per device |
-| Details | Expand platform/version, current and cumulative durations, connection IP and remote peers |
+| Details | Expand platform/version, current online/control durations, connection IP and remote peers |
 | Active Sessions → Disconnect | Confirm to disconnect the selected session; devices stay online |
 | Refresh lists / Logout | Refresh manually / sign out |
 
@@ -181,8 +181,8 @@ curl --fail https://your-domain.example.com:9099/stats
 | `online_web_client_count` | Online `web-*` clients |
 | `active_connection_count` | Active remote-control connections, counted separately for each host–guest pair |
 | `online_duration_seconds` | Sum of the current online periods of online devices |
-| `total_online_seconds` | Cumulative device online time, including current periods |
-| `total_control_seconds` / `total_controlled_seconds` | Cumulative controlling / controlled time, including ongoing sessions |
+
+Cumulative online, controlling, and controlled durations are no longer collected or returned. Legacy database columns remain unused for compatibility; new databases omit them. Current online and remote-session durations remain available.
 
 Durations are in seconds. Detailed admin APIs use `/api/admin/*` and require admin login; the public status API does not return device details.
 
@@ -227,7 +227,7 @@ Warnings for admission pauses, accept/resource errors, peer address failures, pr
 | Data | Default policy |
 | --- | --- |
 | Signaling and Coturn operational/connection logs | Delete closed files **185 days** after their last write; daily files are not overwritten by a size cap |
-| Device presence, version/platform, accumulated online/control durations | Delete after the device has been offline for **180 days**; skip online identities, identities with an online controller clone, and active/recoverable session participants |
+| Device presence and version/platform | Delete after the device has been offline for **180 days**; skip online identities, identities with an online controller clone, and active/recoverable session participants |
 | Historical server-side device associations | Remove with expired devices; other stale associations without current owner presence expire after **180 days**; legacy rows without timestamps start aging at first upgrade |
 | Device IDs, password salts and hashes | Retained for authentication; this cleanup is not an account/data-deletion workflow |
 | Current IPs, subscriptions, admin sessions | Existing logout/disconnect/session-expiry rules continue to apply; connection logs may contain IPs |
@@ -236,7 +236,7 @@ Configure `.env` with `CROSSDESK_LOG_RETENTION_DAYS=185`, `CROSSDESK_OFFLINE_RET
 
 The first pass runs about five seconds after the server starts, then hourly by default. Each transaction selects at most 200 expired devices and 200 other stale associations. A backlog triggers another batch about five seconds later; failures roll back and retry. Completion depends on load and uptime. Whole-file expiry can retain the earliest entries for roughly one additional day plus the check interval. Cleanup pauses while the service is stopped and resumes after restart.
 
-Only recognized files in the configured log directory are eligible, including legacy `crossdesk-server-YYYYMMDD-HHMMSS[.N].log` files and `coturn/turn_YYYY-MM-DD.log`. Cleanup does not recurse into unrelated directories, follow symlinks or delete the current signaling log. Use a dedicated directory for each deployment and monitor free disk space and retention completion/failure logs. Failure to initialize file logging prevents server startup. Historical duration totals can decrease after cleanup; returning devices start new statistics while keeping their login ID and password.
+Only recognized files in the configured log directory are eligible, including legacy `crossdesk-server-YYYYMMDD-HHMMSS[.N].log` files and `coturn/turn_YYYY-MM-DD.log`. Cleanup does not recurse into unrelated directories, follow symlinks or delete the current signaling log. Use a dedicated directory for each deployment and monitor free disk space and retention completion/failure logs. Failure to initialize file logging prevents server startup. Returning devices create new presence records after cleanup while keeping their login ID and password.
 
 SQLite uses `secure_delete` and attempts a nonblocking WAL checkpoint after deletion. This does not securely erase snapshots, backups or underlying storage. Operators must separately expire backups, external log stores and old container log copies; the server never scans or deletes them. Recreate containers when upgrading to apply the new logging configuration and handle old copies according to applicable retention obligations. Update the public privacy policy only once the production deployment actually applies these rules.
 
