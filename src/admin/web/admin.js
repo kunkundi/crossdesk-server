@@ -195,6 +195,7 @@
     };
     const searchTimers = {devices: null, sessions: null};
     const expandedDevices = new Set();
+    const disconnectingSessions = new Set();
     let currentDevices = [];
     let devicesCapturedAt = 0;
     let currentSessions = [];
@@ -295,6 +296,7 @@
 
     function appendEmptyRow(body, colSpan, title = 'No records', hint = '') {
       const row = document.createElement('tr');
+      row.dataset.rowKey = 'empty';
       const cell = document.createElement('td');
       cell.className = 'empty';
       cell.colSpan = colSpan;
@@ -390,23 +392,75 @@
       }
     }
 
+    // Patch display markup without replacing unchanged text nodes or buttons.
+    function patchListNode(current, next) {
+      if (current.isEqualNode(next)) return;
+      if (current.nodeType !== next.nodeType || current.nodeName !== next.nodeName) {
+        current.replaceWith(next);
+        return;
+      }
+      if (current.nodeType === Node.TEXT_NODE) {
+        current.nodeValue = next.nodeValue;
+        return;
+      }
+      for (const attribute of Array.from(current.attributes)) {
+        if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+      }
+      for (const attribute of next.attributes) {
+        if (current.getAttribute(attribute.name) !== attribute.value) {
+          current.setAttribute(attribute.name, attribute.value);
+        }
+      }
+      const currentChildren = Array.from(current.childNodes);
+      const nextChildren = Array.from(next.childNodes);
+      nextChildren.forEach((child, index) => {
+        if (currentChildren[index]) patchListNode(currentChildren[index], child);
+        else current.appendChild(child);
+      });
+      currentChildren.slice(nextChildren.length).forEach(child => child.remove());
+    }
+
+    function reconcileListRows(body, fragment) {
+      const scroll = body.closest('.table-wrap');
+      const {scrollTop, scrollLeft} = scroll;
+      const focused = body.contains(document.activeElement) ? document.activeElement : null;
+      const currentRows = new Map(Array.from(body.children, row => [row.dataset.rowKey, row]));
+      const nextRows = Array.from(fragment.children);
+      const nextKeys = new Set(nextRows.map(row => row.dataset.rowKey));
+      for (const [key, row] of currentRows) {
+        if (!nextKeys.has(key)) row.remove();
+      }
+      let cursor = body.firstChild;
+      for (const next of nextRows) {
+        const row = currentRows.get(next.dataset.rowKey) || next;
+        if (row !== next) patchListNode(row, next);
+        // Leave rows in place unless the server's order or membership changed.
+        if (row !== cursor) body.insertBefore(row, cursor);
+        cursor = row.nextSibling;
+      }
+      if (focused && focused.isConnected && document.activeElement !== focused) {
+        focused.focus({preventScroll: true});
+      }
+      if (scroll.scrollTop !== scrollTop) scroll.scrollTop = scrollTop;
+      if (scroll.scrollLeft !== scrollLeft) scroll.scrollLeft = scrollLeft;
+    }
+
     function renderDevices(devices, capturedAt = devicesCapturedAt) {
       currentDevices = devices;
       devicesCapturedAt = capturedAt;
       const body = document.getElementById('devices');
       syncListScroll('devices', body);
-      const focusedDevice = body.contains(document.activeElement)
-        ? document.activeElement.dataset.deviceId : null;
       const fragment = document.createDocumentFragment();
       if (!devices.length) {
         appendEmptyRow(fragment, 5, 'No matching clients', 'Try another device ID, client category or status filter.');
-        body.replaceChildren(fragment);
+        reconcileListRows(body, fragment);
         return;
       }
       devices.forEach(device => {
         const activeSessions = Number(device.active_session_count) || 0;
         const isExpanded = expandedDevices.has(device.id);
         const row = document.createElement('tr');
+        row.dataset.rowKey = `device:${device.id}`;
         row.className = isExpanded ? 'device-row expanded' : 'device-row';
         const clientCell = document.createElement('td');
         labelCell(clientCell, 'Client');
@@ -463,6 +517,7 @@
 
         if (isExpanded) {
           const detailsRow = document.createElement('tr');
+          detailsRow.dataset.rowKey = `details:${device.id}`;
           detailsRow.className = 'details-row';
           const detailsCell = document.createElement('td');
           detailsCell.colSpan = 5;
@@ -500,29 +555,24 @@
           fragment.appendChild(detailsRow);
         }
       });
-      body.replaceChildren(fragment);
-      if (focusedDevice) {
-        Array.from(body.querySelectorAll('[data-device-id]'))
-          .find(button => button.dataset.deviceId === focusedDevice)?.focus({preventScroll: true});
-      }
-      updateLiveDurations();
+      updateLiveDurations(fragment);
+      reconcileListRows(body, fragment);
     }
 
     function renderSessions(sessions) {
       currentSessions = sessions;
       const body = document.getElementById('sessions');
       syncListScroll('sessions', body);
-      const focusedSession = body.contains(document.activeElement)
-        ? document.activeElement.dataset.id : null;
       const fragment = document.createDocumentFragment();
       if (!sessions.length) {
         appendEmptyRow(fragment, 3, state.sessions.search ? 'No matching sessions' : 'No active sessions',
           state.sessions.search ? 'Try another session or user ID.' : 'Remote sessions will appear here when a connection starts.');
-        body.replaceChildren(fragment);
+        reconcileListRows(body, fragment);
         return;
       }
       sessions.forEach(session => {
         const row = document.createElement('tr');
+        row.dataset.rowKey = `session:${session.transmission_id}`;
         row.className = 'session-row';
         const transmissionCell = document.createElement('td');
         labelCell(transmissionCell, 'Host');
@@ -549,16 +599,13 @@
         button.textContent = t('Disconnect');
         button.dataset.id = session.transmission_id;
         button.dataset.host = session.host_id;
+        button.disabled = disconnectingSessions.has(session.transmission_id);
         button.addEventListener('click', () => disconnectSession(button.dataset.id, button.dataset.host, button));
         actionCell.appendChild(button);
         row.appendChild(actionCell);
         fragment.appendChild(row);
       });
-      body.replaceChildren(fragment);
-      if (focusedSession) {
-        Array.from(body.querySelectorAll('button[data-id]'))
-          .find(button => button.dataset.id === focusedSession)?.focus({preventScroll: true});
-      }
+      reconcileListRows(body, fragment);
     }
 
     function buildOverviewUrl() {
@@ -644,14 +691,16 @@
       updateRefreshTime();
     }
 
-    function updateLiveDurations() {
+    function updateLiveDurations(root = document) {
+      if (root === document && document.hidden) return;
       const now = Math.floor(Date.now() / 1000);
-      document.querySelectorAll('[data-duration]').forEach(cell => {
+      root.querySelectorAll('[data-duration]').forEach(cell => {
         if (cell.dataset.running !== '1') return;
         const base = Number(cell.dataset.base) || 0;
         const capturedAt = Number(cell.dataset.capturedAt) || now;
         const rate = Number(cell.dataset.rate) || 1;
-        cell.textContent = formatDuration(base + rate * (now - capturedAt));
+        const value = formatDuration(base + rate * (now - capturedAt));
+        if (cell.textContent !== value) cell.textContent = value;
       });
     }
 
@@ -746,7 +795,9 @@
     }
 
     async function disconnectSession(id, host, button) {
+      if (disconnectingSessions.has(id)) return;
       if (!confirm(t('Disconnect session {id} for host {host}? Devices stay online.', {id, host}))) return;
+      disconnectingSessions.add(id);
       button.disabled = true;
       try {
         const response = await fetch(`/api/admin/sessions/${encodeURIComponent(id)}/disconnect`, {
@@ -758,7 +809,11 @@
       } catch (_) {
         setMessage('refresh-error', 'Failed to disconnect session');
       } finally {
+        disconnectingSessions.delete(id);
         button.disabled = false;
+        document.querySelectorAll('#sessions button[data-id]').forEach(current => {
+          if (current.dataset.id === id) current.disabled = false;
+        });
       }
     }
 
