@@ -131,6 +131,63 @@ int main() {
        ".db");
   {
     DeviceDBManager db(db_path.string());
+    for (DeviceDBManager* session_db : {static_cast<DeviceDBManager*>(nullptr),
+                                       &db}) {
+      auto session_transmission = std::make_shared<TransmissionManager>(false);
+      session_transmission->BindHostToTransmission("host-0", "tx-0");
+      session_transmission->BindHostToTransmission("host-1", "tx-1");
+      session_transmission->BindHostToTransmission("host-2", "tx-2");
+      session_transmission->BindHostToTransmission("host-3", "tx-3");
+      AdminController session_controller(
+          &auth, nullptr, session_transmission, session_db,
+          [](const std::string&, nlohmann::json) {});
+      auto session_overview = [&](const std::string& query) {
+        return nlohmann::json::parse(session_controller.Handle(
+            {"GET", "/api/admin/overview" + query, "",
+             "cd_admin_session=" + *token}).body);
+      };
+
+      auto idle = session_overview("");
+      expect(idle["stats"]["active_connection_count"] == 0 &&
+                 idle["sessions"].empty() && idle["sessions_page"]["total"] == 0,
+             "idle hosts do not appear as active sessions with or without a database");
+
+      session_transmission->BindGuestToTransmission("guest-1", "tx-1");
+      session_transmission->BindGuestToTransmission("guest-3", "tx-3");
+      auto page = session_overview("?session_limit=1&session_offset=1");
+      expect(page["stats"]["active_connection_count"] == 2 &&
+                 page["sessions_page"]["total"] == 2 &&
+                 page["sessions"].size() == 1 &&
+                 page["sessions"][0]["transmission_id"] == "tx-3" &&
+                 page["sessions"][0]["participant_count"] == 2,
+             "active session filtering happens before pagination and counting");
+      auto idle_search = session_overview("?session_search=host-0");
+      expect(idle_search["sessions"].empty() &&
+                 idle_search["sessions_page"]["total"] == 0,
+             "searching for an idle host does not return an active session");
+      auto guest_search = session_overview("?session_search=guest-1");
+      expect(guest_search["sessions_page"]["total"] == 1 &&
+                 guest_search["sessions"].size() == 1 &&
+                 guest_search["sessions"][0]["transmission_id"] == "tx-1",
+             "active session search still matches controllers");
+
+      session_transmission->ReleaseGuestFromTransmission("guest-1");
+      auto remaining = session_overview("");
+      expect(remaining["stats"]["active_connection_count"] == 1 &&
+                 remaining["sessions_page"]["total"] == 1 &&
+                 remaining["sessions"].size() == 1 &&
+                 remaining["sessions"][0]["transmission_id"] == "tx-3",
+             "a session disappears from the active list when its controller leaves");
+      session_transmission->ReleaseGuestFromTransmission("guest-3");
+      auto ended = session_overview("");
+      expect(ended["stats"]["active_connection_count"] == 0 &&
+                 ended["sessions"].empty() && ended["sessions_page"]["total"] == 0,
+             "ending all control connections leaves an empty active session list");
+      expect(session_transmission->IsTransmissionExist("tx-1") &&
+                 session_transmission->IsTransmissionExist("tx-3"),
+             "listing active sessions preserves hosts waiting for new connections");
+    }
+
     PresenceManager presence;
     presence.SetDeviceDB(&db);
     websocketpp::connection_hdl hdl;

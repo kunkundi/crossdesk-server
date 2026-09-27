@@ -53,6 +53,13 @@ int main() {
 
   expect(transmission.BindHostToTransmission("B", "B"),
          "host B binds to transmission B");
+  auto waiting = transmission.GetTransmissionSnapshots();
+  expect(waiting.size() == 1 && !waiting[0].active,
+         "host-only transmission remains available but is inactive");
+  size_t active_count = 0;
+  expect(transmission.GetTransmissionSnapshots(10, 0, "", &active_count, true)
+                 .empty() && active_count == 0,
+         "active snapshots exclude a host waiting for a controller");
   expect(transmission.BindGuestToTransmission("A", "B"),
          "guest A joins transmission B");
   expect(transmission.GetActiveConnectionCount() == 1,
@@ -94,6 +101,12 @@ int main() {
          "guest A leaves transmission B");
   expect(transmission.GetActiveConnectionCount() == 0,
          "guest leave decrements active connection count to zero");
+  waiting = transmission.GetTransmissionSnapshots();
+  expect(waiting.size() == 1 && !waiting[0].active,
+         "transmission becomes inactive after its final controller leaves");
+  expect(transmission.GetTransmissionSnapshots(10, 0, "", &active_count, true)
+                 .empty() && active_count == 0,
+         "ended control session is omitted from active snapshots");
 
   expect(transmission.ReleaseTransmission("B"), "host B releases transmission B");
   expect(transmission.GetActiveConnectionCount() == 0,

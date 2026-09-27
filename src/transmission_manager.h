@@ -44,9 +44,10 @@ class TransmissionManager {
       const std::string& transmission_id);
 
   std::vector<TransmissionSnapshot> GetTransmissionSnapshots();
+  // Apply active_only before counting and pagination to exclude waiting hosts.
   std::vector<TransmissionSnapshot> GetTransmissionSnapshots(
       size_t limit, size_t offset, const std::string& search,
-      size_t* filtered_count);
+      size_t* filtered_count, bool active_only = false);
 
   std::string GetHostIdOfTransmission(const std::string& transmission_id);
 

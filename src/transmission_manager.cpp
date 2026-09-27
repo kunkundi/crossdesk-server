@@ -181,7 +181,7 @@ std::vector<TransmissionSnapshot> TransmissionManager::GetTransmissionSnapshots(
 
 std::vector<TransmissionSnapshot> TransmissionManager::GetTransmissionSnapshots(
     size_t limit, size_t offset, const std::string& search,
-    size_t* filtered_count) {
+    size_t* filtered_count, bool active_only) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
   std::vector<TransmissionSnapshot> result;
   if (limit > 0) {
@@ -194,6 +194,10 @@ std::vector<TransmissionSnapshot> TransmissionManager::GetTransmissionSnapshots(
     const std::vector<std::string>* guest_ids =
         guest_it != transmission_guest_id_list_.end() ? &guest_it->second
                                                       : nullptr;
+    const bool active = guest_ids && !guest_ids->empty();
+    if (active_only && !active) {
+      continue;
+    }
     if (!TransmissionMatchesSearch(host_pair.first, host_pair.second,
                                    guest_ids, search)) {
       continue;
@@ -212,7 +216,7 @@ std::vector<TransmissionSnapshot> TransmissionManager::GetTransmissionSnapshots(
       snapshot.guest_ids = guest_it->second;
     }
     snapshot.participant_count = 1 + snapshot.guest_ids.size();
-    snapshot.active = true;
+    snapshot.active = active;
     result.push_back(snapshot);
   }
 

@@ -584,7 +584,8 @@ AdminHttpResponse AdminController::HandleOverview(
   }
   if (sessions_total == 0 && transmission_) {
     for (const auto& snapshot : transmission_->GetTransmissionSnapshots(
-             session_limit, session_offset, session_search, &sessions_total)) {
+             session_limit, session_offset, session_search, &sessions_total,
+             true)) {
       sessions.push_back({{"transmission_id", snapshot.transmission_id},
                           {"host_id", snapshot.host_id},
                           {"guest_ids", snapshot.guest_ids},
