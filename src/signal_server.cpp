@@ -679,20 +679,26 @@ void SignalServer::ScheduleRetentionCleanup() {
     metadata_cleanup_pending_ = application_worker_->Submit([this] {
       int retry_seconds = retention_policy_.interval_seconds;
       try {
-        const auto result = device_db_manager_->CleanupExpiredMetadata(
+        const auto result = device_db_manager_->CleanupExpiredDevices(
             retention_policy_.offline_days);
+        for (const auto& id : result.device_ids) {
+          presence_manager_->ForgetOfflineDeviceData(id);
+          signal_negotiation_->ForgetPasswordChangeResults(id);
+        }
         const bool more_audit = device_db_manager_->CleanupAdminDataAudit(
             retention_policy_.log_days);
-        if (result.devices || result.associations)
-          LOG_INFO("Retention cleanup: devices={} associations={} offline_days={}",
-                   result.devices, result.associations, retention_policy_.offline_days);
+        if (result.devices || result.associations || result.credentials)
+          LOG_INFO("Retention cleanup: devices={} associations={} credentials={} "
+                   "offline_days={}",
+                   result.devices, result.associations, result.credentials,
+                   retention_policy_.offline_days);
         // The network maintenance timer already spaces batches five seconds
         // apart; adding another delay can miss the next tick.
         if (result.more || more_audit) retry_seconds = 0;
       } catch (const std::bad_alloc&) {
         throw;
       } catch (const std::exception& e) {
-        LOG_ERROR("Metadata retention cleanup failed; retrying: {}", e.what());
+        LOG_ERROR("Device retention cleanup failed; retrying: {}", e.what());
         retry_seconds = 60;
       }
       server_.get_io_service().post([this, retry_seconds] {
@@ -854,7 +860,7 @@ void SignalServer::Run() {
            configured_max_connections, max_connections_, fd_usage_.open,
            fd_usage_.soft_limit, fd_reserve_, max_handshakes_);
   LOG_INFO("Retention policy: log_days={} offline_days={} interval_seconds={} "
-           "device_credentials=retained", retention_policy_.log_days,
+           "device_credentials=expire_with_device", retention_policy_.log_days,
            retention_policy_.offline_days, retention_policy_.interval_seconds);
   if (max_connections_ < configured_max_connections)
     LOG_WARN("Configured connection capacity reduced by process nofile limit: "

@@ -234,8 +234,17 @@ nlohmann::json DeviceDBManager::AdminDeviceData(
       s.Bind(2, clone);
       s.Row();
       removed["credentials"] = sqlite3_changes(db_);
-    } else
+    } else {
+      // History cleanup removes the only known offline timestamp. Keep the
+      // identity for a fresh retention period instead of expiring it at once.
+      Statement s(db_, "UPDATE devices SET retention_started_at=? "
+                        "WHERE device_id IN (?,?);");
+      s.Bind(1, Now());
+      s.Bind(2, id);
+      s.Bind(3, clone);
+      s.Row();
       removed["credentials"] = 0;
+    }
   }
 
   // No raw device ID, IP, password, data snapshot, or verification evidence is

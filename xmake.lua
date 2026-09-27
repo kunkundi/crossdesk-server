@@ -91,6 +91,13 @@ target("presence_manager_test")
     add_files("tests/presence_manager_test.cpp")
     add_includedirs("src", "src/device_db_manager", "src/log")
 
+target("device_retention_test")
+    set_kind("binary")
+    set_default(false)
+    add_deps("device_db_manager")
+    add_files("tests/device_retention_test.cpp")
+    add_includedirs("src/device_db_manager", "src/log")
+
 target("transmission_manager_test")
     set_kind("binary")
     set_default(false)

@@ -66,6 +66,8 @@ struct RemoteControlSessionInfo {
 struct RetentionCleanupResult {
   size_t devices = 0;
   size_t associations = 0;
+  size_t credentials = 0;
+  std::vector<std::string> device_ids;
   bool more = false;
 };
 
@@ -97,10 +99,11 @@ class DeviceDBManager {
                               const std::string& client_version,
                               const std::string& client_platform);
   bool RecordRuntimeHeartbeat();
-  // Deletes only expired offline metadata; device credentials are retained.
+  // Deletes expired offline identities, presence and associations together.
+  // A device and its controller clone share the latest activity deadline.
   // Batches share the writer's transaction ordering with login/logout.
-  RetentionCleanupResult CleanupExpiredMetadata(int retention_days,
-                                                size_t batch_size = 200);
+  RetentionCleanupResult CleanupExpiredDevices(int retention_days,
+                                              size_t batch_size = 200);
   // Admin-only writer operation. All actions audit in the same transaction;
   // cleanup requires an unchanged preview and no online/recoverable sessions.
   nlohmann::json AdminDeviceData(const std::string& device_id,

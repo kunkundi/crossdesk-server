@@ -342,6 +342,28 @@ void DeviceDBManager::InitDB() {
     throw std::runtime_error("Failed to create devices table: " + error);
   }
 
+  // Older cleanup retained credentials after deleting their presence. Their
+  // offline age is unknown, so start a fallback retention period at migration.
+  // Presence timestamps take precedence whenever they are still available.
+  if (!ColumnExists(db_, "devices", "retention_started_at")) {
+    ExecuteSchemaStatement(db_, "BEGIN IMMEDIATE;",
+                           "begin device retention migration");
+    try {
+      EnsureIntegerColumn(db_, "devices", "retention_started_at");
+      ExecuteSchemaStatement(db_,
+          "UPDATE devices SET retention_started_at = "
+          "CAST(strftime('%s','now') AS INTEGER);",
+          "initialize device retention timestamps");
+      ExecuteSchemaStatement(db_, "COMMIT;", "commit device retention migration");
+    } catch (...) {
+      sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+      throw;
+    }
+  }
+  ExecuteSchemaStatement(db_,
+      "CREATE INDEX IF NOT EXISTS idx_devices_retention_started_at "
+      "ON devices(retention_started_at);", "index device retention timestamps");
+
   if (sqlite3_exec(db_, sql_seq, nullptr, nullptr, &err_msg) != SQLITE_OK) {
     std::string error = SqliteExecError(db_, err_msg);
     LOG_ERROR("Failed to create device_id_seq table: {}", error);
@@ -701,8 +723,9 @@ DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
     }
 
     const char* insert_sql =
-        "INSERT INTO devices (device_id, password_hash, password_salt) VALUES "
-        "(?, ?, ?);";
+        "INSERT INTO devices (device_id, password_hash, password_salt, "
+        "retention_started_at) VALUES "
+        "(?, ?, ?, CAST(strftime('%s','now') AS INTEGER));";
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -873,37 +896,51 @@ bool DeviceDBManager::RecordRuntimeHeartbeat() {
   return true;
 }
 
-RetentionCleanupResult DeviceDBManager::CleanupExpiredMetadata(
+RetentionCleanupResult DeviceDBManager::CleanupExpiredDevices(
     int retention_days, size_t batch_size) {
   if (retention_days < 1 || retention_days > 3650 ||
       batch_size < 1 || batch_size > 1000)
-    throw std::invalid_argument("Invalid metadata retention policy");
+    throw std::invalid_argument("Invalid device retention policy");
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   const int64_t cutoff = NowSeconds() - int64_t{retention_days} * 86400;
   RetentionCleanupResult result;
-  ExecuteSchemaStatement(db_, "BEGIN IMMEDIATE;", "begin metadata cleanup");
+  ExecuteSchemaStatement(db_, "BEGIN IMMEDIATE;", "begin device cleanup");
   sqlite3_stmt* stmt = nullptr;
   try {
-    // Keep credentials, online identities (including controller clones), and
-    // any identity still referenced by a live or recoverable remote session.
+    // Expire the base identity and its clone together, only after both have
+    // been offline for the full retention period. Sessions survive short
+    // restarts and must protect their identities even before they reconnect.
     const char* candidates =
-        "SELECT p.device_id FROM device_presence p "
-        "WHERE p.online = 0 AND p.updated_at < ? "
-        "AND NOT EXISTS (SELECT 1 FROM device_presence live "
-        "WHERE live.online = 1 AND (live.device_id = 'C-' || p.device_id "
-        "OR live.device_id = CASE WHEN substr(p.device_id,1,2) = 'C-' "
-        "THEN substr(p.device_id,3) ELSE p.device_id END)) "
+        "WITH expired AS ("
+        "SELECT CASE WHEN substr(p.device_id,1,2) = 'C-' "
+        "THEN substr(p.device_id,3) ELSE p.device_id END AS device_id, "
+        "p.updated_at AS expired_at FROM device_presence p "
+        "WHERE p.online = 0 AND p.updated_at < ?1 "
+        "UNION ALL "
+        "SELECT CASE WHEN substr(d.device_id,1,2) = 'C-' "
+        "THEN substr(d.device_id,3) ELSE d.device_id END, "
+        "d.retention_started_at FROM devices d "
+        "WHERE d.retention_started_at < ?1 AND NOT EXISTS "
+        "(SELECT 1 FROM device_presence p WHERE p.device_id = d.device_id)) "
+        "SELECT e.device_id FROM expired e "
+        "WHERE NOT EXISTS (SELECT 1 FROM device_presence live "
+        "WHERE live.device_id IN (e.device_id, 'C-' || e.device_id) "
+        "AND (live.online != 0 OR live.updated_at >= ?1)) "
+        // An old clone alone cannot prove the age of a base credential whose
+        // own presence was removed by an older server or a history cleanup.
+        "AND NOT EXISTS (SELECT 1 FROM devices d "
+        "WHERE d.device_id IN (e.device_id, 'C-' || e.device_id) "
+        "AND d.retention_started_at >= ?1 AND NOT EXISTS "
+        "(SELECT 1 FROM device_presence p WHERE p.device_id = d.device_id)) "
         "AND NOT EXISTS (SELECT 1 FROM remote_control_sessions s "
-        "WHERE s.normalized_host_id = CASE WHEN substr(p.device_id,1,2) = 'C-' "
-        "THEN substr(p.device_id,3) ELSE p.device_id END "
-        "OR s.normalized_guest_id = CASE WHEN substr(p.device_id,1,2) = 'C-' "
-        "THEN substr(p.device_id,3) ELSE p.device_id END) "
-        "ORDER BY p.updated_at, p.device_id LIMIT ?;";
+        "WHERE s.normalized_host_id = e.device_id "
+        "OR s.normalized_guest_id = e.device_id) "
+        "GROUP BY e.device_id ORDER BY MIN(e.expired_at), e.device_id LIMIT ?2;";
     if (sqlite3_prepare_v2(db_, candidates, -1, &stmt, nullptr) != SQLITE_OK)
       throw std::runtime_error(sqlite3_errmsg(db_));
     sqlite3_bind_int64(stmt, 1, cutoff);
     sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(batch_size));
-    std::vector<std::string> ids;
+    auto& ids = result.device_ids;
     int rc;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
       ids.push_back(ColumnText(stmt, 0));
@@ -912,22 +949,28 @@ RetentionCleanupResult DeviceDBManager::CleanupExpiredMetadata(
     stmt = nullptr;
 
     const char* remove_associations =
-        "DELETE FROM user_devices WHERE user_id = ? OR device_id = ?;";
+        "DELETE FROM user_devices WHERE user_id IN (?1,?2) "
+        "OR device_id IN (?1,?2);";
     const char* remove_presence =
-        "DELETE FROM device_presence WHERE device_id = ?;";
+        "DELETE FROM device_presence WHERE device_id IN (?1,?2);";
+    const char* remove_credentials =
+        "DELETE FROM devices WHERE device_id IN (?1,?2);";
     for (const auto& id : ids) {
-      for (const char* sql : {remove_associations, remove_presence}) {
+      const auto clone = "C-" + id;
+      for (const char* sql :
+           {remove_associations, remove_presence, remove_credentials}) {
         if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
           throw std::runtime_error(sqlite3_errmsg(db_));
         sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_TRANSIENT);
-        if (sql == remove_associations)
-          sqlite3_bind_text(stmt, 2, id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, clone.c_str(), -1, SQLITE_TRANSIENT);
         if (sqlite3_step(stmt) != SQLITE_DONE)
           throw std::runtime_error(sqlite3_errmsg(db_));
         if (sql == remove_associations)
           result.associations += sqlite3_changes(db_);
-        else
+        else if (sql == remove_presence)
           result.devices += sqlite3_changes(db_);
+        else
+          result.credentials += sqlite3_changes(db_);
         sqlite3_finalize(stmt);
         stmt = nullptr;
       }
@@ -937,17 +980,23 @@ RetentionCleanupResult DeviceDBManager::CleanupExpiredMetadata(
     // subscriptions live in PresenceManager and are unaffected by this table.
     const char* orphan_associations =
         "DELETE FROM user_devices WHERE rowid IN ("
-        "SELECT a.rowid FROM user_devices a WHERE a.updated_at < ? "
+        "SELECT a.rowid FROM user_devices a WHERE a.updated_at < ?1 "
         "AND NOT EXISTS (SELECT 1 FROM device_presence p WHERE "
-        "p.device_id = a.user_id AND (p.online = 1 OR p.updated_at >= ?)) "
+        "p.device_id IN (CASE WHEN substr(a.user_id,1,2) = 'C-' "
+        "THEN substr(a.user_id,3) ELSE a.user_id END, 'C-' || "
+        "CASE WHEN substr(a.user_id,1,2) = 'C-' "
+        "THEN substr(a.user_id,3) ELSE a.user_id END) "
+        "AND (p.online != 0 OR p.updated_at >= ?1)) "
         "AND NOT EXISTS (SELECT 1 FROM remote_control_sessions s WHERE "
-        "s.normalized_host_id = a.user_id OR s.normalized_guest_id = a.user_id) "
-        "ORDER BY a.updated_at LIMIT ?);";
+        "s.normalized_host_id = CASE WHEN substr(a.user_id,1,2) = 'C-' "
+        "THEN substr(a.user_id,3) ELSE a.user_id END "
+        "OR s.normalized_guest_id = CASE WHEN substr(a.user_id,1,2) = 'C-' "
+        "THEN substr(a.user_id,3) ELSE a.user_id END) "
+        "ORDER BY a.updated_at LIMIT ?2);";
     if (sqlite3_prepare_v2(db_, orphan_associations, -1, &stmt, nullptr) != SQLITE_OK)
       throw std::runtime_error(sqlite3_errmsg(db_));
     sqlite3_bind_int64(stmt, 1, cutoff);
-    sqlite3_bind_int64(stmt, 2, cutoff);
-    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(batch_size));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(batch_size));
     if (sqlite3_step(stmt) != SQLITE_DONE)
       throw std::runtime_error(sqlite3_errmsg(db_));
     const size_t orphan_count = sqlite3_changes(db_);
@@ -955,13 +1004,13 @@ RetentionCleanupResult DeviceDBManager::CleanupExpiredMetadata(
     result.more = ids.size() == batch_size || orphan_count == batch_size;
     sqlite3_finalize(stmt);
     stmt = nullptr;
-    ExecuteSchemaStatement(db_, "COMMIT;", "commit metadata cleanup");
+    ExecuteSchemaStatement(db_, "COMMIT;", "commit device cleanup");
   } catch (...) {
     if (stmt) sqlite3_finalize(stmt);
     sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
     throw;
   }
-  if (result.devices || result.associations) {
+  if (result.devices || result.associations || result.credentials) {
     // Does not wait for readers. Backups and snapshots have independent expiry.
     sqlite3_wal_checkpoint_v2(db_, nullptr, SQLITE_CHECKPOINT_PASSIVE, nullptr, nullptr);
   }
