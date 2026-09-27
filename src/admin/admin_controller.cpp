@@ -165,15 +165,6 @@ std::string NormalizeDeviceKind(const std::string& kind) {
   return "pc";
 }
 
-ClientNetworkInfo CurrentNetworkInfo(PresenceManager* presence,
-                                     const OnlineDeviceInfo& device) {
-  ClientNetworkInfo network_info;
-  if (presence && device.online) {
-    presence->GetDeviceNetworkInfo(device.device_id, &network_info);
-  }
-  return network_info;
-}
-
 int64_t CountForDeviceFilter(const DevicePresenceCounts& counts,
                              const std::string& filter) {
   std::string normalized = filter;
@@ -537,7 +528,6 @@ AdminHttpResponse AdminController::HandleOverview(
     for (const auto& device : device_rows) {
       int64_t active_control_count = device.active_control_count;
       int64_t active_controlled_count = device.active_controlled_count;
-      ClientNetworkInfo network_info = CurrentNetworkInfo(presence_, device);
       devices.push_back({{"id", device.device_id},
                          {"online", device.online},
                          {"kind", ClientKind(device.device_id)},
@@ -549,7 +539,6 @@ AdminHttpResponse AdminController::HandleOverview(
                          {"online_since", device.online_since},
                          {"online_duration_seconds",
                           device.online_duration_seconds},
-                         {"client_ip", network_info.client_ip},
                          {"current_control_seconds",
                           device.current_control_seconds},
                          {"current_controlled_seconds",

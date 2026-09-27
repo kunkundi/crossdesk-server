@@ -146,13 +146,13 @@ Set both `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, then run `sudo docker 
 | --- | --- |
 | Top metrics | View online devices, Web clients, and active connections |
 | Client Presence | Defaults to online PCs; switch PC/Web, combine platform, version and Online/Controlled/Offline/All filters, search IDs, sort, and paginate; platform/version options cover all reported values in the current category, with counts and pagination following the filters; Controlled counts and lists only devices currently being controlled, once per device |
-| Details | Expand platform/version, current online/control durations, connection IP and remote peers |
+| Details | Expand platform/version, current online/control durations and remote peers |
 | Active Sessions → Disconnect | Confirm to disconnect the selected session; devices stay online |
 | Refresh lists / Logout | Refresh manually / sign out |
 
 While visible, the page refreshes data every 5 seconds and updates displayed durations every second. Admin sessions are held in memory, expire after 8 hours by default, and require a new login after a server restart. Dashboard login cookies require HTTPS.
 
-Connection IPs are held in memory while devices are online and cleared on logout. Connection logs can still contain IPs. The server no longer queries external IP geolocation services or displays regional distributions.
+The signaling server no longer collects or caches client connection IPs, returns them through the admin API, displays them in the dashboard, or records them in new signaling connection logs. It does not query external IP geolocation services or display regional distributions. Historical logs and logs from the separate Coturn service retain their respective retention policies.
 
 Frontend source lives in [src/admin/web](src/admin/web), installed at `/crossdesk-server/admin` in the container. A custom `CROSSDESK_ADMIN_WEB_DIR` must also be explicitly passed through Compose's `environment` and its directory mounted. Adding it to `.env` alone does not pass it into the container. Restart the service after frontend changes to refresh its asset cache.
 
@@ -220,7 +220,7 @@ Connection diagnostics help investigate a running process that cannot reliably a
 | `Connection diagnostics` | First emitted after approximately 5 seconds, then every 60 seconds and on shutdown; summarizes connections, FDs, backlogs, and cumulative errors |
 | `Signal event loop delayed` | Reports maintenance timer delays of at least 5 seconds |
 
-Warnings for admission pauses, accept/resource errors, peer address failures, pre-open failures, and event loop delays are limited to one per category per 30 seconds. Recovery records are paired only with reported pauses. `*_total` counters accumulate since process startup even when warnings are suppressed; `*_limit_checks_total` counts checks hitting a limit, not rejected clients. `unopened` includes WebSocket handshakes, ordinary HTTPS requests, and their cleanup. `fd_open` is measured when logging; `fd_estimated` is the admission estimate, with its sample age in `fd_sample_age_ms`. A value of `-1` means unavailable or unlimited. `expired_handles` and `oldest_unopened_ms` help identify retained or stalled connections.
+Warnings for admission pauses, accept/resource errors, pre-open failures, and event loop delays are limited to one per category per 30 seconds. Recovery records are paired only with reported pauses. `*_total` counters accumulate since process startup even when warnings are suppressed; `*_limit_checks_total` counts checks hitting a limit, not rejected clients. `unopened` includes WebSocket handshakes, ordinary HTTPS requests, and their cleanup. `fd_open` is measured when logging; `fd_estimated` is the admission estimate, with its sample age in `fd_sample_age_ms`. A value of `-1` means unavailable or unlimited. `expired_handles` and `oldest_unopened_ms` help identify retained or stalled connections.
 
 ### Retention and automatic cleanup
 
@@ -230,7 +230,7 @@ Warnings for admission pauses, accept/resource errors, peer address failures, pr
 | Device presence and version/platform | Delete the device and its controller clone together after both have been offline for more than **180 days**; skip identities that are online, were used within the last 180 days or are referenced by active/recoverable sessions |
 | Historical server-side device associations | Remove with expired devices; other stale associations without current owner presence expire after **180 days**; legacy rows without timestamps start aging at first upgrade |
 | Device IDs, password salts and hashes | Delete with expired devices in the same transaction; legacy credentials without presence timestamps start aging at first upgrade |
-| Current IPs, subscriptions, admin sessions | Existing logout/disconnect/session-expiry rules continue to apply; device expiry also clears its in-memory subscriptions and caches; connection logs may contain IPs |
+| Subscriptions and admin sessions | Existing logout/disconnect/session-expiry rules continue to apply; device expiry also clears its in-memory subscriptions |
 
 Configure `.env` with `CROSSDESK_LOG_RETENTION_DAYS=185`, `CROSSDESK_OFFLINE_RETENTION_DAYS=180` and `CROSSDESK_RETENTION_INTERVAL_SECONDS=3600`. Days must be 1–3650 and the interval 60–86400 seconds. Empty values use defaults; invalid values prevent startup rather than enabling immediate deletion or indefinite retention. Check applicable minimum retention obligations before shortening mixed operational/security logs. These defaults do not certify legal compliance.
 

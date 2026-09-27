@@ -40,10 +40,6 @@ struct OnlineDeviceInfo {
   std::string client_platform;
 };
 
-struct ClientNetworkInfo {
-  std::string client_ip;
-};
-
 struct DevicePresenceCounts {
   int64_t all = 0;
   int64_t online = 0;

@@ -63,7 +63,6 @@ class SignalServer {
   using Clock = std::chrono::steady_clock;
   struct ConnectionState {
     uint64_t id = 0;
-    std::string ip;  // Set before publishing to the application worker.
     std::string device_id;  // Accessed only on the network thread.
     Clock::time_point accepted = Clock::now(), last_heartbeat = accepted;
     bool opened = false, authenticated = false;
@@ -93,9 +92,6 @@ class SignalServer {
   void ScheduleRuntimeHeartbeat();
   void ScheduleRecoveredSessionCleanup();
   void ScheduleRetentionCleanup();
-  std::string GetClientIp(websocketpp::connection_hdl hdl, uint64_t id);
-  void SetClientNetworkInfo(const std::string& client_ip,
-                            const std::string& device_id);
 
   server server_;
   uint16_t port_;
@@ -117,13 +113,13 @@ class SignalServer {
   Clock::time_point next_accept_warning_{}, next_preopen_warning_{};
   // Diagnostics are updated only on the network thread. Counters are cumulative.
   struct ConnectionDiagnostics {
-    uint64_t accepted = 0, opened = 0, preopen_failed = 0, peer_failed = 0;
+    uint64_t accepted = 0, opened = 0, preopen_failed = 0;
     uint64_t accept_failed = 0, init_resource_failed = 0, loop_stalls = 0;
     uint64_t connection_limit_checks = 0, unopened_limit_checks = 0;
     uint64_t fd_limit_checks = 0, fd_sample_failed_checks = 0;
   } diagnostics_;
   Clock::time_point next_diagnostics_{}, next_admission_warning_{};
-  Clock::time_point next_peer_warning_{}, next_loop_warning_{};
+  Clock::time_point next_loop_warning_{};
   Clock::time_point admission_paused_since_{};
   bool admission_paused_ = false, admission_pause_logged_ = false;
   uint64_t admission_pause_checks_ = 0;

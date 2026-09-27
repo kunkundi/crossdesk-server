@@ -218,37 +218,6 @@ SignalServer::~SignalServer() {
   if (maintenance_worker_) maintenance_worker_->Stop();
 }
 
-std::string SignalServer::GetClientIp(websocketpp::connection_hdl hdl,
-                                    uint64_t id) {
-  auto warn = [this, id](const std::string& error) {
-    ++diagnostics_.peer_failed;
-    if (Clock::now() < next_peer_warning_) return;
-    LOG_WARN("Failed to get websocket peer endpoint: {} connection={} "
-             "peer_endpoint_failures_total={}",
-             error, id, diagnostics_.peer_failed);
-    next_peer_warning_ = Clock::now() + kDiagnosticWarningInterval;
-  };
-  try {
-    server::connection_ptr con = server_.get_con_from_hdl(hdl);
-    websocketpp::lib::asio::error_code ec;
-    auto endpoint = con->get_raw_socket().remote_endpoint(ec);
-    if (ec) {
-      warn(ec.message());
-      return "";
-    }
-    return endpoint.address().to_string();
-  } catch (const std::exception& e) {
-    warn(e.what());
-  }
-  return "";
-}
-
-void SignalServer::SetClientNetworkInfo(const std::string& client_ip,
-                                         const std::string& device_id) {
-  if (!presence_manager_ || device_id.empty()) return;
-  presence_manager_->SetDeviceNetworkInfo(device_id, {client_ip});
-}
-
 // TLS contexts are immutable once published. Existing SSL streams keep the old
 // shared_ptr alive, including across certificate rotation and failed reloads.
 context_ptr SignalServer::OnTlsInit(websocketpp::connection_hdl) {
@@ -347,13 +316,13 @@ std::string SignalServer::DescribeConnectionResources() {
 void SignalServer::LogConnectionDiagnostics() {
   LOG_INFO(
       "Connection diagnostics: {} accepted_total={} ws_opened_total={} "
-      "preopen_failures_total={} peer_endpoint_failures_total={} "
+      "preopen_failures_total={} "
       "accept_failures_total={} init_resource_failures_total={} "
       "connection_limit_checks_total={} unopened_limit_checks_total={} "
       "fd_limit_checks_total={} fd_sample_failed_checks_total={} "
       "event_loop_stalls_total={}",
       DescribeConnectionResources(), diagnostics_.accepted, diagnostics_.opened,
-      diagnostics_.preopen_failed, diagnostics_.peer_failed,
+      diagnostics_.preopen_failed,
       diagnostics_.accept_failed, diagnostics_.init_resource_failed,
       diagnostics_.connection_limit_checks, diagnostics_.unopened_limit_checks,
       diagnostics_.fd_limit_checks, diagnostics_.fd_sample_failed_checks,
@@ -447,7 +416,6 @@ void SignalServer::AcceptNext() {
       con->get_raw_socket() = std::move(*socket);
       auto state = std::make_shared<ConnectionState>();
       state->id = next_connection_id_++;
-      state->ip = GetClientIp(con->get_handle(), state->id);
       connections_.emplace(con->get_handle(), state);
       con->set_termination_handler([this](server::connection_ptr finished) {
         FinishConnection(finished);
@@ -484,7 +452,7 @@ bool SignalServer::OnOpen(websocketpp::connection_hdl hdl) {
   state.opened = true;
   ++diagnostics_.opened;
   state.last_heartbeat = Clock::now();
-  LOG_INFO("Websocket connection [{}] opened from [{}]", state.id, state.ip);
+  LOG_INFO("Websocket connection [{}] opened", state.id);
   return true;
 }
 
@@ -528,9 +496,9 @@ void SignalServer::FinishConnection(server::connection_ptr con) {
     if (Clock::now() >= next_preopen_warning_) {
       LOG_WARN(
           "Connection [{}] failed before websocket open error=[{}] "
-          "transport=[{}] ip=[{}] age_ms={} preopen_failures_total={}",
+          "transport=[{}] age_ms={} preopen_failures_total={}",
           state->id, con->get_ec().message(),
-          con->get_transport_ec().message(), state->ip,
+          con->get_transport_ec().message(),
           std::chrono::duration_cast<std::chrono::milliseconds>(
               Clock::now() - state->accepted).count(),
           diagnostics_.preopen_failed);
@@ -996,7 +964,6 @@ void SignalServer::ProcessMessage(
           std::string id = transmission_manager_->GetUserId(hdl);
           if (!id.empty()) {
             presence_manager_->OnLogin(id, id, hdl);
-            SetClientNetworkInfo(state->ip, id);
           }
         }
         break;

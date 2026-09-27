@@ -61,16 +61,9 @@ int main() {
   expect(presence.GetOnlineWebClientCount() == 0,
          "web logout decrements web client count");
 
-  presence.SetDeviceNetworkInfo(
-      "device-1",
-      {"203.0.113.8"});
-  ClientNetworkInfo network_info;
-  expect(presence.GetDeviceNetworkInfo("device-1", &network_info) &&
-             network_info.client_ip == "203.0.113.8",
-         "presence stores current device network info in memory");
   presence.OnLogout("device-1");
-  expect(!presence.GetDeviceNetworkInfo("device-1", &network_info),
-         "presence clears current network info on logout");
+  expect(presence.GetOnlineDeviceCount() == 0,
+         "regular device logout decrements online device count");
   const auto db_path =
       std::filesystem::temp_directory_path() /
       ("crossdesk_presence_manager_test_" +

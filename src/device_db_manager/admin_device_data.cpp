@@ -207,7 +207,7 @@ nlohmann::json DeviceDBManager::AdminDeviceData(
   report["excluded"] = {"passwords_and_hashes",
                         "other_device_identifiers",
                         "legacy_geolocation",
-                        "runtime_ip_and_subscriptions",
+                        "runtime_subscriptions",
                         "logs",
                         "backups"};
 

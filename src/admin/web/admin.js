@@ -102,8 +102,7 @@
       'Details': '详情',
       'Current control': '本次控制',
       'Current controlled': '本次被控',
-      'Client IP': '客户端 IP',
-      'Last online': '最近在线',
+      'Last offline time': '最近离线时间',
       'Active session': '活动会话',
       'Controlling': '正在控制',
       'Controlled by': '控制方',
@@ -541,9 +540,8 @@
             device.online ? formatDuration(device.online_duration_seconds) : '-');
           setDurationDataset(currentOnline, 'current-online', device,
             device.online_duration_seconds, capturedAt);
-          appendDetailItem(connection, 'Client IP', device.client_ip || '-');
           appendDetailItem(connection, 'Online since', formatTime(device.online_since));
-          appendDetailItem(connection, 'Last online', formatTime(device.online ? 0 : device.updated_at));
+          appendDetailItem(connection, 'Last offline time', formatTime(device.online ? 0 : device.updated_at));
           const activeControlCount = Number(device.active_control_count) || 0;
           const activeControlledCount = Number(device.active_controlled_count) || 0;
           const controlling = appendDetailGroup(details, 'Control activity');
@@ -977,7 +975,7 @@
       'Request reference': '请求编号',
       'Query data': '查询数据',
       'Use an opaque case reference, not a name, email, password or verification evidence. For C- identities, enter the original device ID.': '请求编号仅用字母、数字、连字符或下划线，不要填写姓名、邮箱、密码或核验材料。C- 开头的控制端身份请填写原设备 ID。',
-      "Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime IPs, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.": '导出不包含密码及摘要、其他设备标识、旧地域字段、运行时 IP、日志或备份。清理会移除关联的数据库记录及当前内存订阅；日志、备份和客户端本地数据需另行处理。',
+      "Exports exclude passwords, hashes, other devices' identifiers, legacy location fields, runtime subscriptions, logs and backups. Cleanups remove related database rows and current in-memory subscriptions; logs, backups and client-local data need separate handling.": '导出不包含密码及摘要、其他设备标识、旧地域字段、运行时订阅、日志或备份。清理会移除关联的数据库记录及当前内存订阅；日志、备份和客户端本地数据需另行处理。',
       'Admin password': '管理员密码',
       "I have verified the requester's authority and the requested scope.": '我已核验申请人的权限，并确认了请求范围。',
       'Export summary (JSON)': '导出摘要（JSON）',

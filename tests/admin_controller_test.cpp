@@ -192,17 +192,8 @@ int main() {
     presence.SetDeviceDB(&db);
     websocketpp::connection_hdl hdl;
     presence.OnLogin("device-admin-1", "device-admin-1", hdl);
-    presence.SetDeviceNetworkInfo(
-        "device-admin-1",
-        {"203.0.113.8"});
     presence.OnLogin("device-admin-2", "device-admin-2", hdl);
-    presence.SetDeviceNetworkInfo(
-        "device-admin-2",
-        {"198.51.100.8"});
     presence.OnLogin("device-admin-offline", "device-admin-offline", hdl);
-    presence.SetDeviceNetworkInfo(
-        "device-admin-offline",
-        {"203.0.113.9"});
     presence.OnLogout("device-admin-offline");
     presence.OnLogin("device-admin-control", "device-admin-control", hdl);
     presence.OnLogin("web-admin-1", "web-admin-1", hdl);
@@ -211,9 +202,6 @@ int main() {
     db.UpdateDeviceClientInfo("device-admin-offline", "1.2.3", "windows");
     db.UpdateDeviceClientInfo("device-admin-control", "1.2.3", "linux");
     db.UpdateDeviceClientInfo("web-admin-1", "3.0.0", "web");
-    presence.SetDeviceNetworkInfo(
-        "web-admin-1",
-        {"198.51.100.10"});
     db.StartRemoteControlSession("tx-admin", "device-admin-1",
                                  "device-admin-offline");
     db.EndRemoteControlSession("tx-admin", "device-admin-1",
@@ -249,8 +237,8 @@ int main() {
            "overview excludes device total control duration");
     expect(!db_overview_body["devices"][0].contains("total_controlled_seconds"),
            "overview excludes device total controlled duration");
-    expect(db_overview_body["devices"][0]["client_ip"] == "203.0.113.8",
-           "overview reports current in-memory device client ip");
+    expect(!db_overview_body["devices"][0].contains("client_ip"),
+           "overview excludes client IP for online devices");
     expect(db_overview_body["devices"][0].contains("current_control_seconds"),
            "overview reports device current control duration");
     expect(db_overview_body["devices"][0].contains(
@@ -292,8 +280,8 @@ int main() {
            "overview reports last online timestamp for offline device");
     expect(offline_body["devices"][0]["online_duration_seconds"] == 0,
            "overview reports zero current duration for offline device");
-    expect(offline_body["devices"][0]["client_ip"] == "",
-           "overview clears transient network info for offline device");
+    expect(!offline_body["devices"][0].contains("client_ip"),
+           "overview excludes client IP for offline devices");
     expect(offline_body["devices"][0]["active_control_count"] == 1,
            "overview preserves controller details outside the active filter");
 
@@ -363,6 +351,8 @@ int main() {
            "overview returns web clients on web filter");
     expect(web_body["devices"][0]["kind"] == "web",
            "overview marks web client kind");
+    expect(!web_body["devices"][0].contains("client_ip"),
+           "overview excludes client IP for web clients");
 
     AdminHttpResponse web_kind_overview = db_controller.Handle(
         {"GET",

@@ -54,10 +54,6 @@ void PresenceManager::OnLogout(const std::string& device_id) {
   if (db_) {
     db_->SetDeviceOnline(device_id, false);
   }
-  {
-    std::lock_guard<std::mutex> lock(network_info_mutex_);
-    device_network_info_.erase(device_id);
-  }
   if (!user_id.empty()) {
     NotifyUserDevices(user_id, device_id, false);
   }
@@ -71,18 +67,13 @@ bool PresenceManager::IsOnline(const std::string& device_id) const {
 
 void PresenceManager::ForgetOfflineDeviceData(const std::string& device_id) {
   const auto clone = "C-" + device_id;
-  {
-    std::lock_guard<std::mutex> lock(associations_mutex_);
-    associations_.erase(device_id);
-    associations_.erase(clone);
-    for (auto& entry : associations_) {
-      entry.second.erase(device_id);
-      entry.second.erase(clone);
-    }
+  std::lock_guard<std::mutex> lock(associations_mutex_);
+  associations_.erase(device_id);
+  associations_.erase(clone);
+  for (auto& entry : associations_) {
+    entry.second.erase(device_id);
+    entry.second.erase(clone);
   }
-  std::lock_guard<std::mutex> lock(network_info_mutex_);
-  device_network_info_.erase(device_id);
-  device_network_info_.erase(clone);
 }
 
 size_t PresenceManager::GetOnlineDeviceCount() const {
@@ -93,29 +84,6 @@ size_t PresenceManager::GetOnlineDeviceCount() const {
 size_t PresenceManager::GetOnlineWebClientCount() const {
   std::lock_guard<std::mutex> lock(online_devices_mutex_);
   return online_web_clients_.size();
-}
-
-void PresenceManager::SetDeviceNetworkInfo(
-    const std::string& device_id, const ClientNetworkInfo& network_info) {
-  if (device_id.empty()) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(network_info_mutex_);
-  device_network_info_[device_id] = network_info;
-}
-
-bool PresenceManager::GetDeviceNetworkInfo(
-    const std::string& device_id, ClientNetworkInfo* network_info) const {
-  if (!network_info) {
-    return false;
-  }
-  std::lock_guard<std::mutex> lock(network_info_mutex_);
-  auto it = device_network_info_.find(device_id);
-  if (it == device_network_info_.end()) {
-    return false;
-  }
-  *network_info = it->second;
-  return true;
 }
 
 std::vector<std::pair<std::string, bool>> PresenceManager::BatchQuery(
