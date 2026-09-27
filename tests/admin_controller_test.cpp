@@ -28,6 +28,10 @@ int main() {
   };
 
   expect(AdminController::IsAdminRoute("/admin"), "/admin is admin route");
+  expect(!AdminController::IsAdminRoute("/admin/unknown"),
+         "unknown admin pages are not frontend routes");
+  expect(!AdminController::IsAdminRoute("/administrator"),
+         "similar path prefixes are not admin routes");
   expect(AdminController::IsAdminRoute("/admin/assets/admin.js"),
          "/admin/assets/admin.js is admin route");
   expect(AdminController::IsAdminRoute("/api/admin/overview"),
@@ -70,6 +74,25 @@ int main() {
   expect(admin_page.status == 200, "admin page returns static frontend");
   expect(admin_page.body.find("/admin/assets/admin.js") != std::string::npos,
          "admin page references separated frontend script");
+  for (const std::string page : {"/admin/", "/admin/overview", "/admin/data",
+                                 "/admin/about"}) {
+    for (const std::string suffix : {"", "?source=bookmark", "/"}) {
+      if (page == "/admin/" && suffix == "/") continue;
+      const std::string resource = page + suffix;
+      expect(AdminController::IsAdminRoute(resource),
+             resource + " is a directly accessible admin page");
+      const auto response = controller.Handle({"GET", resource, "", ""});
+      expect(response.status == 200 &&
+                 response.content_type.find("text/html") != std::string::npos &&
+                 response.body == admin_page.body,
+             resource + " serves the admin frontend for direct loads and reloads");
+      const auto disabled_page =
+          disabled_controller.Handle({"GET", resource, "", ""});
+      expect(disabled_page.status == 200 &&
+                 disabled_page.body.find("not enabled") != std::string::npos,
+             resource + " respects disabled admin configuration");
+    }
+  }
   AdminHttpResponse admin_script =
       controller.Handle({"GET", "/admin/assets/admin.js", "", ""});
   expect(admin_script.status == 200, "admin script asset returns ok");

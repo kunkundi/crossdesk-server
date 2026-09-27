@@ -150,7 +150,9 @@ Set both `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, then run `sudo docker 
 | Active Sessions → Disconnect | Confirm to disconnect the selected session; devices stay online |
 | Refresh lists / Logout | Refresh manually / sign out |
 
-While visible, the page refreshes data every 5 seconds and updates displayed durations every second. Admin sessions are held in memory, expire after 8 hours by default, and require a new login after a server restart. Dashboard login cookies require HTTPS.
+The top navigation opens three separate pages: **Overview** (`/admin/overview`) for metrics, clients and active sessions; **Data management** (`/admin/data`) for querying, exporting and cleaning device records; and **About** (`/admin/about`) for the server version, project description, license and project links. Each page supports direct links, reloads and browser back/forward navigation. If authentication is required, signing in opens the originally requested page. `/admin` continues to show the overview by default.
+
+While visible, the overview refreshes data every 5 seconds and updates displayed durations every second. Data management and About do not poll device or session lists. Admin sessions are held in memory, expire after 8 hours by default, and require a new login after a server restart. Dashboard login cookies require HTTPS.
 
 The signaling server no longer collects or caches client connection IPs, returns them through the admin API, displays them in the dashboard, or records them in new signaling connection logs. It does not query external IP geolocation services or display regional distributions. Historical logs and logs from the separate Coturn service retain their respective retention policies.
 

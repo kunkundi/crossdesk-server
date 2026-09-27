@@ -3,9 +3,16 @@
       'Administration': '服务端管理',
       'Main navigation': '主要导航',
       'Overview': '运行概览',
-      'Clients': '客户端',
-      'Sessions': '会话',
       'Data management': '数据管理',
+      'About': '关于',
+      'Device registration, client presence and remote session services for CrossDesk.': '为 CrossDesk 提供设备注册、在线状态和远程会话服务。',
+      'Server version': '服务端版本',
+      'License': '开源许可证',
+      'Project resources': '项目资源',
+      'Source code': '源代码',
+      'Documentation': '使用文档',
+      'Report an issue': '问题反馈',
+      'Desktop client': '桌面客户端',
       'Type': '类型',
       'Platform': '平台',
       'Version': '版本',
@@ -24,8 +31,6 @@
       'Controllers': '控制方',
       'SERVER CONSOLE': '服务端控制台',
       'Loading console…': '正在加载管理控制台…',
-      'Your connections, at a glance.': '连接状态，一目了然。',
-      'Monitor clients, manage remote sessions and keep device records in one place.': '集中查看客户端状态、管理远程会话与设备记录。',
       'Sign in with your server administrator account.': '使用服务端管理员账户登录。',
       'Signing in…': '正在登录…',
       'A live view of your clients and remote connections.': '实时掌握客户端在线状态与远程连接情况。',
@@ -139,6 +144,7 @@
 
     function translatePage() {
       document.documentElement.lang = locale();
+      updateDocumentTitle();
       document.getElementById('language').value = language;
       for (const attribute of ['text', 'placeholder', 'title', 'aria-label']) {
         const dataAttribute = attribute === 'text' ? 'data-i18n' : `data-i18n-${attribute}`;
@@ -186,6 +192,17 @@
     const loginView = document.getElementById('login-view');
     const dashboardView = document.getElementById('dashboard-view');
     const logoutButton = document.getElementById('logout');
+    const dashboardNav = document.getElementById('dashboard-nav');
+    const pagePath = window.location.pathname.replace(/\/$/, '');
+    const currentPage = pagePath === '/admin/data' ? 'data'
+      : pagePath === '/admin/about' ? 'about' : 'overview';
+    const pageLabels = {overview: 'Overview', data: 'Data management', about: 'About'};
+
+    function updateDocumentTitle() {
+      const title = loginView.classList.contains('hidden') ? pageLabels[currentPage] : 'Admin Login';
+      document.title = `${t(title)} · CrossDesk`;
+    }
+
     const state = {
       devices: {
         limit: 10,
@@ -217,30 +234,43 @@
     let listRefreshPending = false;
     function showDashboard() {
       document.getElementById('auth-loading').classList.add('hidden');
-      document.getElementById('dashboard-nav').classList.remove('hidden');
       loginView.classList.add('hidden');
       dashboardView.classList.remove('hidden');
       logoutButton.classList.remove('hidden');
-      updateNavigation();
-      refreshLists();
-      if (!listTimer) listTimer = setInterval(refreshLists, 5000);
-      if (!durationTimer) durationTimer = setInterval(updateLiveDurations, 1000);
+      dashboardNav.classList.remove('hidden');
+      document.querySelectorAll('[data-page]').forEach(page => {
+        page.classList.toggle('hidden', page.dataset.page !== currentPage);
+      });
+      dashboardNav.querySelectorAll('[data-page-link]').forEach(link => {
+        if (link.dataset.pageLink === currentPage) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
+      });
+      document.getElementById('duration-note').classList.toggle('hidden', currentPage !== 'overview');
+      document.getElementById('about-server-version').textContent = document.getElementById('server-version').textContent;
+      setMessage('dashboard-error', '');
+      updateDocumentTitle();
+      if (currentPage === 'overview') {
+        refreshLists();
+        if (!listTimer) listTimer = setInterval(refreshLists, 5000);
+        if (!durationTimer) durationTimer = setInterval(updateLiveDurations, 1000);
+      }
     }
 
     function showLogin(message) {
       document.getElementById('auth-loading').classList.add('hidden');
-      document.getElementById('dashboard-nav').classList.add('hidden');
       resetDeviceData();
       ++listRefreshSerial;
       listRefreshPending = false;
       dashboardView.classList.add('hidden');
       loginView.classList.remove('hidden');
       logoutButton.classList.add('hidden');
+      dashboardNav.classList.add('hidden');
       if (listTimer) clearInterval(listTimer);
       listTimer = null;
       if (durationTimer) clearInterval(durationTimer);
       durationTimer = null;
       setMessage('login-error', message || '');
+      updateDocumentTitle();
     }
 
     async function login(event) {
@@ -277,9 +307,9 @@
       try {
         const response = await fetch('/api/admin/logout', {method: 'POST', credentials: 'same-origin'});
         if (response.ok || response.status === 401) showLogin('');
-        else setMessage('refresh-error', 'Failed to log out');
+        else setMessage('dashboard-error', 'Failed to log out');
       } catch (_) {
-        setMessage('refresh-error', 'Failed to log out');
+        setMessage('dashboard-error', 'Failed to log out');
       }
     }
 
@@ -721,7 +751,10 @@
     }
 
     function applyStats(stats) {
-      if (stats.server_version) document.getElementById('server-version').textContent = stats.server_version;
+      if (stats.server_version) {
+        document.getElementById('server-version').textContent = stats.server_version;
+        document.getElementById('about-server-version').textContent = stats.server_version;
+      }
       document.getElementById('metric-devices').textContent = stats.online_device_count;
       document.getElementById('metric-web').textContent = stats.online_web_client_count;
       document.getElementById('metric-sessions').textContent = stats.active_connection_count;
@@ -743,7 +776,6 @@
     }
 
     async function refreshStats() {
-      if (document.hidden) return true;
       let response;
       try {
         response = await fetch('/api/admin/stats', {credentials: 'same-origin', signal: AbortSignal.timeout(12000)});
@@ -766,7 +798,7 @@
     }
 
     async function refreshLists() {
-      if (document.hidden || dashboardView.classList.contains('hidden')) return;
+      if (currentPage !== 'overview' || document.hidden || dashboardView.classList.contains('hidden')) return;
       if (listRefreshInFlight) {
         listRefreshPending = true;
         return;
@@ -857,31 +889,6 @@
     }
 
     document.getElementById('language').addEventListener('change', event => setLanguage(event.target.value));
-    const navigationLinks = Array.from(document.querySelectorAll('#dashboard-nav a'));
-    function updateNavigation() {
-      if (dashboardView.classList.contains('hidden')) return;
-      const headerBottom = document.querySelector('.app-header').getBoundingClientRect().bottom;
-      let current = navigationLinks[0];
-      let currentTop = -Infinity;
-      for (const link of navigationLinks) {
-        const top = document.querySelector(link.hash).getBoundingClientRect().top;
-        if (top <= headerBottom + 60 && (top > currentTop ||
-            (top === currentTop && link.hash === window.location.hash))) {
-          current = link;
-          currentTop = top;
-        }
-      }
-      for (const link of navigationLinks) {
-        if (link === current) link.setAttribute('aria-current', 'location');
-        else link.removeAttribute('aria-current');
-      }
-    }
-    navigationLinks.forEach(link => link.addEventListener('click', () => {
-      if (link.hash === '#data-tools') document.getElementById('data-tools').open = true;
-    }));
-    window.addEventListener('scroll', updateNavigation, {passive: true});
-    window.addEventListener('resize', updateNavigation);
-    window.addEventListener('hashchange', updateNavigation);
     document.getElementById('login-form').addEventListener('submit', login);
     document.getElementById('logout').addEventListener('click', logout);
     document.getElementById('device-search').addEventListener('input', (event) => {

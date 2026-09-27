@@ -40,6 +40,12 @@ std::string ResourceQuery(const std::string& resource) {
   return query_pos == std::string::npos ? "" : resource.substr(query_pos + 1);
 }
 
+bool IsAdminPagePath(std::string path) {
+  if (!path.empty() && path.back() == '/') path.pop_back();
+  return path == "/admin" || path == "/admin/overview" ||
+         path == "/admin/data" || path == "/admin/about";
+}
+
 int HexValue(char ch) {
   if (ch >= '0' && ch <= '9') return ch - '0';
   if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
@@ -211,7 +217,7 @@ std::vector<std::filesystem::path> AdminWebRootCandidates() {
 
 const std::set<std::string>& AdminAllowedWebFiles() {
   static const std::set<std::string> kAllowedFiles = {
-      "index.html", "admin.css", "admin.js"};
+      "index.html", "admin.css", "admin.js", "crossdesk-logo.png"};
   return kAllowedFiles;
 }
 
@@ -284,6 +290,9 @@ std::string AdminAssetContentType(const std::string& file_name) {
   if (file_name == "admin.js") {
     return "application/javascript; charset=utf-8";
   }
+  if (file_name == "crossdesk-logo.png") {
+    return "image/png";
+  }
   return "application/octet-stream";
 }
 
@@ -314,7 +323,7 @@ AdminController::AdminController(
 
 bool AdminController::IsAdminRoute(const std::string& resource) {
   std::string path = ResourcePath(resource);
-  return path == "/admin" || path.rfind(kAdminAssetPrefix, 0) == 0 ||
+  return IsAdminPagePath(path) || path.rfind(kAdminAssetPrefix, 0) == 0 ||
          path == "/api/admin" || path.rfind("/api/admin/", 0) == 0;
 }
 
@@ -341,7 +350,7 @@ std::string AdminController::ExtractDisconnectTransmissionId(
 
 AdminHttpResponse AdminController::Handle(const AdminHttpRequest& request) {
   std::string path = ResourcePath(request.resource);
-  if (path == "/admin") {
+  if (IsAdminPagePath(path)) {
     return HandleAdminPage();
   }
   if (path.rfind(kAdminAssetPrefix, 0) == 0) {
