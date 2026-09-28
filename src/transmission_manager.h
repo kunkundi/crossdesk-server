@@ -65,6 +65,8 @@ class TransmissionManager {
       std::function<void(websocketpp::connection_hdl, const std::string&)> callback);
 
   bool ReleaseGuestFromTransmission(const std::string& guest_id);
+  bool ReleaseGuestFromTransmission(const std::string& guest_id,
+                                    const std::string& transmission_id);
   bool DisconnectTransmission(const std::string& transmission_id);
   size_t PruneDisconnectedTransmissions();
   std::string ReleaseUserSession(websocketpp::connection_hdl hdl);

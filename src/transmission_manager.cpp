@@ -303,26 +303,33 @@ bool TransmissionManager::ReleaseGuestFromTransmission(
   bool released = false;
   for (auto map_it = transmission_guest_id_list_.begin();
        map_it != transmission_guest_id_list_.end();) {
-    auto& list = map_it->second;
-    auto remove_begin = std::remove(list.begin(), list.end(), guest_id);
-    if (remove_begin == list.end()) {
-      ++map_it;
-      continue;
-    }
-
-    auto host_it = transmission_host_id_list_.find(map_it->first);
-    std::string host_id =
-        host_it != transmission_host_id_list_.end() ? host_it->second : "";
-    NotifyRemoteControl(map_it->first, host_id, guest_id, false);
-    list.erase(remove_begin, list.end());
-    released = true;
-    if (list.empty()) {
-      map_it = transmission_guest_id_list_.erase(map_it);
-    } else {
-      ++map_it;
-    }
+    const auto transmission_id = (map_it++)->first;
+    released = ReleaseGuestFromTransmission(guest_id, transmission_id) || released;
   }
   return released;
+}
+
+bool TransmissionManager::ReleaseGuestFromTransmission(
+    const std::string& guest_id, const std::string& transmission_id) {
+  StateLock lock(*this);
+  auto guest_it = transmission_guest_id_list_.find(transmission_id);
+  if (guest_it == transmission_guest_id_list_.end()) {
+    return false;
+  }
+
+  auto& guests = guest_it->second;
+  auto remove_begin = std::remove(guests.begin(), guests.end(), guest_id);
+  if (remove_begin == guests.end()) {
+    return false;
+  }
+
+  const auto host_id = GetHostIdOfTransmission(transmission_id);
+  NotifyRemoteControl(transmission_id, host_id, guest_id, false);
+  guests.erase(remove_begin, guests.end());
+  if (guests.empty()) {
+    transmission_guest_id_list_.erase(guest_it);
+  }
+  return true;
 }
 
 bool TransmissionManager::DisconnectTransmission(

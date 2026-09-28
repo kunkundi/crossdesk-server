@@ -254,6 +254,28 @@ bool SignalNegotiation::leave_transmission(websocketpp::connection_hdl hdl,
     return false;
   }
 
+  if (user_id.empty() || transmission_id.empty() ||
+      transmission_manager_->GetUserId(hdl) != user_id) {
+    LOG_WARN("Reject leave request with unauthenticated sender");
+    return false;
+  }
+
+  const auto user_id_list =
+      transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
+  if (std::find(user_id_list.begin(), user_id_list.end(), user_id) ==
+      user_id_list.end()) {
+    LOG_WARN("Reject leave request outside an authorized transmission");
+    return false;
+  }
+
+  if (transmission_manager_->IsHostOfTransmission(user_id, transmission_id)) {
+    transmission_manager_->ReleaseTransmission(transmission_id);
+    LOG_INFO("Release transmission [{}] due to host leaves", transmission_id);
+  } else if (!transmission_manager_->ReleaseGuestFromTransmission(
+                 user_id, transmission_id)) {
+    return false;
+  }
+
   LOG_INFO("[{}] leaves transmission [{}]", user_id.c_str(),
            transmission_id.c_str());
 
@@ -261,25 +283,10 @@ bool SignalNegotiation::leave_transmission(websocketpp::connection_hdl hdl,
                   {"transmission_id", transmission_id},
                   {"user_id", user_id}};
 
-  std::vector<std::string> user_id_list =
-      transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
-
   for (const auto& id : user_id_list) {
     if (id != user_id) {
       send_msg_(transmission_manager_->GetWsHandle(id), message);
     }
-  }
-
-  // transmission_manager_->ReleaseUserFromWsHandle(hdl);
-
-  bool is_host =
-      transmission_manager_->IsHostOfTransmission(user_id, transmission_id);
-
-  if (is_host) {
-    transmission_manager_->ReleaseTransmission(transmission_id);
-    LOG_INFO("Release transmission [{}] due to host leaves", transmission_id);
-  } else {
-    transmission_manager_->ReleaseGuestFromTransmission(user_id);
   }
 
   return true;
