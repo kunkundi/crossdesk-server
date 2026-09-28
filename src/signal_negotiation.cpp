@@ -71,6 +71,29 @@ SignalNegotiation::SignalNegotiation(
 
 SignalNegotiation::~SignalNegotiation() {}
 
+bool SignalNegotiation::IsAuthorizedPeerSignal(
+    websocketpp::connection_hdl hdl, const std::string& user_id,
+    const std::string& remote_user_id, const std::string& transmission_id) const {
+  if (hdl.expired() || user_id.empty() || remote_user_id.empty() ||
+      transmission_id.empty() || user_id == remote_user_id ||
+      transmission_manager_->GetUserId(hdl) != user_id) {
+    return false;
+  }
+
+  const auto host_id =
+      transmission_manager_->GetHostIdOfTransmission(transmission_id);
+  if (host_id.empty() || (user_id != host_id && remote_user_id != host_id)) {
+    return false;
+  }
+
+  const auto members =
+      transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
+  return std::find(members.begin(), members.end(), user_id) != members.end() &&
+         std::find(members.begin(), members.end(), remote_user_id) !=
+             members.end() &&
+         !transmission_manager_->GetWsHandle(remote_user_id).expired();
+}
+
 bool SignalNegotiation::AddTurnCredentials(json& message,
                                            const std::string& user_id) const {
   if (user_id.empty()) return false;
@@ -441,18 +464,7 @@ bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
     return false;
   }
 
-  // Credentials are issued only to authenticated participants of an authorized
-  // join.
-  const auto host_id =
-      transmission_manager_->GetHostIdOfTransmission(transmission_id);
-  const auto members =
-      transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
-  if (user_id == remote_user_id ||
-      (user_id != host_id && remote_user_id != host_id) ||
-      transmission_manager_->GetUserId(hdl) != user_id ||
-      std::find(members.begin(), members.end(), user_id) == members.end() ||
-      std::find(members.begin(), members.end(), remote_user_id) ==
-          members.end()) {
+  if (!IsAuthorizedPeerSignal(hdl, user_id, remote_user_id, transmission_id)) {
     LOG_WARN("Reject offer outside an authorized transmission");
     return false;
   }
@@ -490,6 +502,11 @@ bool SignalNegotiation::answer(websocketpp::connection_hdl hdl, const json& j) {
     return false;
   }
 
+  if (!IsAuthorizedPeerSignal(hdl, user_id, remote_user_id, transmission_id)) {
+    LOG_WARN("Reject answer outside an authorized transmission");
+    return false;
+  }
+
   websocketpp::connection_hdl destination_hdl =
       transmission_manager_->GetWsHandle(remote_user_id);
 
@@ -519,6 +536,11 @@ bool SignalNegotiation::new_candidate(websocketpp::connection_hdl hdl,
       !GetStringField(j, "user_id", user_id) ||
       !GetStringField(j, "remote_user_id", remote_user_id)) {
     LOG_ERROR("new_candidate missing required fields");
+    return false;
+  }
+
+  if (!IsAuthorizedPeerSignal(hdl, user_id, remote_user_id, transmission_id)) {
+    LOG_WARN("Reject candidate outside an authorized transmission");
     return false;
   }
 
@@ -552,6 +574,11 @@ bool SignalNegotiation::new_candidate_mid(websocketpp::connection_hdl hdl,
       !GetStringField(j, "candidate", candidate) ||
       !GetStringField(j, "mid", mid)) {
     LOG_ERROR("new_candidate_mid missing required fields");
+    return false;
+  }
+
+  if (!IsAuthorizedPeerSignal(hdl, user_id, remote_user_id, transmission_id)) {
+    LOG_WARN("Reject candidate outside an authorized transmission");
     return false;
   }
 

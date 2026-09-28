@@ -54,6 +54,10 @@ class SignalNegotiation {
     json response;
   };
 
+  bool IsAuthorizedPeerSignal(websocketpp::connection_hdl hdl,
+                              const std::string& user_id,
+                              const std::string& remote_user_id,
+                              const std::string& transmission_id) const;
   bool AddTurnCredentials(json& message, const std::string& user_id) const;
   void AddLoginIceConfig(json& message, const json& request,
                          const std::string& user_id) const;
