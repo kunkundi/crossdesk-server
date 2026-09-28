@@ -124,6 +124,7 @@ bool TransmissionManager::ReleaseTransmission(
     }
     transmission_guest_id_list_.erase(guest_it);
   }
+  transmission_guest_handles_.erase(transmission_id);
   transmission_host_id_list_.erase(transmission_id);
   return true;
 }
@@ -277,12 +278,41 @@ bool TransmissionManager::BindGuestToTransmission(
 bool TransmissionManager::BindUserToWsHandle(const std::string& user_id,
                                              websocketpp::connection_hdl hdl) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  if (user_id.empty() || hdl.expired()) {
+    return false;
+  }
   auto existing = ws_hdl_user_id_list_.find(hdl);
   if (existing != ws_hdl_user_id_list_.end() && existing->second != user_id)
     return false;  // A socket must not orphan its previous identity.
-  user_id_ws_hdl_list_[user_id] = hdl;
+  if (user_id.rfind("C-", 0) == 0) {
+    // Controllers may share an ID while controlling different devices. A new
+    // passwordless login must not replace an existing connection's route.
+    user_id_ws_hdl_list_.emplace(user_id, hdl);
+  } else {
+    user_id_ws_hdl_list_[user_id] = hdl;
+  }
   ws_hdl_user_id_list_[hdl] = user_id;
   UpdateWsHandleLastActiveTime(hdl);
+  return true;
+}
+
+bool TransmissionManager::BindGuestToTransmission(
+    const std::string& guest_id, const std::string& transmission_id,
+    websocketpp::connection_hdl hdl) {
+  StateLock lock(*this);
+  if (guest_id.empty() || hdl.expired() || GetUserId(hdl) != guest_id ||
+      !IsTransmissionExist(transmission_id) ||
+      IsHostOfTransmission(guest_id, transmission_id)) {
+    return false;
+  }
+
+  const auto members = GetAllUserIdOfTransmission(transmission_id);
+  if (std::find(members.begin(), members.end(), guest_id) == members.end() &&
+      !BindGuestToTransmission(guest_id, transmission_id)) {
+    return false;
+  }
+  // Rejoining with the room password transfers its grant, never other rooms.
+  transmission_guest_handles_[transmission_id][guest_id] = hdl;
   return true;
 }
 
@@ -329,6 +359,13 @@ bool TransmissionManager::ReleaseGuestFromTransmission(
   const auto host_id = GetHostIdOfTransmission(transmission_id);
   NotifyRemoteControl(transmission_id, host_id, guest_id, false);
   guests.erase(remove_begin, guests.end());
+  auto handles_it = transmission_guest_handles_.find(transmission_id);
+  if (handles_it != transmission_guest_handles_.end()) {
+    handles_it->second.erase(guest_id);
+    if (handles_it->second.empty()) {
+      transmission_guest_handles_.erase(handles_it);
+    }
+  }
   if (guests.empty()) {
     transmission_guest_id_list_.erase(guest_it);
   }
@@ -363,25 +400,26 @@ size_t TransmissionManager::PruneDisconnectedTransmissions() {
     ReleaseTransmission(transmission_id);
   }
 
-  for (auto map_it = transmission_guest_id_list_.begin();
-       map_it != transmission_guest_id_list_.end();) {
-    auto host_it = transmission_host_id_list_.find(map_it->first);
-    std::string host_id =
-        host_it != transmission_host_id_list_.end() ? host_it->second : "";
-    auto& guests = map_it->second;
-    for (auto guest_it = guests.begin(); guest_it != guests.end();) {
-      if (HasUserConnection(ws_hdl_user_id_list_, *guest_it)) {
-        ++guest_it;
-        continue;
+  std::vector<std::pair<std::string, std::string>> disconnected_guests;
+  for (const auto& room : transmission_guest_id_list_) {
+    const auto handles_it = transmission_guest_handles_.find(room.first);
+    for (const auto& guest_id : room.second) {
+      bool connected = HasUserConnection(ws_hdl_user_id_list_, guest_id);
+      if (handles_it != transmission_guest_handles_.end()) {
+        const auto guest_it = handles_it->second.find(guest_id);
+        if (guest_it != handles_it->second.end()) {
+          connected = !guest_it->second.expired() &&
+                      GetUserId(guest_it->second) == guest_id;
+        }
       }
-      NotifyRemoteControl(map_it->first, host_id, *guest_it, false);
-      guest_it = guests.erase(guest_it);
-      ++pruned_connections;
+      if (!connected) {
+        disconnected_guests.emplace_back(guest_id, room.first);
+      }
     }
-    if (guests.empty()) {
-      map_it = transmission_guest_id_list_.erase(map_it);
-    } else {
-      ++map_it;
+  }
+  for (const auto& guest : disconnected_guests) {
+    if (ReleaseGuestFromTransmission(guest.first, guest.second)) {
+      ++pruned_connections;
     }
   }
 
@@ -394,6 +432,17 @@ std::string TransmissionManager::ReleaseUserSession(
   std::string user_id = ReleaseUserFromWsHandle(hdl);
   if (user_id.empty()) {
     return "";
+  }
+
+  std::vector<std::string> joined_transmissions;
+  for (const auto& room : transmission_guest_handles_) {
+    const auto guest_it = room.second.find(user_id);
+    if (guest_it != room.second.end() && SameConnection(guest_it->second, hdl)) {
+      joined_transmissions.push_back(room.first);
+    }
+  }
+  for (const auto& transmission_id : joined_transmissions) {
+    ReleaseGuestFromTransmission(user_id, transmission_id);
   }
 
   if (HasUserConnection(ws_hdl_user_id_list_, user_id)) {
@@ -469,6 +518,39 @@ std::string TransmissionManager::GetUserId(websocketpp::connection_hdl hdl) {
     return it->second;
   }
   return "";
+}
+
+websocketpp::connection_hdl TransmissionManager::GetWsHandle(
+    const std::string& user_id, const std::string& transmission_id) {
+  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  if (user_id.empty() || transmission_id.empty()) {
+    return {};
+  }
+  const auto host_it = transmission_host_id_list_.find(transmission_id);
+  if (host_it == transmission_host_id_list_.end()) {
+    return {};
+  }
+  if (host_it->second == user_id) {
+    return GetWsHandle(user_id);
+  }
+
+  const auto handles_it = transmission_guest_handles_.find(transmission_id);
+  if (handles_it == transmission_guest_handles_.end()) {
+    return {};
+  }
+  const auto guest_it = handles_it->second.find(user_id);
+  if (guest_it == handles_it->second.end() ||
+      GetUserId(guest_it->second) != user_id) {
+    return {};
+  }
+  return guest_it->second;
+}
+
+bool TransmissionManager::IsConnectionInTransmission(
+    websocketpp::connection_hdl hdl, const std::string& transmission_id) {
+  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  return !hdl.expired() &&
+         SameConnection(hdl, GetWsHandle(GetUserId(hdl), transmission_id));
 }
 
 int TransmissionManager::UpdateWsHandleLastActiveTime(

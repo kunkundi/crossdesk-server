@@ -187,7 +187,9 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   admin_controller_ = std::make_unique<AdminController>(
       admin_auth_.get(), presence_manager_.get(), transmission_manager_,
       device_db_manager_.get(), [this](const std::string& id, json msg) {
-        SendMsg(transmission_manager_->GetWsHandle(id), msg);
+        SendMsg(transmission_manager_->GetWsHandle(
+                    id, msg.value("transmission_id", "")),
+                msg);
       });
   admin_read_db_ = std::make_unique<DeviceDBManager>(
       db_path, DeviceDBManager::OpenMode::ReadOnly);

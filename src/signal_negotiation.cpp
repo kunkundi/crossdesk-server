@@ -86,12 +86,10 @@ bool SignalNegotiation::IsAuthorizedPeerSignal(
     return false;
   }
 
-  const auto members =
-      transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
-  return std::find(members.begin(), members.end(), user_id) != members.end() &&
-         std::find(members.begin(), members.end(), remote_user_id) !=
-             members.end() &&
-         !transmission_manager_->GetWsHandle(remote_user_id).expired();
+  return transmission_manager_->IsConnectionInTransmission(hdl,
+                                                           transmission_id) &&
+         !transmission_manager_->GetWsHandle(remote_user_id, transmission_id)
+              .expired();
 }
 
 bool SignalNegotiation::AddTurnCredentials(json& message,
@@ -152,7 +150,7 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     password = "";
   }
 
-  if (host_id.find("C-") == std::string::npos) {
+  if (host_id.rfind("C-", 0) != 0) {
     DeviceCredential dev_cred =
         device_db_manager_->AddDevice(host_id, password);
 
@@ -283,12 +281,19 @@ bool SignalNegotiation::leave_transmission(websocketpp::connection_hdl hdl,
     return false;
   }
 
-  const auto user_id_list =
-      transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
-  if (std::find(user_id_list.begin(), user_id_list.end(), user_id) ==
-      user_id_list.end()) {
+  if (!transmission_manager_->IsConnectionInTransmission(hdl, transmission_id)) {
     LOG_WARN("Reject leave request outside an authorized transmission");
     return false;
+  }
+
+  std::vector<websocketpp::connection_hdl> recipients;
+  for (const auto& id :
+       transmission_manager_->GetAllUserIdOfTransmission(transmission_id)) {
+    if (id != user_id) {
+      const auto recipient =
+          transmission_manager_->GetWsHandle(id, transmission_id);
+      if (!recipient.expired()) recipients.push_back(recipient);
+    }
   }
 
   if (transmission_manager_->IsHostOfTransmission(user_id, transmission_id)) {
@@ -306,10 +311,8 @@ bool SignalNegotiation::leave_transmission(websocketpp::connection_hdl hdl,
                   {"transmission_id", transmission_id},
                   {"user_id", user_id}};
 
-  for (const auto& id : user_id_list) {
-    if (id != user_id) {
-      send_msg_(transmission_manager_->GetWsHandle(id), message);
-    }
+  for (const auto& recipient : recipients) {
+    send_msg_(recipient, message);
   }
 
   return true;
@@ -422,7 +425,11 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
       LOG_WARN("Reject connection request with unauthenticated sender");
       return false;
     }
-    transmission_manager_->BindGuestToTransmission(user_id, transmission_id);
+    if (!transmission_manager_->BindGuestToTransmission(user_id, transmission_id,
+                                                       hdl)) {
+      LOG_WARN("Reject connection request without a valid guest binding");
+      return false;
+    }
 
     json message = {{"type", "user_join_transmission"},
                     {"transmission_id", transmission_id},
@@ -470,7 +477,7 @@ bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
   }
 
   websocketpp::connection_hdl destination_hdl =
-      transmission_manager_->GetWsHandle(remote_user_id);
+      transmission_manager_->GetWsHandle(remote_user_id, transmission_id);
 
   std::string sdp;
   if (GetStringField(j, "sdp", sdp)) {
@@ -508,7 +515,7 @@ bool SignalNegotiation::answer(websocketpp::connection_hdl hdl, const json& j) {
   }
 
   websocketpp::connection_hdl destination_hdl =
-      transmission_manager_->GetWsHandle(remote_user_id);
+      transmission_manager_->GetWsHandle(remote_user_id, transmission_id);
 
   std::string sdp;
   if (GetStringField(j, "sdp", sdp)) {
@@ -545,7 +552,7 @@ bool SignalNegotiation::new_candidate(websocketpp::connection_hdl hdl,
   }
 
   websocketpp::connection_hdl destination_hdl =
-      transmission_manager_->GetWsHandle(remote_user_id);
+      transmission_manager_->GetWsHandle(remote_user_id, transmission_id);
 
   // LOG_INFO("send candidate [{}]", candidate.c_str());
   json message = {{"type", "new_candidate"},
@@ -583,7 +590,7 @@ bool SignalNegotiation::new_candidate_mid(websocketpp::connection_hdl hdl,
   }
 
   websocketpp::connection_hdl destination_hdl =
-      transmission_manager_->GetWsHandle(remote_user_id);
+      transmission_manager_->GetWsHandle(remote_user_id, transmission_id);
 
   // LOG_INFO("send candidate [{}]", candidate.c_str());
   json message = {{"type", "new_candidate_mid"},
