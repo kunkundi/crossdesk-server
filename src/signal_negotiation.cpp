@@ -391,7 +391,7 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
   }
 
   std::string user_id;
-  if (!GetStringField(j, "user_id", user_id)) {
+  if (!GetStringField(j, "user_id", user_id) || user_id.empty()) {
     LOG_ERROR("join_transmission missing or invalid field: user_id");
     return false;
   }

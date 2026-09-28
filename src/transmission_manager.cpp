@@ -252,6 +252,9 @@ bool TransmissionManager::BindHostToTransmission(
 bool TransmissionManager::BindGuestToTransmission(
     const std::string& guest_id, const std::string& transmission_id) {
   StateLock lock(*this);
+  if (guest_id.empty() || transmission_id.empty()) {
+    return false;
+  }
   auto host_it = transmission_host_id_list_.find(transmission_id);
   if (host_it == transmission_host_id_list_.end()) {
     LOG_WARN("Transmission [{}] does not exist", transmission_id);
