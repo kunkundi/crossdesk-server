@@ -94,7 +94,7 @@ void SetAdminResponse(server::connection_ptr con,
 
 void RestorePersistedRemoteControlSessions(
     const std::shared_ptr<TransmissionManager>& transmission,
-    DeviceDBManager* db) {
+    DeviceDBManager* db, SessionRecovery* recovery) {
   if (!transmission || !db) {
     return;
   }
@@ -105,6 +105,7 @@ void RestorePersistedRemoteControlSessions(
     transmission->BindHostToTransmission(session.host_id,
                                          session.transmission_id);
     for (const auto& guest_id : session.guest_ids) {
+      if (recovery && recovery->Manages(session.transmission_id, guest_id)) continue;
       if (transmission->BindGuestToTransmission(guest_id,
                                                 session.transmission_id)) {
         ++restored_connections;
@@ -171,11 +172,15 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
                                                       guest_id);
         }
       });
+  session_recovery_ = std::make_unique<SessionRecovery>(db_path,
+      device_db_manager_.get(), transmission_manager_,
+      [this](websocketpp::connection_hdl hdl, json msg) { SendMsg(hdl, std::move(msg)); });
   RestorePersistedRemoteControlSessions(transmission_manager_,
-                                        device_db_manager_.get());
+                                        device_db_manager_.get(), session_recovery_.get());
   signal_negotiation_ = std::make_unique<SignalNegotiation>(
       transmission_manager_, device_db_manager_.get(), nullptr,
       CreateIceServerConfigIssuer());
+  signal_negotiation_->SetSessionRecovery(session_recovery_.get());
   signal_negotiation_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg,
                                                     this, std::placeholders::_1,
                                                     std::placeholders::_2));
@@ -207,6 +212,8 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       admin_read_db_.get(), nullptr, std::chrono::milliseconds(1000));
   admin_read_controller_->SetNotificationService(
       notification_read_service_.get());
+  admin_controller_->SetSessionRecovery(session_recovery_.get());
+  admin_read_controller_->SetSessionRecovery(session_recovery_.get());
   max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 2048, 1, 65536);
   auto on_error = [this](std::exception_ptr error) { WorkerFailed(error); };
   application_worker_ =
@@ -473,6 +480,12 @@ void SignalServer::QueueSessionCleanup(
   ++pending_cleanup_;
   if (!application_worker_->Submit(
           [this, hdl] {
+            // On process shutdown the durable session ledger is the checkpoint.
+            // Releasing individual users here would erase it before restart.
+            if (stopping_) {
+              server_.get_io_service().post([this] { --pending_cleanup_; });
+              return;
+            }
             // Login, release and presence changes are ordered on this one
             // worker. A release of an old handle cannot log out a newer handle
             // for that ID.
@@ -638,6 +651,7 @@ void SignalServer::ScheduleRuntimeHeartbeat() {
   if (runtime_job_pending_ || stopping_) return;
   runtime_job_pending_ = application_worker_->Submit([this] {
     device_db_manager_->RecordRuntimeHeartbeat();
+    session_recovery_->Expire();
     server_.get_io_service().post([this] { runtime_job_pending_ = false; });
   });
 }
@@ -814,6 +828,7 @@ void SignalServer::Stop() {
   if (stopping_.exchange(true)) return;
   server_.get_io_service().post([this] {
     LOG_INFO("Signal server shutdown requested");
+    application_worker_->Submit([this] { device_db_manager_->RecordRuntimeHeartbeat(); }, true);
     LogConnectionDiagnostics();
     if (signals_) signals_->cancel();
     websocketpp::lib::error_code ec;
@@ -1014,12 +1029,17 @@ void SignalServer::ProcessMessage(
     switch (HASH_STRING_PIECE(type.c_str())) {
       case "login"_H:
         signal_negotiation_->login_user(hdl, j);
+        if (!transmission_manager_->GetUserId(hdl).empty())
+          session_recovery_->Login(hdl, j);
         if (presence_manager_) {
           std::string id = transmission_manager_->GetUserId(hdl);
           if (!id.empty()) {
             presence_manager_->OnLogin(id, id, hdl);
           }
         }
+        break;
+      case "session_report"_H:
+        session_recovery_->Report(hdl, j);
         break;
       case "user_leave_transmission"_H:
         signal_negotiation_->leave_transmission(hdl, j);

@@ -1,4 +1,5 @@
 #include "signal_negotiation.h"
+#include "session_recovery.h"
 
 #include <openssl/sha.h>
 
@@ -436,6 +437,7 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
                     {"user_id", user_id},
                     {"status", "success"}};
 
+    if (recovery_) recovery_->Issue(transmission_id, host_id, user_id, hdl);
     AddConnectionIceConfig(message, host_id);
     send_msg_(host_hdl, message);
   } else if (-1 == ret) {

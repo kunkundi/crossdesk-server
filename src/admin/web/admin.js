@@ -73,6 +73,7 @@
       'Online devices': '在线设备',
       'Web clients': '网页客户端',
       'Active sessions': '活动会话',
+      'Recovering: {count}': '恢复中：{count}',
       'Client Presence': '设备在线状态',
       'Search device ID': '搜索设备 ID',
       'Client category': '客户端类型',
@@ -632,6 +633,8 @@
         labelCell(transmissionCell, 'Host');
         appendText(transmissionCell, 'div', session.host_id, 'device-id');
         appendText(transmissionCell, 'span', t('Session {id}', {id: session.transmission_id}), 'subline session-id');
+        if (session.recovering_count) appendText(transmissionCell, 'span',
+          t('Recovering: {count}', {count: session.recovering_count}), 'subline');
         row.appendChild(transmissionCell);
 
         const participantsCell = document.createElement('td');
@@ -653,7 +656,7 @@
         button.textContent = t('Disconnect');
         button.dataset.id = session.transmission_id;
         button.dataset.host = session.host_id;
-        button.disabled = disconnectingSessions.has(session.transmission_id);
+        button.disabled = disconnectingSessions.has(session.transmission_id) || session.recovering_count > 0;
         button.addEventListener('click', () => disconnectSession(button.dataset.id, button.dataset.host, button));
         actionCell.appendChild(button);
         row.appendChild(actionCell);
@@ -772,6 +775,9 @@
       document.getElementById('metric-devices').textContent = stats.online_device_count;
       document.getElementById('metric-web').textContent = stats.online_web_client_count;
       document.getElementById('metric-sessions').textContent = stats.active_connection_count;
+      const recovery = document.getElementById('recovery-count');
+      recovery.textContent = t('Recovering: {count}', {count: stats.recovering_connection_count || 0});
+      recovery.classList.toggle('hidden', !stats.recovering_connection_count);
       lastRefreshAt = Date.now();
       updateRefreshTime();
     }

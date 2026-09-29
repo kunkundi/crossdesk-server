@@ -19,6 +19,7 @@
 #include "turn_credentials.h"
 
 using nlohmann::json;
+class SessionRecovery;
 
 class SignalNegotiation {
  public:
@@ -47,6 +48,7 @@ class SignalNegotiation {
   bool client_info(websocketpp::connection_hdl hdl, const json& j);
   void OnWebClientDisconnect(const std::string& user_id);
   void ForgetPasswordChangeResults(const std::string& device_id);
+  void SetSessionRecovery(SessionRecovery* recovery) { recovery_ = recovery; }
 
  private:
   struct PasswordChangeResult {
@@ -72,6 +74,7 @@ class SignalNegotiation {
   std::unordered_map<std::string, PasswordChangeResult>
       password_change_results_;
   std::deque<std::string> password_change_result_order_;
+  SessionRecovery* recovery_ = nullptr;
 };
 
 #endif

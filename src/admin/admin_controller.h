@@ -15,6 +15,7 @@
 #include "transmission_manager.h"
 
 class NotificationService;
+class SessionRecovery;
 
 struct AdminHttpRequest {
   std::string method;
@@ -53,6 +54,7 @@ class AdminController {
     notifications_ = notifications;
   }
   nlohmann::json GetPublicStats() const { return BuildStats(0); }
+  void SetSessionRecovery(SessionRecovery* recovery) { recovery_ = recovery; }
 
  private:
   AdminHttpResponse HandleAdminPage();
@@ -81,6 +83,7 @@ class AdminController {
   std::function<void(const std::string&, nlohmann::json)> send_to_user_;
   std::function<void(const std::string&)> device_data_cleanup_;
   NotificationService* notifications_ = nullptr;
+  SessionRecovery* recovery_ = nullptr;
 };
 
 #endif  // _ADMIN_CONTROLLER_H_

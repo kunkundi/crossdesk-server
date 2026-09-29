@@ -30,6 +30,7 @@
 #include "resource_monitor.h"
 #include "retention_policy.h"
 #include "signal_negotiation.h"
+#include "session_recovery.h"
 
 using nlohmann::json;
 
@@ -151,6 +152,7 @@ class SignalServer {
   std::shared_ptr<TransmissionManager> transmission_manager_;
   std::unique_ptr<DeviceDBManager> device_db_manager_;
   std::unique_ptr<SignalNegotiation> signal_negotiation_;
+  std::unique_ptr<SessionRecovery> session_recovery_;
   std::unique_ptr<PresenceManager> presence_manager_;
   std::unique_ptr<NotificationService> notification_service_;
   std::unique_ptr<NotificationService> notification_read_service_;

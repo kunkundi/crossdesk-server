@@ -1,4 +1,5 @@
 #include "admin_controller.h"
+#include "session_recovery.h"
 #include "notification_service.h"
 
 #include <algorithm>
@@ -591,11 +592,15 @@ AdminHttpResponse AdminController::HandleOverview(
             session_search));
     for (const auto& session : db_->ListRemoteControlSessions(
              session_limit, session_offset, session_search)) {
+      size_t recovering = 0;
+      if (recovery_) for (const auto& guest : session.guest_ids)
+        if (recovery_->IsRecovering(session.transmission_id, guest)) ++recovering;
       sessions.push_back({{"transmission_id", session.transmission_id},
                           {"host_id", session.host_id},
                           {"guest_ids", session.guest_ids},
                           {"participant_count", 1 + session.guest_ids.size()},
-                          {"active", true}});
+                          {"recovering_count", recovering},
+                          {"active", recovering < session.guest_ids.size()}});
     }
   }
   if (sessions_total == 0 && transmission_) {
@@ -671,6 +676,14 @@ AdminHttpResponse AdminController::HandleDisconnect(
     return ErrorResponse(404, "not_found");
   }
 
+  if (recovery_ && db_) {
+    for (const auto& session : db_->ListRemoteControlSessions(10000, 0, transmission_id))
+      if (session.transmission_id == transmission_id)
+        for (const auto& guest : session.guest_ids)
+          if (recovery_->IsRecovering(transmission_id, guest))
+            return ErrorResponse(409, "session_recovering");
+  }
+
   bool existed = false;
   if (transmission_) {
     auto snapshots = transmission_->GetTransmissionSnapshots();
@@ -739,6 +752,7 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
 
   stats_cached_at_ = now;
   stats_cache_ = {{"server_version", CROSSDESK_SERVER_VERSION},
+          {"session_resume_version", 1},
           {"online_device_count",
            presence_ ? presence_->GetOnlineDeviceCount()
                      : online_device_fallback},
@@ -747,6 +761,13 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
           {"active_connection_count", active_connection_count},
           {"online_duration_seconds",
            duration_stats.current_online_seconds}};
+  if (recovery_) {
+    const auto status = recovery_->Status();
+    const auto pending = status.value("recovering", 0);
+    stats_cache_["recovering_connection_count"] = pending;
+    stats_cache_["active_connection_count"] = active_connection_count >= size_t(pending)
+        ? active_connection_count - pending : 0;
+  }
   return stats_cache_;
 }
 
