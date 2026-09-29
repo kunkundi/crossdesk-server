@@ -104,6 +104,21 @@ void NotificationStore::InitializeSchema() {
       "updated_at INTEGER NOT NULL);"
       "CREATE INDEX IF NOT EXISTS idx_announcements_published "
       "ON announcements(published, updated_at DESC, id DESC);"
+      // Preserve the previous catalog revision when upgrading. Keep a durable
+      // counter so deleting rows cannot reuse an earlier catalog version.
+      "CREATE TABLE IF NOT EXISTS announcement_catalog ("
+      "id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL);"
+      "INSERT OR IGNORE INTO announcement_catalog(id, revision) "
+      "SELECT 1, COALESCE(SUM(revision), 0) FROM announcements;"
+      "CREATE TRIGGER IF NOT EXISTS announcements_catalog_insert "
+      "AFTER INSERT ON announcements BEGIN "
+      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1; END;"
+      "CREATE TRIGGER IF NOT EXISTS announcements_catalog_update "
+      "AFTER UPDATE ON announcements BEGIN "
+      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1; END;"
+      "CREATE TRIGGER IF NOT EXISTS announcements_catalog_delete "
+      "AFTER DELETE ON announcements BEGIN "
+      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1; END;"
       // Remove obsolete device-reading data from the earlier implementation.
       "DROP TRIGGER IF EXISTS announcement_reads_identity_cleanup;"
       "DROP TRIGGER IF EXISTS announcement_reads_history_cleanup;"
@@ -121,11 +136,10 @@ nlohmann::json NotificationStore::List(bool include_drafts, int offset,
   sqlite3_bind_int(count.get(), 1, include_drafts);
   Step(count.get());
   const int total = sqlite3_column_int(count.get(), 0);
-  // Every insert starts at revision 1; every edit/publish/withdraw increments
-  // it. There is no delete operation. This aggregate changes on every mutation
-  // and lets clients reject a catalog assembled across different versions.
+  // Triggers advance this counter atomically with every insert, edit or delete,
+  // letting clients reject a catalog assembled across different versions.
   auto generation =
-      Prepare(db_, "SELECT COALESCE(SUM(revision), 0) FROM announcements");
+      Prepare(db_, "SELECT revision FROM announcement_catalog WHERE id = 1");
   Step(generation.get());
   const auto catalog_revision = sqlite3_column_int64(generation.get(), 0);
   const int limit = summary_only ? 200 : 20;
@@ -187,4 +201,16 @@ nlohmann::json NotificationStore::Save(int64_t id, int64_t revision,
   return {{"ok", true},
           {"id", id ? id : sqlite3_last_insert_rowid(db_)},
           {"revision", id ? revision + 1 : 1}};
+}
+
+nlohmann::json NotificationStore::Delete(int64_t id, int64_t revision) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto stmt = Prepare(db_, "DELETE FROM announcements "
+                           "WHERE id = ? AND revision = ? AND published = 0");
+  sqlite3_bind_int64(stmt.get(), 1, id);
+  sqlite3_bind_int64(stmt.get(), 2, revision);
+  Step(stmt.get());
+  if (sqlite3_changes(db_) != 1)
+    return {{"ok", false}, {"error", "stale_announcement"}};
+  return {{"ok", true}, {"id", id}};
 }

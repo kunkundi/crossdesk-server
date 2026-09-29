@@ -8,9 +8,12 @@
       'Published': '已发布', 'Draft': '草稿', 'No announcements': '暂无公告',
       'Plain text. Title up to 240 UTF-8 bytes; content up to 8000 bytes.': '支持纯文本。标题最多 240 字节，正文最多 8000 字节（一个中文通常占 3 字节）。',
       'Announcement saved.': '公告已保存。',
-      'Announcement changed elsewhere. Refresh and select it again before saving.': '公告已被其他管理员修改，请刷新并重新选择后再保存。',
+      'Delete announcement': '删除公告',
+      'Delete this announcement? This cannot be undone.': '确定删除这条公告吗？删除后无法恢复。',
+      'Announcement deleted.': '公告已删除。',
+      'Announcement changed or was deleted elsewhere. Refresh and select it again.': '公告已被其他管理员修改或删除，请刷新并重新选择。',
       'Announcement text is empty or exceeds the byte limit.': '公告内容为空或超过字节数限制。',
-      'Unable to load or save announcements. Please retry.': '加载或保存公告失败，请重试。',
+      'Unable to load, save or delete announcements. Please retry.': '加载、保存或删除公告失败，请重试。',
       'Skip to content': '跳转到主要内容',
       'Administration': '服务端管理',
       'Main navigation': '主要导航',
@@ -1232,6 +1235,8 @@
       }
       announcementElement('prev').disabled = announcementBusy || announcementOffset === 0;
       announcementElement('next').disabled = announcementBusy || announcementOffset + 20 >= announcementTotal;
+      announcementElement('refresh').disabled = announcementBusy;
+      announcementElement('delete').classList.toggle('hidden', !announcementEditing.id || announcementEditing.published);
       announcementElement('page').textContent = `${announcementTotal ? announcementOffset + 1 : 0}–${Math.min(announcementOffset + 20, announcementTotal)} / ${announcementTotal}`;
       setMessage('announcement-editor-heading', announcementEditing.id ? 'Edit announcement' : 'New announcement');
       setMessage('announcement-draft', announcementEditing.published ? 'Withdraw and save draft' : 'Save draft');
@@ -1247,9 +1252,9 @@
 
     function announcementError(error) {
       setMessage('announcement-error', error.message === 'stale_announcement'
-        ? 'Announcement changed elsewhere. Refresh and select it again before saving.'
+        ? 'Announcement changed or was deleted elsewhere. Refresh and select it again.'
         : error.message === 'invalid_announcement_text' ? 'Announcement text is empty or exceeds the byte limit.'
-        : 'Unable to load or save announcements. Please retry.');
+        : 'Unable to load, save or delete announcements. Please retry.');
     }
 
     async function announcementRequest(options) {
@@ -1272,15 +1277,9 @@
       } catch (error) { if (serial === announcementLoadSerial) announcementError(error); }
     }
 
-    announcementElement('form').addEventListener('submit', async event => {
-      event.preventDefault(); if (announcementBusy) return;
-      const body = {...announcementEditing, title: announcementElement('title').value.trim(),
-        body: announcementElement('body').value.trim(), published: event.submitter?.value === 'publish'};
-      const bytes = new TextEncoder();
-      if (!body.title || !body.body || bytes.encode(body.title).length > 240 || bytes.encode(body.body).length > 8000) {
-        announcementError(new Error('invalid_announcement_text')); return;
-      }
+    async function mutateAnnouncement(body) {
       announcementBusy = true;
+      ++announcementLoadSerial;
       announcementElement('form').querySelectorAll('button,input,textarea').forEach(el => el.disabled = true);
       announcementElement('new').disabled = true;
       renderAnnouncements(); setMessage('announcement-error', ''); setMessage('announcement-status', '');
@@ -1290,15 +1289,36 @@
         if (!session.ok) throw new Error('unauthorized');
         const {csrf_token} = await session.json();
         const result = await announcementRequest({method: 'POST', headers: {'Content-Type': 'application/json', 'X-CrossDesk-CSRF': csrf_token}, body: JSON.stringify(body)});
-        announcementEditing = {id: result.id, revision: result.revision, published: body.published};
-        setMessage('announcement-status', 'Announcement saved.');
-        announcementOffset = 0; await loadAnnouncements();
+        if (body.action === 'delete') {
+          editAnnouncement();
+          setMessage('announcement-status', 'Announcement deleted.');
+        } else {
+          announcementEditing = {id: result.id, revision: result.revision, published: body.published};
+          setMessage('announcement-status', 'Announcement saved.');
+          announcementOffset = 0;
+        }
+        await loadAnnouncements();
       } catch (error) { announcementError(error); }
       finally {
         announcementBusy = false;
         announcementElement('form').querySelectorAll('button,input,textarea').forEach(el => el.disabled = false);
         announcementElement('new').disabled = false; renderAnnouncements();
       }
+    }
+    announcementElement('form').addEventListener('submit', async event => {
+      event.preventDefault(); if (announcementBusy) return;
+      const body = {...announcementEditing, title: announcementElement('title').value.trim(),
+        body: announcementElement('body').value.trim(), published: event.submitter?.value === 'publish'};
+      const bytes = new TextEncoder();
+      if (!body.title || !body.body || bytes.encode(body.title).length > 240 || bytes.encode(body.body).length > 8000) {
+        announcementError(new Error('invalid_announcement_text')); return;
+      }
+      await mutateAnnouncement(body);
+    });
+    announcementElement('delete').addEventListener('click', async () => {
+      if (announcementBusy || !announcementEditing.id || announcementEditing.published) return;
+      if (!confirm(t('Delete this announcement? This cannot be undone.'))) return;
+      await mutateAnnouncement({action: 'delete', id: announcementEditing.id, revision: announcementEditing.revision});
     });
     announcementElement('new').addEventListener('click', () => editAnnouncement());
     announcementElement('refresh').addEventListener('click', loadAnnouncements);

@@ -32,6 +32,7 @@ class NotificationService {
   static bool IsClientMessage(const std::string& type);
   // Requires an authenticated administrator; POST also requires JSON + CSRF
   // validation by the HTTP adapter before entering the notification module.
+  // POST saves by default; action="delete" removes an unpublished revision.
   NotificationResult HandleAdminRequest(const std::string& method,
                                         const std::string& resource,
                                         const std::string& body);

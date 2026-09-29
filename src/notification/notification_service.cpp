@@ -45,6 +45,23 @@ NotificationResult NotificationService::HandleAdminRequest(
     return ErrorResponse(413, "request_too_large");
   const auto body = nlohmann::json::parse(request_body, nullptr, false);
   if (!body.is_object()) return ErrorResponse(400, "invalid_json");
+  if (body.contains("action") &&
+      (!body["action"].is_string() ||
+       (body["action"] != "save" && body["action"] != "delete")))
+    return ErrorResponse(400, "invalid_request");
+  for (const auto* key : {"id", "revision"})
+    if (!body.contains(key) || !body[key].is_number_integer() ||
+        body[key] < 0 || body[key] > 2147483647)
+      return ErrorResponse(400, "invalid_request");
+  if (body.value("action", "save") == "delete") {
+    if (body["id"] == 0 || body["revision"] == 0)
+      return ErrorResponse(400, "invalid_request");
+    const auto result = store_.Delete(body["id"], body["revision"]);
+    if (!result.value("ok", false))
+      return ErrorResponse(409, "stale_announcement");
+    if (broadcast_) broadcast_({{"type", "announcements_changed"}});
+    return {200, result};
+  }
   for (const auto* key : {"title", "body"}) {
     if (!body.contains(key) || !body[key].is_string())
       return ErrorResponse(400, "invalid_request");
@@ -55,10 +72,6 @@ NotificationResult NotificationService::HandleAdminRequest(
         value.size() > (std::string(key) == "title" ? 240u : 8000u))
       return ErrorResponse(400, "invalid_announcement_text");
   }
-  for (const auto* key : {"id", "revision"})
-    if (!body.contains(key) || !body[key].is_number_integer() ||
-        body[key] < 0 || body[key] > 2147483647)
-      return ErrorResponse(400, "invalid_request");
   if (!body.contains("published") || !body["published"].is_boolean() ||
       (body["id"] == 0 ? body["revision"] != 0 : body["revision"] == 0))
     return ErrorResponse(400, "invalid_request");

@@ -30,6 +30,8 @@ class NotificationStore {
                       bool summary_only = false);
   nlohmann::json Save(int64_t id, int64_t revision, const std::string& title,
                       const std::string& body, bool published);
+  // Deletes only an unpublished announcement at the specified revision.
+  nlohmann::json Delete(int64_t id, int64_t revision);
   // Set/clear on the owning reader worker, around a single HTTP request.
   void SetReadDeadline(std::chrono::steady_clock::time_point deadline);
   bool ClearReadDeadline();
