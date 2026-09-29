@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light">
     <title>CrossDesk Admin</title>
     <link rel="icon" type="image/png" href="/admin/assets/crossdesk-logo.png">
-    <link rel="stylesheet" href="/admin/assets/admin.css">
+    <link rel="stylesheet" href="/admin/assets/admin.css?v=announcements-1">
   </head>
   <body>
     <a class="skip-link" href="#main-content" data-i18n="Skip to content">Skip to content</a>
@@ -23,6 +23,7 @@
         <nav id="dashboard-nav" class="header-nav hidden" aria-label="Main navigation" data-i18n-aria-label="Main navigation">
           <a href="/admin/overview" data-page-link="overview" data-i18n="Overview">Overview</a>
           <a href="/admin/data" data-page-link="data" data-i18n="Data management">Data management</a>
+          <a href="/admin/announcements" data-page-link="announcements" data-i18n="Announcements">Announcements</a>
           <a href="/admin/about" data-page-link="about" data-i18n="About">About</a>
         </nav>
         <div class="header-actions">
@@ -54,6 +55,38 @@
         </form>
       </section>
       <section id="dashboard-view" class="hidden">
+        <section class="hidden" data-page="announcements" aria-labelledby="announcements-title">
+          <div class="page-heading">
+            <h1 id="announcements-title" data-i18n="Announcements">Announcements</h1>
+            <button id="announcement-new" type="button" data-i18n="New announcement">New announcement</button>
+          </div>
+          <p class="section-description" data-i18n="Published announcements reach all clients. Editing or republishing makes them unread again.">Published announcements reach all clients. Editing or republishing makes them unread again.</p>
+          <div class="announcement-layout">
+            <div class="panel announcement-list-panel">
+              <div id="announcement-list"></div>
+              <div class="announcement-actions">
+                <button id="announcement-prev" type="button" data-i18n="Previous">Previous</button>
+                <span id="announcement-page"></span>
+                <button id="announcement-next" type="button" data-i18n="Next">Next</button>
+                <button id="announcement-refresh" type="button" data-i18n="Refresh">Refresh</button>
+              </div>
+            </div>
+            <form id="announcement-form" class="panel announcement-editor">
+              <h2 id="announcement-editor-heading" data-i18n="New announcement">New announcement</h2>
+              <label for="announcement-title" data-i18n="Title">Title</label>
+              <input id="announcement-title" maxlength="240" required>
+              <label for="announcement-body" data-i18n="Content">Content</label>
+              <textarea id="announcement-body" rows="12" maxlength="8000" required></textarea>
+              <p class="section-description" data-i18n="Plain text. Title up to 240 UTF-8 bytes; content up to 8000 bytes.">Plain text. Title up to 240 UTF-8 bytes; content up to 8000 bytes.</p>
+              <div class="announcement-actions">
+                <button type="submit" name="action" value="publish" class="primary" data-i18n="Publish">Publish</button>
+                <button type="submit" name="action" value="draft" id="announcement-draft" data-i18n="Save draft">Save draft</button>
+              </div>
+              <p id="announcement-status" role="status"></p>
+              <p id="announcement-error" class="error" role="alert"></p>
+            </form>
+          </div>
+        </section>
         <div id="dashboard-error" class="error refresh-error" role="alert"></div>
         <section id="overview" class="hidden" data-page="overview" aria-labelledby="overview-title">
           <div class="page-heading">
@@ -367,6 +400,6 @@
         </footer>
       </section>
     </main>
-    <script defer src="/admin/assets/admin.js"></script>
+    <script defer src="/admin/assets/admin.js?v=announcements-1"></script>
   </body>
 </html>

@@ -164,7 +164,7 @@ class DeviceDBManager {
                                    const std::string& password);
 
  private:
-  std::chrono::steady_clock::time_point read_deadline_ = std::chrono::steady_clock::time_point::max();
+  std::chrono::steady_clock::time_point read_deadline_ = (std::chrono::steady_clock::time_point::max)();
   sqlite3* db_;
   mutable std::recursive_mutex db_mutex_;
 };

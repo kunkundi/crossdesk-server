@@ -25,6 +25,7 @@
 #include "admin_controller.h"
 #include "bounded_executor.h"
 #include "device_db_manager.h"
+#include "notification_service.h"
 #include "presence_manager.h"
 #include "resource_monitor.h"
 #include "retention_policy.h"
@@ -88,6 +89,7 @@ class SignalServer {
                     AdminHttpResponse response);
   void WorkerFailed(std::exception_ptr error);
   void RequestBackpressureClose(websocketpp::connection_hdl hdl);
+  void BroadcastToClients(json message);
 
   void ScheduleRuntimeHeartbeat();
   void ScheduleRecoveredSessionCleanup();
@@ -150,6 +152,8 @@ class SignalServer {
   std::unique_ptr<DeviceDBManager> device_db_manager_;
   std::unique_ptr<SignalNegotiation> signal_negotiation_;
   std::unique_ptr<PresenceManager> presence_manager_;
+  std::unique_ptr<NotificationService> notification_service_;
+  std::unique_ptr<NotificationService> notification_read_service_;
   std::unique_ptr<AdminAuth> admin_auth_;
   std::unique_ptr<AdminController> admin_controller_;
   std::unique_ptr<DeviceDBManager> admin_read_db_;

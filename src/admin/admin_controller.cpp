@@ -1,4 +1,5 @@
 #include "admin_controller.h"
+#include "notification_service.h"
 
 #include <algorithm>
 #include <cctype>
@@ -43,7 +44,8 @@ std::string ResourceQuery(const std::string& resource) {
 bool IsAdminPagePath(std::string path) {
   if (!path.empty() && path.back() == '/') path.pop_back();
   return path == "/admin" || path == "/admin/overview" ||
-         path == "/admin/data" || path == "/admin/about";
+         path == "/admin/data" || path == "/admin/about" ||
+         path == "/admin/announcements";
 }
 
 int HexValue(char ch) {
@@ -367,6 +369,22 @@ AdminHttpResponse AdminController::Handle(const AdminHttpRequest& request) {
 
   if (!IsAuthorized(request)) {
     return ErrorResponse(401, "unauthorized");
+  }
+
+  if (NotificationService::IsAdminRoute(path)) {
+    if (!notifications_) return ErrorResponse(503, "notifications_unavailable");
+    if (request.method == "POST") {
+      const auto token =
+          AdminAuth::ExtractCookie(request.cookie, kSessionCookieName);
+      if (!auth_->ValidateCsrf(token, request.csrf_token))
+        return ErrorResponse(403, "invalid_csrf");
+      if (request.content_type != "application/json" &&
+          request.content_type != "application/json; charset=utf-8")
+        return ErrorResponse(415, "json_required");
+    }
+    const auto result = notifications_->HandleAdminRequest(
+        request.method, request.resource, request.body);
+    return JsonResponse(result.status, result.body);
   }
 
   if (path == "/api/admin/data-session" ||

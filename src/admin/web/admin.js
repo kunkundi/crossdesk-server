@@ -1,4 +1,16 @@
     const chinese = {
+      'Announcements': '公告管理',
+      'New announcement': '新建公告', 'Edit announcement': '编辑公告',
+      'Published announcements reach all clients. Editing or republishing makes them unread again.': '公告发布后下发到所有客户端。修改或重新发布后，客户端会重新显示为未读。',
+      'Title': '标题', 'Content': '正文', 'Publish': '发布公告',
+      'Refresh': '刷新',
+      'Save draft': '保存草稿', 'Withdraw and save draft': '撤回并保存草稿',
+      'Published': '已发布', 'Draft': '草稿', 'No announcements': '暂无公告',
+      'Plain text. Title up to 240 UTF-8 bytes; content up to 8000 bytes.': '支持纯文本。标题最多 240 字节，正文最多 8000 字节（一个中文通常占 3 字节）。',
+      'Announcement saved.': '公告已保存。',
+      'Announcement changed elsewhere. Refresh and select it again before saving.': '公告已被其他管理员修改，请刷新并重新选择后再保存。',
+      'Announcement text is empty or exceeds the byte limit.': '公告内容为空或超过字节数限制。',
+      'Unable to load or save announcements. Please retry.': '加载或保存公告失败，请重试。',
       'Skip to content': '跳转到主要内容',
       'Administration': '服务端管理',
       'Main navigation': '主要导航',
@@ -182,6 +194,7 @@
       updatePager('sessions');
       updateLiveDurations();
       renderDataPreview();
+      renderAnnouncements();
     }
 
     function updateRefreshTime() {
@@ -194,9 +207,9 @@
     const logoutButton = document.getElementById('logout');
     const dashboardNav = document.getElementById('dashboard-nav');
     const pagePath = window.location.pathname.replace(/\/$/, '');
-    const currentPage = pagePath === '/admin/data' ? 'data'
+    const currentPage = pagePath === '/admin/announcements' ? 'announcements' : pagePath === '/admin/data' ? 'data'
       : pagePath === '/admin/about' ? 'about' : 'overview';
-    const pageLabels = {overview: 'Overview', data: 'Data management', about: 'About'};
+    const pageLabels = {overview: 'Overview', data: 'Data management', about: 'About', announcements: 'Announcements'};
 
     function updateDocumentTitle() {
       const title = loginView.classList.contains('hidden') ? pageLabels[currentPage] : 'Admin Login';
@@ -249,6 +262,7 @@
       document.getElementById('about-server-version').textContent = document.getElementById('server-version').textContent;
       setMessage('dashboard-error', '');
       updateDocumentTitle();
+      if (currentPage === 'announcements') loadAnnouncements();
       if (currentPage === 'overview') {
         refreshLists();
         if (!listTimer) listTimer = setInterval(refreshLists, 5000);
@@ -1186,6 +1200,104 @@
         }
       } finally { body.admin_password = ''; dataBusy = false; updateDataButtons(); }
     }
+
+    const announcementElement = id => document.getElementById(`announcement-${id}`);
+    let announcementItems = [], announcementOffset = 0, announcementTotal = 0;
+    let announcementEditing = {id: 0, revision: 0, published: false};
+    let announcementBusy = false, announcementLoadSerial = 0;
+
+    function renderAnnouncements() {
+      const list = announcementElement('list');
+      list.replaceChildren();
+      if (!announcementItems.length) {
+        const empty = document.createElement('p');
+        empty.textContent = t('No announcements'); list.append(empty);
+      }
+      for (const item of announcementItems) {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'announcement-item';
+        button.disabled = announcementBusy;
+        button.setAttribute('aria-pressed', String(item.id === announcementEditing.id));
+        const title = document.createElement('strong'); title.textContent = item.title;
+        const meta = document.createElement('small');
+        meta.textContent = `${t(item.published ? 'Published' : 'Draft')} · ${new Date(item.updated_at * 1000).toLocaleString(locale())}`;
+        button.append(title, meta);
+        button.addEventListener('click', () => editAnnouncement(item)); list.append(button);
+      }
+      announcementElement('prev').disabled = announcementBusy || announcementOffset === 0;
+      announcementElement('next').disabled = announcementBusy || announcementOffset + 20 >= announcementTotal;
+      announcementElement('page').textContent = `${announcementTotal ? announcementOffset + 1 : 0}–${Math.min(announcementOffset + 20, announcementTotal)} / ${announcementTotal}`;
+      setMessage('announcement-editor-heading', announcementEditing.id ? 'Edit announcement' : 'New announcement');
+      setMessage('announcement-draft', announcementEditing.published ? 'Withdraw and save draft' : 'Save draft');
+    }
+
+    function editAnnouncement(item = {id: 0, revision: 0, published: false, title: '', body: ''}) {
+      announcementEditing = {id: item.id, revision: item.revision, published: item.published};
+      announcementElement('title').value = item.title;
+      announcementElement('body').value = item.body;
+      setMessage('announcement-status', ''); setMessage('announcement-error', '');
+      renderAnnouncements();
+    }
+
+    function announcementError(error) {
+      setMessage('announcement-error', error.message === 'stale_announcement'
+        ? 'Announcement changed elsewhere. Refresh and select it again before saving.'
+        : error.message === 'invalid_announcement_text' ? 'Announcement text is empty or exceeds the byte limit.'
+        : 'Unable to load or save announcements. Please retry.');
+    }
+
+    async function announcementRequest(options) {
+      const response = await fetch(`/api/admin/announcements${options ? '' : `?offset=${announcementOffset}`}`, {
+        credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000), ...options
+      });
+      if (response.status === 401) { showLogin(''); throw new Error('unauthorized'); }
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      return result;
+    }
+
+    async function loadAnnouncements() {
+      const serial = ++announcementLoadSerial;
+      try {
+        const data = await announcementRequest();
+        if (serial !== announcementLoadSerial || !loginView.classList.contains('hidden')) return;
+        announcementItems = data.items; announcementOffset = data.offset; announcementTotal = data.total;
+        renderAnnouncements();
+      } catch (error) { if (serial === announcementLoadSerial) announcementError(error); }
+    }
+
+    announcementElement('form').addEventListener('submit', async event => {
+      event.preventDefault(); if (announcementBusy) return;
+      const body = {...announcementEditing, title: announcementElement('title').value.trim(),
+        body: announcementElement('body').value.trim(), published: event.submitter?.value === 'publish'};
+      const bytes = new TextEncoder();
+      if (!body.title || !body.body || bytes.encode(body.title).length > 240 || bytes.encode(body.body).length > 8000) {
+        announcementError(new Error('invalid_announcement_text')); return;
+      }
+      announcementBusy = true;
+      announcementElement('form').querySelectorAll('button,input,textarea').forEach(el => el.disabled = true);
+      announcementElement('new').disabled = true;
+      renderAnnouncements(); setMessage('announcement-error', ''); setMessage('announcement-status', '');
+      try {
+        const session = await fetch('/api/admin/data-session', {credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000)});
+        if (session.status === 401) showLogin('');
+        if (!session.ok) throw new Error('unauthorized');
+        const {csrf_token} = await session.json();
+        const result = await announcementRequest({method: 'POST', headers: {'Content-Type': 'application/json', 'X-CrossDesk-CSRF': csrf_token}, body: JSON.stringify(body)});
+        announcementEditing = {id: result.id, revision: result.revision, published: body.published};
+        setMessage('announcement-status', 'Announcement saved.');
+        announcementOffset = 0; await loadAnnouncements();
+      } catch (error) { announcementError(error); }
+      finally {
+        announcementBusy = false;
+        announcementElement('form').querySelectorAll('button,input,textarea').forEach(el => el.disabled = false);
+        announcementElement('new').disabled = false; renderAnnouncements();
+      }
+    });
+    announcementElement('new').addEventListener('click', () => editAnnouncement());
+    announcementElement('refresh').addEventListener('click', loadAnnouncements);
+    announcementElement('prev').addEventListener('click', () => { announcementOffset = Math.max(0, announcementOffset - 20); loadAnnouncements(); });
+    announcementElement('next').addEventListener('click', () => { announcementOffset += 20; loadAnnouncements(); });
 
     dataElement('query-form').addEventListener('submit', queryDeviceData);
     for (const id of ['device-id', 'request-ref']) dataElement(id).addEventListener('input', () => resetDeviceData(false));

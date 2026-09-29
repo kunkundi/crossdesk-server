@@ -14,6 +14,8 @@
 #include "presence_manager.h"
 #include "transmission_manager.h"
 
+class NotificationService;
+
 struct AdminHttpRequest {
   std::string method;
   std::string resource;
@@ -47,6 +49,9 @@ class AdminController {
     device_data_cleanup_ = std::move(fn);
   }
   void InvalidateStatsCache() { stats_cache_ = nullptr; }
+  void SetNotificationService(NotificationService* notifications) {
+    notifications_ = notifications;
+  }
   nlohmann::json GetPublicStats() const { return BuildStats(0); }
 
  private:
@@ -75,6 +80,7 @@ class AdminController {
   DeviceDBManager* db_ = nullptr;
   std::function<void(const std::string&, nlohmann::json)> send_to_user_;
   std::function<void(const std::string&)> device_data_cleanup_;
+  NotificationService* notifications_ = nullptr;
 };
 
 #endif  // _ADMIN_CONTROLLER_H_
