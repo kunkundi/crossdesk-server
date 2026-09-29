@@ -152,6 +152,11 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
 
   transmission_manager_ = std::make_shared<TransmissionManager>(false);
   device_db_manager_ = std::make_unique<DeviceDBManager>(db_path);
+  notification_service_ = std::make_unique<NotificationService>(db_path);
+  notification_read_service_ = std::make_unique<NotificationService>(
+      db_path, NotificationStore::OpenMode::ReadOnly);
+  notification_service_->SetBroadcastCallback(
+      [this](json message) { BroadcastToClients(std::move(message)); });
   transmission_manager_->SetRemoteControlSessionCallback(
       [this](const std::string& transmission_id, const std::string& host_id,
              const std::string& guest_id, bool started) {
@@ -191,12 +196,15 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       });
   admin_read_db_ = std::make_unique<DeviceDBManager>(
       db_path, DeviceDBManager::OpenMode::ReadOnly);
+  admin_controller_->SetNotificationService(notification_service_.get());
   admin_controller_->SetDeviceDataCleanupCallback([this](const std::string& id) {
     signal_negotiation_->ForgetPasswordChangeResults(id);
   });
   admin_read_controller_ = std::make_unique<AdminController>(
       admin_auth_.get(), presence_manager_.get(), transmission_manager_,
       admin_read_db_.get(), nullptr, std::chrono::milliseconds(1000));
+  admin_read_controller_->SetNotificationService(
+      notification_read_service_.get());
   max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 2048, 1, 65536);
   auto on_error = [this](std::exception_ptr error) { WorkerFailed(error); };
   application_worker_ =
@@ -562,9 +570,12 @@ void SignalServer::OnHttp(websocketpp::connection_hdl hdl) {
         if (!state->alive) return;
         const auto started = Clock::now();
         AdminHttpResponse response;
-        if (reader)
-          admin_read_db_->SetReadDeadline(
-              started + std::chrono::milliseconds(http_timeout_ms_ / 2));
+        if (reader) {
+          const auto deadline =
+              started + std::chrono::milliseconds(http_timeout_ms_ / 2);
+          admin_read_db_->SetReadDeadline(deadline);
+          notification_read_service_->SetReadDeadline(deadline);
+        }
         try {
           if (admin) {
             auto* controller = reader ? admin_read_controller_.get()
@@ -583,7 +594,14 @@ void SignalServer::OnHttp(websocketpp::connection_hdl hdl) {
           response = {
               500, "application/json", {}, "{\"error\":\"internal_error\"}"};
         }
-        if (reader && admin_read_db_->ClearReadDeadline()) {
+        bool read_expired = false;
+        if (reader) {
+          const bool device_expired = admin_read_db_->ClearReadDeadline();
+          const bool notification_expired =
+              notification_read_service_->ClearReadDeadline();
+          read_expired = device_expired || notification_expired;
+        }
+        if (read_expired) {
           admin_read_controller_->InvalidateStatsCache();
           response = {503,
                       "application/json",
@@ -881,6 +899,32 @@ void SignalServer::RequestBackpressureClose(websocketpp::connection_hdl hdl) {
   });
 }
 
+void SignalServer::BroadcastToClients(json message) {
+  if (stopping_) return;
+  auto payload = message.dump();
+  server_.get_io_service().post([this, payload = std::move(payload)] {
+    if (stopping_) return;
+    // Send on the network thread, without adding one queued task per client.
+    for (auto it = connections_.begin(); it != connections_.end();) {
+      const auto hdl = it->first;
+      const auto state = (it++)->second;
+      if (!state->alive || !state->authenticated ||
+          state->device_id.rfind("C-", 0) == 0)
+        continue;
+      websocketpp::lib::error_code ec;
+      auto con = server_.get_con_from_hdl(hdl, ec);
+      if (ec) continue;
+      if (con->get_buffered_amount() + payload.size() > 1024 * 1024) {
+        CloseConnection(hdl, "Send backlog limit",
+                        websocketpp::close::status::try_again_later);
+        continue;
+      }
+      ec = con->send(payload, websocketpp::frame::opcode::text);
+      if (ec) LOG_ERROR("Failed to broadcast message: {}", ec.message());
+    }
+  });
+}
+
 void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
   const auto type = message.value("type", "");
   if (hdl.expired()) return;
@@ -957,6 +1001,14 @@ void SignalServer::ProcessMessage(
     const std::shared_ptr<ConnectionState>& state) {
   try {
     const auto type = j["type"].get<std::string>();
+    if (NotificationService::IsClientMessage(type)) {
+      const auto device = transmission_manager_->GetUserId(hdl);
+      if (!device.empty() && device.rfind("C-", 0) != 0) {
+        auto response = notification_service_->HandleClientMessage(j);
+        if (response) SendMsg(hdl, std::move(*response));
+      }
+      return;
+    }
     switch (HASH_STRING_PIECE(type.c_str())) {
       case "login"_H:
         signal_negotiation_->login_user(hdl, j);

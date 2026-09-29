@@ -11,6 +11,15 @@
   --accent-soft: #eaf7f4;
   --radius: 12px;
 }
+.announcement-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(300px, 2fr); gap: 20px; margin-top: 18px; }
+.announcement-list-panel, .announcement-editor { padding: 20px; }
+.announcement-editor { display: flex; flex-direction: column; gap: 10px; }
+.announcement-editor textarea { width: 100%; resize: vertical; font: inherit; border: 1px solid #cbd5e1; border-radius: 7px; padding: 12px; }
+.announcement-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.announcement-item { display: block; width: 100%; text-align: left; margin-bottom: 8px; overflow-wrap: anywhere; }
+.announcement-item[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.announcement-item small { display: block; color: var(--muted); margin-top: 5px; }
+@media (max-width: 800px) { .announcement-layout { grid-template-columns: 1fr; } }
 * { box-sizing: border-box; }
 body { margin: 0; -webkit-text-size-adjust: 100%; }
 button, input, select { font: inherit; }
