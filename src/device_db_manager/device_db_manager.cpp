@@ -80,8 +80,14 @@ std::string DevicePresenceKindClause(const std::string& kind) {
   if (normalized == "all") {
     return "device_id NOT LIKE 'C-%' ";
   }
-  return "device_id NOT LIKE 'web-%' "
-         "AND device_id NOT LIKE 'C-%' ";
+  const std::string native_clause =
+      "device_id NOT LIKE 'web-%' AND device_id NOT LIKE 'C-%' ";
+  const std::string mobile_platforms =
+      "AND LOWER(COALESCE(client_platform, '')) ";
+  if (normalized == "mobile") {
+    return native_clause + mobile_platforms + "IN ('ios', 'android') ";
+  }
+  return native_clause + mobile_platforms + "NOT IN ('ios', 'android') ";
 }
 
 std::string DevicePresenceFilterClause(const std::string& filter,
@@ -1088,6 +1094,11 @@ bool DeviceDBManager::UpdateDeviceClientInfo(
   if (device_id.empty()) {
     return false;
   }
+  const std::string lower_platform = ToLower(client_platform);
+  const std::string platform =
+      lower_platform == "ios" || lower_platform == "android"
+          ? lower_platform
+          : client_platform;
 
   const char* sql =
       "INSERT INTO device_presence "
@@ -1103,7 +1114,7 @@ bool DeviceDBManager::UpdateDeviceClientInfo(
   }
   sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt, 2, client_version.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 3, client_platform.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 3, platform.c_str(), -1, SQLITE_TRANSIENT);
   const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
   sqlite3_finalize(stmt);
   return ok;

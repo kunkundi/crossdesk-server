@@ -52,6 +52,7 @@
       'Auto-refresh · 5s': '每 5 秒自动刷新',
       'Refresh failed': '刷新失败，等待重试',
       'PC clients online': '当前在线的电脑客户端',
+      'Mobile clients online': '当前在线的 iOS 和安卓客户端',
       'Browser clients online': '当前在线的浏览器客户端',
       'Remote control connections': '当前进行中的远程控制连接',
       'Find clients and inspect their connection activity.': '筛选客户端，查看在线时长与远程连接详情。',
@@ -74,6 +75,8 @@
       'never': '尚未刷新',
       'Refresh lists': '刷新列表',
       'Online devices': '在线设备',
+      'PC clients': '电脑客户端',
+      'Mobile clients': '移动客户端',
       'Web clients': '网页客户端',
       'Active sessions': '活动会话',
       'Recovering: {count}': '恢复中：{count}',
@@ -81,6 +84,7 @@
       'Search device ID': '搜索设备 ID',
       'Client category': '客户端类型',
       'PC': '电脑',
+      'Mobile': '移动端',
       'Web': '网页端',
       'Device sort': '设备排序',
       'Status': '状态',
@@ -118,6 +122,7 @@
       'Unknown': '未知',
       'Web client': '网页客户端',
       'PC client': '电脑客户端',
+      'Mobile client': '移动客户端',
       'Remote': '远控中',
       'Hide': '收起',
       'Details': '详情',
@@ -410,9 +415,12 @@
     }
 
     function platformLabel(platform) {
-      if (platform === 'windows') return 'Windows';
-      if (platform === 'macos') return 'macOS';
-      if (platform === 'linux') return 'Linux';
+      const normalized = String(platform || '').toLowerCase();
+      if (normalized === 'windows') return 'Windows';
+      if (normalized === 'macos') return 'macOS';
+      if (normalized === 'linux') return 'Linux';
+      if (normalized === 'ios') return 'iOS';
+      if (normalized === 'android') return 'Android';
       return platform || '';
     }
 
@@ -525,9 +533,10 @@
         const clientMeta = document.createElement('div');
         clientMeta.className = 'client-meta';
         const platform = device.kind === 'web' ? 'web' : device.client_platform;
-        const platformColor = ['windows', 'macos', 'linux', 'web'].includes(platform) ? platform : 'unknown';
+        const normalizedPlatform = String(platform || '').toLowerCase();
+        const platformColor = ['windows', 'macos', 'linux', 'ios', 'android', 'web'].includes(normalizedPlatform) ? normalizedPlatform : 'unknown';
         appendBadge(clientMeta, device.kind === 'web' ? t('Web client')
-          : platformLabel(platform) || t('PC client'), `platform platform-${platformColor}`);
+          : platformLabel(platform) || t(device.kind === 'mobile' ? 'Mobile client' : 'PC client'), `platform platform-${platformColor}`);
         if (device.client_version) {
           appendBadge(clientMeta, device.client_version, 'version');
         }
@@ -733,7 +742,7 @@
       if (!kindSelect) return;
       if (counts) deviceKindCounts = counts;
       counts = deviceKindCounts;
-      const labels = {pc: t('PC'), web: t('Web')};
+      const labels = {pc: t('PC'), mobile: t('Mobile'), web: t('Web')};
       Array.from(kindSelect.options).forEach(option => {
         const value = option.value;
         const count = counts && Object.prototype.hasOwnProperty.call(counts, value)
@@ -775,7 +784,8 @@
         document.getElementById('server-version').textContent = stats.server_version;
         document.getElementById('about-server-version').textContent = stats.server_version;
       }
-      document.getElementById('metric-devices').textContent = stats.online_device_count;
+      document.getElementById('metric-devices').textContent = stats.online_pc_client_count ?? stats.online_device_count;
+      document.getElementById('metric-mobile').textContent = stats.online_mobile_client_count ?? 0;
       document.getElementById('metric-web').textContent = stats.online_web_client_count;
       document.getElementById('metric-sessions').textContent = stats.active_connection_count;
       const recovery = document.getElementById('recovery-count');
@@ -930,7 +940,7 @@
       });
     });
     document.getElementById('device-kind').addEventListener('change', (event) => {
-      state.devices.kind = event.target.value === 'web' ? 'web' : 'pc';
+      state.devices.kind = ['pc', 'mobile', 'web'].includes(event.target.value) ? event.target.value : 'pc';
       state.devices.platform = '';
       state.devices.version = '';
       state.devices.offset = 0;

@@ -144,8 +144,8 @@ Set both `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, then run `sudo docker 
 
 | Area / control | Action |
 | --- | --- |
-| Top metrics | View online devices, Web clients, and active connections |
-| Client Presence | Defaults to online PCs; switch PC/Web, combine platform, version and Online/Controlled/Offline/All filters, search IDs, sort, and paginate; platform/version options cover all reported values in the current category, with counts and pagination following the filters; Controlled counts and lists only devices currently being controlled, once per device |
+| Top metrics | View separate online PC, mobile (iOS / Android), and Web client counts, plus active connections |
+| Client Presence | Defaults to online PCs; switch PC/Mobile/Web; mobile clients are identified by their reported `ios` / `android` platform; combine platform, version and Online/Controlled/Offline/All filters, search IDs, sort, and paginate; platform/version options cover all reported values in the current category, with counts and pagination following the filters; Controlled counts and lists only devices currently being controlled, once per device |
 | Details | Expand platform/version, current online/control durations and remote peers |
 | Active Sessions → Disconnect | Confirm to disconnect the selected session; devices stay online |
 | Refresh lists / Logout | Refresh manually / sign out |
@@ -179,7 +179,9 @@ curl --fail https://your-domain.example.com:9099/stats
 
 | Field | Meaning |
 | --- | --- |
-| `online_device_count` | Online devices, excluding `web-*` and `C-*` |
+| `online_device_count` | Total online native devices (PC + mobile), excluding `web-*` and `C-*` |
+| `online_pc_client_count` | Online PC clients, including native devices that have not reported a platform |
+| `online_mobile_client_count` | Online iOS / Android clients, identified by their reported platform and excluding `web-*` and `C-*` |
 | `online_web_client_count` | Online `web-*` clients |
 | `active_connection_count` | Active remote-control connections, counted separately for each host–guest pair |
 | `online_duration_seconds` | Sum of the current online periods of online devices |

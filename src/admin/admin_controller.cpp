@@ -151,10 +151,6 @@ std::string QueryStringParam(const std::map<std::string, std::string>& params,
   return it == params.end() || it->second.empty() ? fallback : it->second;
 }
 
-std::string ClientKind(const std::string& device_id) {
-  return device_id.rfind("web-", 0) == 0 ? "web" : "device";
-}
-
 std::string LowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char ch) {
@@ -163,13 +159,16 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
+std::string ClientKind(const OnlineDeviceInfo& device) {
+  if (device.device_id.rfind("web-", 0) == 0) return "web";
+  const std::string platform = LowerAscii(device.client_platform);
+  return platform == "ios" || platform == "android" ? "mobile" : "device";
+}
+
 std::string NormalizeDeviceKind(const std::string& kind) {
   std::string normalized = LowerAscii(kind);
-  if (normalized == "web") {
-    return "web";
-  }
-  if (normalized == "all") {
-    return "all";
+  if (normalized == "web" || normalized == "mobile" || normalized == "all") {
+    return normalized;
   }
   return "pc";
 }
@@ -480,9 +479,7 @@ AdminHttpResponse AdminController::HandleStats(
     return ErrorResponse(405, "method_not_allowed");
   }
 
-  size_t online_device_fallback =
-      !presence_ && db_ ? static_cast<size_t>(db_->CountOnlineDevices()) : 0;
-  return JsonResponse(200, {{"stats", BuildStats(online_device_fallback)}});
+  return JsonResponse(200, {{"stats", BuildStats()}});
 }
 
 AdminHttpResponse AdminController::HandleOverview(
@@ -520,9 +517,8 @@ AdminHttpResponse AdminController::HandleOverview(
                                   {"offline", 0},
                                   {"active", 0},
                                   {"web", 0}};
-  nlohmann::json device_kind_counts = {{"pc", 0}, {"web", 0}};
+  nlohmann::json device_kind_counts = {{"pc", 0}, {"mobile", 0}, {"web", 0}};
   DeviceClientFilterOptions client_filter_options;
-  size_t online_device_fallback = 0;
   if (db_) {
     DevicePresenceCounts counts =
         db_->CountDevicePresenceByFilters(device_search, device_kind,
@@ -537,6 +533,11 @@ AdminHttpResponse AdminController::HandleOverview(
             ? counts
             : db_->CountDevicePresenceByFilters(device_search, "web",
                                                 device_platform, device_version);
+    DevicePresenceCounts mobile_counts =
+        device_kind == "mobile"
+            ? counts
+            : db_->CountDevicePresenceByFilters(device_search, "mobile",
+                                                device_platform, device_version);
     client_filter_options = db_->ListDeviceClientFilterOptions(device_kind);
     device_counts["all"] = counts.all;
     device_counts["online"] = counts.online;
@@ -544,12 +545,10 @@ AdminHttpResponse AdminController::HandleOverview(
     device_counts["active"] = counts.active;
     device_counts["web"] = web_counts.all;
     device_kind_counts["pc"] = pc_counts.all;
+    device_kind_counts["mobile"] = mobile_counts.all;
     device_kind_counts["web"] = web_counts.all;
     devices_total =
         static_cast<size_t>(CountForDeviceFilter(counts, device_filter));
-    if (!presence_) {
-      online_device_fallback = static_cast<size_t>(db_->CountOnlineDevices());
-    }
     std::vector<OnlineDeviceInfo> device_rows = db_->ListDevicePresence(
         device_limit, device_offset, device_search, device_filter, device_sort,
         device_order, device_kind, device_platform, device_version);
@@ -558,7 +557,7 @@ AdminHttpResponse AdminController::HandleOverview(
       int64_t active_controlled_count = device.active_controlled_count;
       devices.push_back({{"id", device.device_id},
                          {"online", device.online},
-                         {"kind", ClientKind(device.device_id)},
+                         {"kind", ClientKind(device)},
                          {"client_version", device.client_version},
                          {"client_platform", device.client_platform},
                          {"updated_at", device.updated_at},
@@ -615,7 +614,7 @@ AdminHttpResponse AdminController::HandleOverview(
     }
   }
 
-  nlohmann::json stats = BuildStats(online_device_fallback);
+  nlohmann::json stats = BuildStats();
 
   nlohmann::json devices_page = {{"limit", device_limit},
                                  {"offset", device_offset},
@@ -734,7 +733,7 @@ bool AdminController::IsAuthorized(const AdminHttpRequest& request) {
   return auth_->ValidateSession(token);
 }
 
-nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const {
+nlohmann::json AdminController::BuildStats() const {
   const auto now = std::chrono::steady_clock::now();
   if (!stats_cache_.is_null() && now - stats_cached_at_ < stats_ttl_)
     return stats_cache_;
@@ -742,6 +741,18 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
   if (db_) {
     duration_stats = db_->GetOnlineDurationStats();
   }
+  // Keep the existing native-device total for clients of /api/stats. The
+  // dashboard separates PCs and mobile clients using the reported platform,
+  // which can arrive after login and is persisted across disconnects.
+  const size_t online_device_count = presence_
+      ? presence_->GetOnlineDeviceCount()
+      : db_ ? static_cast<size_t>(db_->CountOnlineDevices()) : 0;
+  const size_t online_mobile_client_count = db_
+      ? static_cast<size_t>(db_->CountDevicePresence("", "online", "mobile"))
+      : 0;
+  const size_t online_web_client_count = presence_
+      ? presence_->GetOnlineWebClientCount()
+      : db_ ? static_cast<size_t>(db_->CountDevicePresence("", "online", "web")) : 0;
   size_t active_connection_count =
       transmission_ ? transmission_->GetActiveConnectionCount() : 0;
   if (db_) {
@@ -753,11 +764,11 @@ nlohmann::json AdminController::BuildStats(size_t online_device_fallback) const 
   stats_cached_at_ = now;
   stats_cache_ = {{"server_version", CROSSDESK_SERVER_VERSION},
           {"session_resume_version", 1},
-          {"online_device_count",
-           presence_ ? presence_->GetOnlineDeviceCount()
-                     : online_device_fallback},
-          {"online_web_client_count",
-           presence_ ? presence_->GetOnlineWebClientCount() : 0},
+          {"online_device_count", online_device_count},
+          {"online_pc_client_count", online_device_count >= online_mobile_client_count
+               ? online_device_count - online_mobile_client_count : 0},
+          {"online_mobile_client_count", online_mobile_client_count},
+          {"online_web_client_count", online_web_client_count},
           {"active_connection_count", active_connection_count},
           {"online_duration_seconds",
            duration_stats.current_online_seconds}};

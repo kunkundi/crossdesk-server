@@ -146,8 +146,8 @@ sudo security add-trusted-cert -d -r trustRoot \
 
 | 区域 / 入口 | 操作 |
 | --- | --- |
-| 顶部指标 | 查看在线设备、Web 客户端与活动连接 |
-| Client Presence | 默认显示在线 PC；可切换 PC / Web，组合筛选平台、版本与 Online / Controlled / Offline / All，搜索 ID、排序和翻页；平台与版本选项来自当前类型的全部已上报记录，统计和分页随筛选同步；Controlled 仅统计和显示正在被控制的设备，同一设备只计一次 |
+| 顶部指标 | 分别查看在线电脑、移动端（iOS / Android）、Web 客户端与活动连接 |
+| Client Presence | 默认显示在线 PC；可切换 PC / 移动端 / Web，移动端根据客户端上报的 `ios` / `android` 平台识别；组合筛选平台、版本与 Online / Controlled / Offline / All，搜索 ID、排序和翻页；平台与版本选项来自当前类型的全部已上报记录，统计和分页随筛选同步；Controlled 仅统计和显示正在被控制的设备，同一设备只计一次 |
 | Details | 展开版本、平台、本次在线与远控时长及远控对端 |
 | Active Sessions → Disconnect | 确认后断开所选会话；设备本身保持在线 |
 | Device data requests / 设备数据请求 | 按精确设备 ID 查询数据库摘要，导出 JSON，或清理离线设备的历史／身份数据 |
@@ -197,7 +197,9 @@ curl --fail https://your-domain.example.com:9099/stats
 
 | 字段 | 含义 |
 | --- | --- |
-| `online_device_count` | 当前在线设备数，排除 `web-*` 与 `C-*` |
+| `online_device_count` | 当前在线原生设备总数（电脑 + 移动端），排除 `web-*` 与 `C-*` |
+| `online_pc_client_count` | 当前在线电脑客户端数，未上报平台的原生设备也计入此项 |
+| `online_mobile_client_count` | 当前在线 iOS / Android 客户端数，按已上报平台识别，排除 `web-*` 与 `C-*` |
 | `online_web_client_count` | 当前在线 `web-*` 客户端数 |
 | `active_connection_count` | 活动远控连接数，按 host 与各 guest 的连接分别计数 |
 | `online_duration_seconds` | 当前在线设备的本次在线时长合计 |

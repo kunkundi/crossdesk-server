@@ -53,7 +53,7 @@ class AdminController {
   void SetNotificationService(NotificationService* notifications) {
     notifications_ = notifications;
   }
-  nlohmann::json GetPublicStats() const { return BuildStats(0); }
+  nlohmann::json GetPublicStats() const { return BuildStats(); }
   void SetSessionRecovery(SessionRecovery* recovery) { recovery_ = recovery; }
 
  private:
@@ -67,7 +67,7 @@ class AdminController {
   AdminHttpResponse HandleDeviceData(const AdminHttpRequest& request);
 
   bool IsAuthorized(const AdminHttpRequest& request);
-  nlohmann::json BuildStats(size_t online_device_fallback) const;
+  nlohmann::json BuildStats() const;
   AdminHttpResponse JsonResponse(int status, const nlohmann::json& body) const;
   AdminHttpResponse HtmlResponse(int status, const std::string& body) const;
   AdminHttpResponse ErrorResponse(int status, const std::string& error) const;

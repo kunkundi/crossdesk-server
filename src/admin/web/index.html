@@ -121,10 +121,23 @@
                 </svg>
               </span>
               <div class="metric-copy">
-                <span data-i18n="Online devices">Online devices</span>
+                <span data-i18n="PC clients">PC clients</span>
                 <span class="metric-description" data-i18n="PC clients online">PC clients online</span>
               </div>
               <strong id="metric-devices">—</strong>
+            </article>
+            <article class="metric green">
+              <span class="metric-icon">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="6" y="2" width="12" height="20" rx="2"/>
+                  <path d="M10 18h4"/>
+                </svg>
+              </span>
+              <div class="metric-copy">
+                <span data-i18n="Mobile clients">Mobile clients</span>
+                <span class="metric-description" data-i18n="Mobile clients online">Mobile clients online</span>
+              </div>
+              <strong id="metric-mobile">—</strong>
             </article>
             <article class="metric blue">
               <span class="metric-icon">
@@ -189,6 +202,7 @@
                   <span data-i18n="Type">Type</span>
                   <select id="device-kind" aria-label="Client category" data-i18n-aria-label="Client category">
                     <option value="pc" data-i18n="PC">PC</option>
+                    <option value="mobile" data-i18n="Mobile">Mobile</option>
                     <option value="web" data-i18n="Web">Web</option>
                   </select>
                 </label>

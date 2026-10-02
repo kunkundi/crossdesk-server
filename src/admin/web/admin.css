@@ -82,11 +82,12 @@ main:focus { outline: none; }
 .refresh-button { display: inline-flex; align-items: center; gap: 8px; }
 .refresh-button .icon { width: 16px; height: 16px; }
 .refresh-button[aria-busy="true"] .icon { animation: spin 1s linear infinite; }
-.metrics { margin-bottom: 18px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.metrics { margin-bottom: 18px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .metric { display: flex; align-items: center; gap: 14px; background: #fff; border: 1px solid var(--border); border-radius: 9px; padding: 14px 18px; min-width: 0; }
 .metric-copy { display: grid; gap: 2px; min-width: 0; color: #526177; font-size: 13px; font-weight: 500; }
 .metric-icon { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
 .metric.blue .metric-icon { background: #edf4ff; color: #3970b8; }
+.metric.green .metric-icon { background: #edf8ef; color: #287d44; }
 .metric.violet .metric-icon { background: #f3effc; color: #7b5ab3; }
 .metric strong { margin-left: auto; font-size: 28px; line-height: 1.2; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; min-width: 0; }
 .metric-description { color: var(--muted); font-size: 11px; font-weight: 400; }
@@ -143,6 +144,8 @@ tbody tr:last-child > td { border-bottom: 0; }
 .badge.platform-windows { background: #eaf3ff; color: #205da8; }
 .badge.platform-macos { background: #fff0f3; color: #a92e5c; }
 .badge.platform-linux { background: #fff3d8; color: #875d0b; }
+.badge.platform-ios { background: #f0edfc; color: #6948a8; }
+.badge.platform-android { background: #edf8ef; color: #287d44; }
 .badge.platform-web { background: #e8f5fa; color: #176981; }
 .badge.version { background: #e4f5ef; color: #087563; }
 .presence-table td:nth-child(2) .badge { margin: 2px 4px 2px 0; }
@@ -291,7 +294,7 @@ tbody tr:last-child > td { border-bottom: 0; }
   .last-refresh { font-size: 10px; }
   .refresh-button { padding: 6px 9px; min-height: 36px; font-size: 11px; }
   .refresh-button .icon { width: 14px; }
-  .metrics { gap: 8px; margin-bottom: 14px; }
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
   .metric { display: grid; grid-template-rows: 1fr auto; gap: 8px; padding: 12px; }
   .metric-copy { font-size: 11px; }
   .metric strong { margin-left: 0; font-size: 25px; }
