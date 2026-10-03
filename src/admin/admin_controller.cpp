@@ -420,10 +420,13 @@ AdminHttpResponse AdminController::HandleAdminPage() {
         "Admin</title></head><body><h1>CrossDesk Admin</h1><p>Admin frontend "
         "assets were not found.</p></body></html>");
   }
-  const auto version_pos = body.find(kServerVersionPlaceholder);
-  if (version_pos != std::string::npos) {
+  const std::string version = CROSSDESK_SERVER_VERSION;
+  size_t version_pos = 0;
+  while ((version_pos = body.find(kServerVersionPlaceholder, version_pos)) !=
+         std::string::npos) {
     body.replace(version_pos, sizeof(kServerVersionPlaceholder) - 1,
-                 CROSSDESK_SERVER_VERSION);
+                 version);
+    version_pos += version.size();
   }
   return HtmlResponse(200, body);
 }
