@@ -449,14 +449,22 @@ AdminHttpResponse AdminController::HandleLogin(
     return ErrorResponse(400, "invalid_json");
   }
 
-  auto token = auth_->Login(body["username"].get<std::string>(),
-                            body["password"].get<std::string>());
-  if (!token.has_value()) {
+  const auto result = auth_->Login(body["username"].get<std::string>(),
+                                    body["password"].get<std::string>(),
+                                    request.source_address);
+  if (result.retry_after > 0) {
+    auto response = JsonResponse(429, {{"ok", false},
+                                       {"error", "too_many_login_attempts"},
+                                       {"retry_after", result.retry_after}});
+    response.headers.push_back({"Retry-After", std::to_string(result.retry_after)});
+    return response;
+  }
+  if (!result.token.has_value()) {
     return ErrorResponse(401, "unauthorized");
   }
 
   AdminHttpResponse response = JsonResponse(200, {{"ok", true}});
-  response.headers.push_back({"Set-Cookie", auth_->BuildSessionCookie(*token)});
+  response.headers.push_back({"Set-Cookie", auth_->BuildSessionCookie(*result.token)});
   return response;
 }
 

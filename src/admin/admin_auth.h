@@ -7,15 +7,25 @@
 #include <string>
 #include <unordered_map>
 
+#include "device_auth_limiter.h"
+
 class AdminAuth {
  public:
+  struct LoginResult {
+    std::optional<std::string> token;
+    int retry_after = 0;
+  };
+
   AdminAuth();
   AdminAuth(std::string username, std::string password,
-            std::chrono::seconds session_ttl);
+            std::chrono::seconds session_ttl,
+            DeviceAuthLimiter::Now now = DeviceAuthLimiter::Clock::now);
 
   bool IsEnabled() const;
   std::optional<std::string> Login(const std::string& username,
                                    const std::string& password);
+  LoginResult Login(const std::string& username, const std::string& password,
+                    const std::string& source_address);
   bool ValidateSession(const std::string& token);
   std::optional<std::string> CsrfToken(const std::string& token);
   bool ValidateCsrf(const std::string& token, const std::string& csrf);
@@ -36,6 +46,7 @@ class AdminAuth {
   std::string username_;
   std::string password_;
   std::chrono::seconds session_ttl_;
+  DeviceAuthLimiter login_limiter_;
   mutable std::mutex sessions_mutex_;
   struct Session {
     std::chrono::system_clock::time_point expires;

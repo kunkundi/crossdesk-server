@@ -134,6 +134,7 @@
       'Controlled by': '控制方',
       'Disconnect': '断开',
       'Invalid username or password': '用户名或密码错误',
+      'Too many login attempts. Try again in {seconds} seconds.': '登录尝试过多，请在 {seconds} 秒后重试。',
       'Connection error': '连接失败，请重试',
       'Failed to disconnect session': '断开会话失败',
       'Failed to log out': '退出登录失败，请重试',
@@ -170,17 +171,19 @@
       for (const attribute of ['text', 'placeholder', 'title', 'aria-label']) {
         const dataAttribute = attribute === 'text' ? 'data-i18n' : `data-i18n-${attribute}`;
         document.querySelectorAll(`[${dataAttribute}]`).forEach(element => {
-          const value = t(element.getAttribute(dataAttribute));
+          const values = attribute === 'text' ? JSON.parse(element.dataset.i18nValues || '{}') : {};
+          const value = t(element.getAttribute(dataAttribute), values);
           if (attribute === 'text') element.textContent = value;
           else element.setAttribute(attribute, value);
         });
       }
     }
 
-    function setMessage(id, key) {
+    function setMessage(id, key, values = {}) {
       const element = document.getElementById(id);
       element.dataset.i18n = key;
-      element.textContent = t(key);
+      element.dataset.i18nValues = JSON.stringify(values);
+      element.textContent = t(key, values);
       if (id === 'refresh-error' && ['', 'Connection error', 'Failed to refresh lists'].includes(key)) {
         const status = document.getElementById('refresh-status');
         status.classList.toggle('failed', Boolean(key));
@@ -279,7 +282,7 @@
       }
     }
 
-    function showLogin(message) {
+    function showLogin(message, values = {}) {
       document.getElementById('auth-loading').classList.add('hidden');
       resetDeviceData();
       ++listRefreshSerial;
@@ -292,7 +295,7 @@
       listTimer = null;
       if (durationTimer) clearInterval(durationTimer);
       durationTimer = null;
-      setMessage('login-error', message || '');
+      setMessage('login-error', message || '', values);
       updateDocumentTitle();
     }
 
@@ -316,6 +319,11 @@
           body
         });
         if (response.ok) showDashboard();
+        else if (response.status === 429) {
+          const retryAfter = Number(response.headers.get('Retry-After'));
+          const seconds = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.ceil(retryAfter) : 900;
+          showLogin('Too many login attempts. Try again in {seconds} seconds.', {seconds});
+        }
         else showLogin(response.status === 401 ? 'Invalid username or password' : 'Connection error');
       } catch (_) {
         showLogin('Connection error');

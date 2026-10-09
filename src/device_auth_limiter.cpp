@@ -1,9 +1,17 @@
 #include "device_auth_limiter.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <utility>
 
-DeviceAuthLimiter::DeviceAuthLimiter(Now now) : now_(std::move(now)) {}
+DeviceAuthLimiter::DeviceAuthLimiter(Now now, size_t source_failure_limit,
+                                     size_t target_failure_limit)
+    : now_(std::move(now)),
+      source_failure_limit_(source_failure_limit),
+      target_failure_limit_(target_failure_limit) {
+  if (source_failure_limit == 0 || target_failure_limit == 0)
+    throw std::invalid_argument("Authentication failure limits must be positive");
+}
 
 void DeviceAuthLimiter::Prune(Buckets& buckets, Clock::time_point now) {
   for (auto it = buckets.begin(); it != buckets.end();) {
@@ -47,8 +55,8 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
         std::chrono::ceil<std::chrono::seconds>(it->second.expires - now)
             .count());
   };
-  const int source_retry = retry(sources_, source_key, kSourceFailures);
-  const int target_retry = retry(targets_, target, kTargetFailures);
+  const int source_retry = retry(sources_, source_key, source_failure_limit_);
+  const int target_retry = retry(targets_, target, target_failure_limit_);
   const int retry_after = std::max(source_retry, target_retry);
   if (retry_after > 0) return {false, retry_after};
 
@@ -62,7 +70,7 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
 
   // Success never clears shared failure history: an attacker may know a valid
   // password for another device. Unknown devices accrue identical failures.
-  Record(sources_, source_key, kSourceFailures, now);
-  Record(targets_, target, kTargetFailures, now);
+  Record(sources_, source_key, source_failure_limit_, now);
+  Record(targets_, target, target_failure_limit_, now);
   return {false, 0};
 }

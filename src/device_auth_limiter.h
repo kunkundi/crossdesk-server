@@ -14,9 +14,8 @@
 #include <string>
 #include <unordered_map>
 
-// Shared by every device-password entry point. Keys are the transport peer IP
-// and the exact device ID, never a connection handle or client-supplied user
-// ID.
+// Failure budgets keyed by transport peer IP and credential target, never a
+// connection handle. Use separate instances for independent auth domains.
 class DeviceAuthLimiter {
  public:
   using Clock = std::chrono::steady_clock;
@@ -31,7 +30,9 @@ class DeviceAuthLimiter {
     int retry_after = 0;  // Positive only when verification was not attempted.
   };
 
-  explicit DeviceAuthLimiter(Now now = Clock::now);
+  explicit DeviceAuthLimiter(Now now = Clock::now,
+                             size_t source_failure_limit = kSourceFailures,
+                             size_t target_failure_limit = kTargetFailures);
   Result Verify(const std::string& source, const std::string& target,
                 const std::function<bool()>& verify);
 
@@ -46,6 +47,7 @@ class DeviceAuthLimiter {
                      Clock::time_point now);
 
   Now now_;
+  const size_t source_failure_limit_, target_failure_limit_;
   std::mutex mutex_;
   Buckets sources_, targets_;
   Clock::time_point next_cleanup_{};

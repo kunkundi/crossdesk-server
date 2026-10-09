@@ -582,7 +582,8 @@ void SignalServer::OnHttp(websocketpp::connection_hdl hdl) {
                            con->get_request_body(),
                            con->get_request_header("Cookie"),
                            con->get_request_header("X-CrossDesk-CSRF"),
-                           con->get_request_header("Content-Type")};
+                           con->get_request_header("Content-Type"),
+                           it->second->source_address};
   auto state = it->second;
   // Explicitly retain deferred connections: defer_http_response cancels the
   // library's handshake timer. Our deadline below bounds their lifetime.

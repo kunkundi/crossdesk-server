@@ -37,10 +37,12 @@ AdminAuth::AdminAuth()
                 std::chrono::hours(8)) {}
 
 AdminAuth::AdminAuth(std::string username, std::string password,
-                     std::chrono::seconds session_ttl)
+                     std::chrono::seconds session_ttl,
+                     DeviceAuthLimiter::Now now)
     : username_(std::move(username)),
       password_(std::move(password)),
-      session_ttl_(session_ttl) {}
+      session_ttl_(session_ttl),
+      login_limiter_(std::move(now), 5, 20) {}
 
 bool AdminAuth::IsEnabled() const {
   return !username_.empty() && !password_.empty();
@@ -48,17 +50,29 @@ bool AdminAuth::IsEnabled() const {
 
 std::optional<std::string> AdminAuth::Login(const std::string& username,
                                             const std::string& password) {
-  if (!IsEnabled() || username != username_ || !SecretEqual(password, password_)) {
-    return std::nullopt;
-  }
+  return Login(username, password, "").token;
+}
+
+AdminAuth::LoginResult AdminAuth::Login(const std::string& username,
+                                       const std::string& password,
+                                       const std::string& source_address) {
+  if (!IsEnabled()) return {};
+  // There is one configured administrator. All submitted usernames share its
+  // budget, so rotating names or IPs cannot reset the aggregate failure count.
+  const auto result = login_limiter_.Verify(source_address, "admin", [&] {
+    const bool username_matches = SecretEqual(username, username_);
+    const bool password_matches = SecretEqual(password, password_);
+    return username_matches && password_matches;
+  });
+  if (!result.authenticated) return {std::nullopt, result.retry_after};
 
   std::string token = GenerateToken();
   std::string csrf = GenerateToken();
-  if (token.empty() || csrf.empty()) return std::nullopt;
+  if (token.empty() || csrf.empty()) return {};
   std::lock_guard<std::mutex> lock(sessions_mutex_);
   RemoveExpiredSessions();
   sessions_[token] = {std::chrono::system_clock::now() + session_ttl_, csrf};
-  return token;
+  return {token, 0};
 }
 
 bool AdminAuth::ValidateSession(const std::string& token) {

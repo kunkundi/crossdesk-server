@@ -154,7 +154,11 @@ The top navigation opens three separate pages: **Overview** (`/admin/overview`) 
 
 While visible, the overview refreshes data every 5 seconds and updates displayed durations every second. Data management and About do not poll device or session lists. Admin sessions are held in memory, expire after 8 hours by default, and require a new login after a server restart. Dashboard login cookies require HTTPS.
 
-The signaling server no longer collects or caches client connection IPs, returns them through the admin API, displays them in the dashboard, or records them in new signaling connection logs. It does not query external IP geolocation services or display regional distributions. Historical logs and logs from the separate Coturn service retain their respective retention policies.
+Admin login starts a 15-minute cooldown after 5 failures from one source IP or 20 failures across all sources within 15 minutes. Wrong usernames and passwords share these budgets. Changing usernames, cookies or connections does not reset failures, and successful logins do not clear unexpired failures. During cooldown, credentials are not verified and no session cookie is issued; the API returns `429 too_many_login_attempts`, a `Retry-After` header and JSON `retry_after` in seconds. The login page displays the wait time. Rejected requests do not extend cooldown, and existing admin sessions remain valid.
+
+The source is the TCP peer IP; `X-Forwarded-For` and source fields in request bodies are not trusted. Users behind one NAT or reverse proxy share a source quota. Admin and device-password limits are independent. Counters are local to the server process and reset on restart; multiple instances need coordinated limits in a trusted gateway or shared store.
+
+Transport peer IPs are used in memory for connection handling and authentication rate limits. They are not returned through the admin API, displayed in the dashboard or recorded in new signaling connection logs. The server does not query external IP geolocation services or display regional distributions. Historical logs and logs from the separate Coturn service retain their respective retention policies.
 
 Frontend source lives in [src/admin/web](src/admin/web), installed at `/crossdesk-server/admin` in the container. A custom `CROSSDESK_ADMIN_WEB_DIR` must also be explicitly passed through Compose's `environment` and its directory mounted. Adding it to `.env` alone does not pass it into the container. Restart the service after frontend changes to refresh its asset cache.
 

@@ -24,6 +24,7 @@ struct AdminHttpRequest {
   std::string cookie;
   std::string csrf_token;
   std::string content_type;
+  std::string source_address;  // Trusted TCP peer IP, without its source port.
 };
 
 struct AdminHttpResponse {
