@@ -71,7 +71,7 @@ target("admin")
 target("negotiation")
     set_kind("object")
     add_deps("log", "transmission", "device_db_manager")
-    add_files("src/signal_negotiation.cpp", "src/turn_credentials.cpp", "src/ice_server_config_issuer.cpp", "src/session_recovery.cpp")
+    add_files("src/signal_negotiation.cpp", "src/device_auth_limiter.cpp", "src/turn_credentials.cpp", "src/ice_server_config_issuer.cpp", "src/session_recovery.cpp")
     add_includedirs("src", {public = true})
 
 target("presence")

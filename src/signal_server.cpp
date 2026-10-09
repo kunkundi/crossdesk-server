@@ -433,6 +433,17 @@ void SignalServer::AcceptNext() {
       con->get_raw_socket() = std::move(*socket);
       auto state = std::make_shared<ConnectionState>();
       state->id = next_connection_id_++;
+      // Read transport metadata on the network thread. Never use forwarded
+      // headers or source ports as authentication rate-limit keys.
+      asio::error_code peer_error;
+      auto peer = con->get_raw_socket().remote_endpoint(peer_error);
+      if (!peer_error) {
+        auto address = peer.address();
+        if (address.is_v6() && address.to_v6().is_v4_mapped())
+          address = asio::ip::make_address_v4(asio::ip::v4_mapped,
+                                            address.to_v6());
+        state->source_address = address.to_string();
+      }
       connections_.emplace(con->get_handle(), state);
       con->set_termination_handler([this](server::connection_ptr finished) {
         FinishConnection(finished);
@@ -1028,7 +1039,7 @@ void SignalServer::ProcessMessage(
     }
     switch (HASH_STRING_PIECE(type.c_str())) {
       case "login"_H:
-        signal_negotiation_->login_user(hdl, j);
+        signal_negotiation_->login_user(hdl, j, state->source_address);
         if (!transmission_manager_->GetUserId(hdl).empty())
           session_recovery_->Login(hdl, j);
         if (presence_manager_) {
@@ -1048,10 +1059,10 @@ void SignalServer::ProcessMessage(
         signal_negotiation_->disconnect_peer(hdl, j);
         break;
       case "query_user_id_list"_H:
-        signal_negotiation_->query_user_id_list(hdl, j);
+        signal_negotiation_->query_user_id_list(hdl, j, state->source_address);
         break;
       case "join_transmission"_H:
-        signal_negotiation_->join_transmission(hdl, j);
+        signal_negotiation_->join_transmission(hdl, j, state->source_address);
         break;
       case "offer"_H:
         signal_negotiation_->offer(hdl, j);

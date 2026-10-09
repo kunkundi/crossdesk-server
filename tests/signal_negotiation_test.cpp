@@ -42,6 +42,7 @@ int main() {
     std::vector<json> sent_messages;
     auto requester_connection = std::make_shared<int>(1);
     websocketpp::connection_hdl requester_hdl(requester_connection);
+    transmission->BindUserToWsHandle("C-controller", requester_hdl);
     negotiation.SetSendMsgCallback(
         [&](websocketpp::connection_hdl, json message) {
           sent_messages.push_back(message);
@@ -84,8 +85,8 @@ int main() {
              "wrong device password login response has login type");
       expect(sent_messages[0].value("status", "") == "fail",
              "wrong device password login fails");
-      expect(sent_messages[0].value("reason", "") == "Incorrect password",
-             "wrong device password login reports a specific reason");
+      expect(sent_messages[0].value("reason", "") == "Authentication failed",
+             "wrong device password login reports a generic reason");
     }
     expect(db.VerifyDevice(offline_host.device_id, offline_host.password) == 0,
            "wrong device password login does not replace original password");

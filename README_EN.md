@@ -226,6 +226,16 @@ Connection diagnostics help investigate a running process that cannot reliably a
 
 Warnings for admission pauses, accept/resource errors, pre-open failures, and event loop delays are limited to one per category per 30 seconds. Recovery records are paired only with reported pauses. `*_total` counters accumulate since process startup even when warnings are suppressed; `*_limit_checks_total` counts checks hitting a limit, not rejected clients. `unopened` includes WebSocket handshakes, ordinary HTTPS requests, and their cleanup. `fd_open` is measured when logging; `fd_estimated` is the admission estimate, with its sample age in `fd_sample_age_ms`. A value of `-1` means unavailable or unlimited. `expired_handles` and `oldest_unopened_ms` help identify retained or stalled connections.
 
+### Device password protection
+
+`query_user_id_list` and `join_transmission` require a logged-in connection; joining also checks that the requester's identity matches its connection binding. Wrong passwords and unknown device IDs both return `Authentication failed`, without a device list or connection credentials.
+
+Device login, queries and joins share failure counts. Within a 15-minute window, 20 failures from one source IP or 5 failures against one target device start a 15-minute cooldown at the threshold. During cooldown, password verification is skipped even for correct passwords; responses include `Too many authentication attempts` and `retry_after` in seconds. Reconnecting, changing controller IDs, switching endpoints or successfully authenticating other devices does not clear failures. Blocked requests do not extend cooldown. Existing remote-control sessions remain active.
+
+The source is the TCP peer IP without its port; request fields and `X-Forwarded-For` are not trusted. Connections behind one NAT or reverse proxy share a source quota. Counters are local to one server process and reset on restart; multiple instances need coordinated limits in a trusted gateway or shared store. Each dimension holds at most 16,384 records and rejects new verification keys at capacity until expired records free space.
+
+Registration must explicitly use an empty device ID (native clients) or `web` (Web clients). Logging in with an unknown or expired ID returns the generic authentication failure instead of assigning a replacement ID. Clients must reset their local identity to register again.
+
 ### Retention and automatic cleanup
 
 | Data | Default policy |
@@ -240,7 +250,7 @@ Configure `.env` with `CROSSDESK_LOG_RETENTION_DAYS=185`, `CROSSDESK_OFFLINE_RET
 
 The first pass runs about five seconds after the server starts, then hourly by default. Each transaction selects at most 200 expired devices (including their controller clones) and 200 other stale associations. A backlog triggers another batch about five seconds later; failures roll back and retry. Offline age starts at the last disconnect; records exactly at the cutoff are retained. New credentials without presence start aging at registration; an admin history-only cleanup starts a fresh retention period for retained credentials. Completion depends on load and uptime. Whole-file expiry can retain the earliest entries for roughly one additional day plus the check interval. Cleanup pauses while the service is stopped and resumes after restart.
 
-Log cleanup only handles recognized files in the configured log directory, including legacy `crossdesk-server-YYYYMMDD-HHMMSS[.N].log` files and `coturn/turn_YYYY-MM-DD.log`. Cleanup does not recurse into unrelated directories, follow symlinks or delete the current signaling log. Use a dedicated directory for each deployment and monitor free disk space and retention completion/failure logs. Failure to initialize file logging prevents server startup. After device expiry, the old device ID and password are no longer valid; returning devices follow the new-device registration flow.
+Log cleanup only handles recognized files in the configured log directory, including legacy `crossdesk-server-YYYYMMDD-HHMMSS[.N].log` files and `coturn/turn_YYYY-MM-DD.log`. Cleanup does not recurse into unrelated directories, follow symlinks or delete the current signaling log. Use a dedicated directory for each deployment and monitor free disk space and retention completion/failure logs. Failure to initialize file logging prevents server startup. After device expiry, the old device ID and password are no longer valid; returning devices must reset their local identity and register with an empty device ID.
 
 SQLite uses `secure_delete` and attempts a nonblocking WAL checkpoint after deletion. This does not securely erase snapshots, backups or underlying storage. Operators must separately expire backups, external log stores and old container log copies; the server never scans or deletes them. Recreate containers when upgrading to apply the new logging configuration and handle old copies according to applicable retention obligations. Update the public privacy policy only once the production deployment actually applies these rules.
 

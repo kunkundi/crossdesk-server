@@ -20,6 +20,15 @@ bool GetStringField(const json& j, const char* key, std::string& value) {
   return true;
 }
 
+bool ValidDeviceCredentials(const std::string& device_id,
+                            const std::string& password) {
+  // SQLite binds IDs as C strings. Reject embedded NULs to prevent multiple
+  // limiter keys from authenticating against the same database device.
+  return device_id.size() <= 128 && password.size() <= 256 &&
+         device_id.find('\0') == std::string::npos &&
+         password.find('\0') == std::string::npos;
+}
+
 bool CopyOptionalIceUfrag(const json& source, json& destination) {
   const auto field = source.find("ufrag");
   if (field == source.end()) {
@@ -64,11 +73,15 @@ SignalNegotiation::SignalNegotiation(
     std::shared_ptr<TransmissionManager> transmission_manager,
     DeviceDBManager* device_db,
     std::shared_ptr<TurnCredentialIssuer> turn_credential_issuer,
-    std::shared_ptr<IceServerConfigIssuer> ice_config_issuer)
+    std::shared_ptr<IceServerConfigIssuer> ice_config_issuer,
+    std::shared_ptr<DeviceAuthLimiter> device_auth_limiter)
     : transmission_manager_(transmission_manager),
       device_db_manager_(device_db),
       turn_credential_issuer_(std::move(turn_credential_issuer)),
-      ice_config_issuer_(std::move(ice_config_issuer)) {}
+      ice_config_issuer_(std::move(ice_config_issuer)),
+      device_auth_limiter_(device_auth_limiter
+                               ? std::move(device_auth_limiter)
+                               : std::make_shared<DeviceAuthLimiter>()) {}
 
 SignalNegotiation::~SignalNegotiation() {}
 
@@ -131,8 +144,26 @@ void SignalNegotiation::AddConnectionIceConfig(
   }
 }
 
+bool SignalNegotiation::AuthenticateDevice(const std::string& source_address,
+                                           const std::string& device_id,
+                                           const std::string& password,
+                                           json& failure) {
+  failure["reason"] = "Authentication failed";
+  if (!ValidDeviceCredentials(device_id, password)) return false;
+  const auto result = device_auth_limiter_->Verify(
+      source_address, device_id, [&] {
+        return device_db_manager_->VerifyDevice(device_id, password) == 0;
+      });
+  if (result.retry_after > 0) {
+    failure["reason"] = "Too many authentication attempts";
+    failure["retry_after"] = result.retry_after;
+  }
+  return result.authenticated;
+}
+
 bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
-                                   const json& j) {
+                                  const json& j,
+                                  const std::string& source_address) {
   std::string host_id_with_pwd;
   if (!GetStringField(j, "user_id", host_id_with_pwd)) {
     LOG_ERROR("login_user missing or invalid field: user_id");
@@ -151,27 +182,35 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     password = "";
   }
 
+  json failure = {{"type", "login"},
+                  {"user_id", ""},
+                  {"status", "fail"},
+                  {"reason", "Authentication failed"}};
+  if (!ValidDeviceCredentials(host_id, password)) {
+    send_msg_(hdl, failure);
+    return true;
+  }
+
   if (host_id.rfind("C-", 0) != 0) {
-    DeviceCredential dev_cred =
-        device_db_manager_->AddDevice(host_id, password);
+    DeviceCredential dev_cred;
+    if (host_id.empty() || host_id == "web") {
+      dev_cred = device_db_manager_->AddDevice(host_id, password);
+    } else {
+      // A supplied ID is a login, not registration. Automatically registering
+      // unknown IDs reveals existence even if query/join errors are generic.
+      if (!AuthenticateDevice(source_address, host_id, password, failure)) {
+        send_msg_(hdl, failure);
+        return true;
+      }
+      dev_cred = {host_id, "", false};
+    }
 
     std::string ret_host_id = dev_cred.device_id;
     std::string ret_password = dev_cred.password;
     bool update_password = dev_cred.update;
 
-    // Check if AddDevice failed
     if (ret_host_id.empty()) {
-      std::string reason = "Failed to register device";
-      if (!host_id.empty() &&
-          device_db_manager_->VerifyDevice(host_id, password) == -1) {
-        reason = "Incorrect password";
-      }
-      LOG_ERROR("Failed to add device for host_id [{}]", host_id);
-      json message = {{"type", "login"},
-                      {"user_id", ""},
-                      {"status", "fail"},
-                      {"reason", reason}};
-      send_msg_(hdl, message);
+      send_msg_(hdl, failure);
       return true;
     }
 
@@ -350,7 +389,8 @@ bool SignalNegotiation::disconnect_peer(websocketpp::connection_hdl hdl,
 }
 
 bool SignalNegotiation::query_user_id_list(websocketpp::connection_hdl hdl,
-                                           const json& j) {
+                                          const json& j,
+                                          const std::string& source_address) {
   std::string transmission_id_pwd;
   if (!GetStringField(j, "transmission_id", transmission_id_pwd)) {
     LOG_ERROR("query_user_id_list missing or invalid field: transmission_id");
@@ -369,9 +409,16 @@ bool SignalNegotiation::query_user_id_list(websocketpp::connection_hdl hdl,
     password = "";
   }
 
-  int ret = device_db_manager_->VerifyDevice(transmission_id, password);
-
-  if (0 == ret) {
+  json failure = {{"type", "user_id_list"},
+                  {"transmission_id", transmission_id},
+                  {"user_id_list", json::array()},
+                  {"status", "failed"}};
+  if (hdl.expired() || transmission_manager_->GetUserId(hdl).empty()) {
+    failure["reason"] = "Not authenticated";
+    send_msg_(hdl, failure);
+    return true;
+  }
+  if (AuthenticateDevice(source_address, transmission_id, password, failure)) {
     std::vector<std::string> user_id_list =
         transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
 
@@ -381,31 +428,16 @@ bool SignalNegotiation::query_user_id_list(websocketpp::connection_hdl hdl,
                     {"status", "success"}};
 
     send_msg_(hdl, message);
-  } else if (-1 == ret) {
-    std::vector<std::string> user_id_list;
-    json message = {{"type", "user_id_list"},
-                    {"transmission_id", transmission_id},
-                    {"user_id_list", user_id_list},
-                    {"status", "failed"},
-                    {"reason", "Incorrect password"}};
-
-    send_msg_(hdl, message);
-  } else if (-2 == ret) {
-    std::vector<std::string> user_id_list;
-    json message = {{"type", "user_id_list"},
-                    {"transmission_id", transmission_id},
-                    {"user_id_list", user_id_list},
-                    {"status", "failed"},
-                    {"reason", "No such transmission id"}};
-
-    send_msg_(hdl, message);
+  } else {
+    send_msg_(hdl, failure);
   }
 
   return true;
 }
 
 bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
-                                          const json& j) {
+                                         const json& j,
+                                         const std::string& source_address) {
   std::string transmission_id_pwd;
   if (!GetStringField(j, "transmission_id", transmission_id_pwd)) {
     LOG_ERROR("join_transmission missing or invalid field: transmission_id");
@@ -430,12 +462,15 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
     return false;
   }
 
-  LOG_INFO("[{}] joins transmission [{}]", user_id.c_str(),
-           transmission_id.c_str());
-
-  int ret = device_db_manager_->VerifyDevice(transmission_id, password);
-
-  if (0 == ret) {
+  json failure = {{"type", "user_join_transmission"},
+                  {"transmission_id", transmission_id},
+                  {"status", "failed"}};
+  if (hdl.expired() || transmission_manager_->GetUserId(hdl) != user_id) {
+    failure["reason"] = "Not authenticated";
+    send_msg_(hdl, failure);
+    return true;
+  }
+  if (AuthenticateDevice(source_address, transmission_id, password, failure)) {
     std::string host_id =
         transmission_manager_->GetHostIdOfTransmission(transmission_id);
     websocketpp::connection_hdl host_hdl =
@@ -452,10 +487,6 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
       return true;
     }
 
-    if (transmission_manager_->GetUserId(hdl) != user_id) {
-      LOG_WARN("Reject connection request with unauthenticated sender");
-      return false;
-    }
     if (!transmission_manager_->BindGuestToTransmission(user_id, transmission_id,
                                                        hdl)) {
       LOG_WARN("Reject connection request without a valid guest binding");
@@ -470,23 +501,8 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
     if (recovery_) recovery_->Issue(transmission_id, host_id, user_id, hdl);
     AddConnectionIceConfig(message, host_id);
     send_msg_(host_hdl, message);
-  } else if (-1 == ret) {
-    LOG_ERROR("Password incorrect for transmission id [{}]",
-              transmission_id.c_str());
-    json message = {{"type", "user_join_transmission"},
-                    {"transmission_id", transmission_id},
-                    {"status", "failed"},
-                    {"reason", "Incorrect password"}};
-
-    send_msg_(hdl, message);
-  } else if (-2 == ret) {
-    LOG_ERROR("No such transmission id [{}]", transmission_id.c_str());
-    json message = {{"type", "user_join_transmission"},
-                    {"transmission_id", transmission_id},
-                    {"status", "failed"},
-                    {"reason", "No such transmission id"}};
-
-    send_msg_(hdl, message);
+  } else {
+    send_msg_(hdl, failure);
   }
 
   return true;

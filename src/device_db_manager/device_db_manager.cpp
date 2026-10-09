@@ -1,5 +1,6 @@
 #include "device_db_manager.h"
 
+#include <openssl/crypto.h>
 #include <openssl/sha.h>
 
 #include <algorithm>
@@ -809,24 +810,18 @@ int DeviceDBManager::VerifyDevice(const std::string& device_id,
 
   sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
 
-  // Check if device exists
-  int result = -2;
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    std::string salt = ColumnText(stmt, 0);
-    std::string stored_hash = ColumnText(stmt, 1);
-
-    std::string hash = HashPasswordWithSalt(salt, password);
-    if (hash == stored_hash) {
-      // Password is correct
-      result = 0;
-    } else {
-      // Password is incorrect
-      result = -1;
-    }
-  }
-
+  const bool exists = sqlite3_step(stmt) == SQLITE_ROW;
+  // Perform the same hash/comparison for missing IDs to reduce the timing
+  // difference between an unknown device and an incorrect password.
+  const std::string salt = exists ? ColumnText(stmt, 0) : "0000000000000000";
+  const std::string stored_hash =
+      exists ? ColumnText(stmt, 1) : std::string(SHA256_DIGEST_LENGTH * 2, '0');
   sqlite3_finalize(stmt);
-  return result;
+  const std::string hash = HashPasswordWithSalt(salt, password);
+  const bool matches =
+      stored_hash.size() == hash.size() &&
+      CRYPTO_memcmp(stored_hash.data(), hash.data(), hash.size()) == 0;
+  return exists ? (matches ? 0 : -1) : -2;
 }
 
 bool DeviceDBManager::UpdatePassword(const std::string& device_id,

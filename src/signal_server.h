@@ -65,6 +65,7 @@ class SignalServer {
   using Clock = std::chrono::steady_clock;
   struct ConnectionState {
     uint64_t id = 0;
+    std::string source_address;  // Set before publication; transport peer IP.
     std::string device_id;  // Accessed only on the network thread.
     Clock::time_point accepted = Clock::now(), last_heartbeat = accepted;
     bool opened = false, authenticated = false;
