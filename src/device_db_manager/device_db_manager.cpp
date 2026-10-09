@@ -366,6 +366,22 @@ void DeviceDBManager::InitDB() {
     throw std::runtime_error("Failed to create devices table: " + error);
   }
 
+  ExecuteSchemaStatement(db_,
+      "CREATE TABLE IF NOT EXISTS device_reconnect_credentials ("
+      "device_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL,"
+      "expires_at INTEGER NOT NULL);"
+      "CREATE TRIGGER IF NOT EXISTS reconnect_credential_delete "
+      "AFTER DELETE ON devices BEGIN "
+      "DELETE FROM device_reconnect_credentials WHERE device_id=OLD.device_id; END;"
+      "CREATE TRIGGER IF NOT EXISTS reconnect_credential_password_change "
+      "AFTER UPDATE OF password_salt,password_hash ON devices "
+      "WHEN OLD.password_salt<>NEW.password_salt OR OLD.password_hash<>NEW.password_hash "
+      "BEGIN DELETE FROM device_reconnect_credentials WHERE device_id=OLD.device_id; END;"
+      "DELETE FROM device_reconnect_credentials WHERE expires_at <= "
+      "CAST(strftime('%s','now') AS INTEGER) OR NOT EXISTS "
+      "(SELECT 1 FROM devices WHERE devices.device_id=device_reconnect_credentials.device_id);",
+      "initialize reconnect credentials");
+
   // Older cleanup retained credentials after deleting their presence. Their
   // offline age is unknown, so start a fallback retention period at migration.
   // Presence timestamps take precedence whenever they are still available.

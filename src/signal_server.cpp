@@ -363,7 +363,8 @@ void SignalServer::LogConnectionDiagnostics() {
       "fd_limit_checks_total={} fd_sample_failed_checks_total={} "
       "event_loop_stalls_total={} login_success_total={} "
       "authentication_failed_total={} credential_busy_replies_total={} "
-      "authentication_cooldown_replies_total={} authentication_timeouts_total={}",
+      "authentication_cooldown_replies_total={} authentication_timeouts_total={} "
+      "reconnect_success_total={} reconnect_failed_total={}",
       DescribeConnectionResources(), diagnostics_.accepted, diagnostics_.opened,
       diagnostics_.preopen_failed,
       diagnostics_.accept_failed, diagnostics_.init_resource_failed,
@@ -371,7 +372,8 @@ void SignalServer::LogConnectionDiagnostics() {
       diagnostics_.fd_limit_checks, diagnostics_.fd_sample_failed_checks,
       diagnostics_.loop_stalls, diagnostics_.login_success,
       diagnostics_.authentication_failed, diagnostics_.credential_busy,
-      diagnostics_.authentication_throttled, diagnostics_.authentication_timeouts);
+      diagnostics_.authentication_throttled, diagnostics_.authentication_timeouts,
+      diagnostics_.reconnect_success, diagnostics_.reconnect_failed);
 }
 
 void SignalServer::AcceptNext() {
@@ -878,7 +880,10 @@ void SignalServer::Stop() {
   if (stopping_.exchange(true)) return;
   server_.get_io_service().post([this] {
     LOG_INFO("Signal server shutdown requested");
-    application_worker_->Submit([this] { device_db_manager_->RecordRuntimeHeartbeat(); }, true);
+    application_worker_->Submit([this] {
+      device_db_manager_->RecordRuntimeHeartbeat();
+      LogCredentialDiagnostics();
+    }, true);
     LogConnectionDiagnostics();
     if (signals_) signals_->cancel();
     websocketpp::lib::error_code ec;
@@ -1006,24 +1011,29 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
   }
   std::string login_id;
   const auto failure_reason = message.value("reason", "");
+  const bool reconnected = type == "login" && message.value("reconnected", false);
+  const bool reconnect_rejected = type == "login" && message.value("reconnect_rejected", false);
   if (type == "login" && message.value("status", "") == "success") {
     login_id = message.value("user_id", "");
     login_id = login_id.substr(0, login_id.find('@'));
   }
   auto payload = message.dump();
   server_.get_io_service().post(
-      [this, hdl, payload = std::move(payload), login_id, failure_reason] {
+      [this, hdl, payload = std::move(payload), login_id, failure_reason,
+       reconnected, reconnect_rejected] {
         --pending_sends_;
         auto it = connections_.find(hdl);
         if (it == connections_.end() || !it->second->alive) return;
         if (!login_id.empty()) {
           ++diagnostics_.login_success;
+          if (reconnected) ++diagnostics_.reconnect_success;
           it->second->device_id = login_id;
           it->second->authenticated = true;
           // Clients may start heartbeats only after login. Give them a full
           // heartbeat interval even if credential work spent minutes queued.
           it->second->last_heartbeat = Clock::now();
         }
+        if (reconnect_rejected) ++diagnostics_.reconnect_failed;
         if (failure_reason == "Authentication failed")
           ++diagnostics_.authentication_failed;
         else if (failure_reason == "Credential service busy")
@@ -1249,6 +1259,9 @@ void SignalServer::ProcessMessage(
         break;
       case "session_report"_H:
         session_recovery_->Report(hdl, j);
+        break;
+      case "revoke_reconnect_credential"_H:
+        signal_negotiation_->revoke_reconnect_credential(hdl);
         break;
       case "user_leave_transmission"_H:
         signal_negotiation_->leave_transmission(hdl, j);

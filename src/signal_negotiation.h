@@ -68,6 +68,7 @@ class SignalNegotiation {
                        const CredentialDispatch& dispatch = {});
   bool turn_credentials(websocketpp::connection_hdl hdl, const json& j);
   bool client_info(websocketpp::connection_hdl hdl, const json& j);
+  bool revoke_reconnect_credential(websocketpp::connection_hdl hdl);
   void OnWebClientDisconnect(const std::string& user_id);
   void ForgetPasswordChangeResults(const std::string& device_id);
   void SetSessionRecovery(SessionRecovery* recovery) { recovery_ = recovery; }
@@ -94,7 +95,8 @@ class SignalNegotiation {
                           std::function<void()> on_verified);
   bool CompleteLogin(websocketpp::connection_hdl hdl, const json& request,
                      const std::string& host_id,
-                     const DeviceCredential& credential, bool registration);
+                     const DeviceCredential& credential, bool registration,
+                     std::optional<int64_t> reconnect_expires = std::nullopt);
   void RunCredentialWork(websocketpp::connection_hdl hdl,
                          const std::string& source_address, json failure,
                          CredentialWork work,

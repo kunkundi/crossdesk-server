@@ -144,6 +144,7 @@ class SignalServer {
     uint64_t connection_limit_checks = 0, unopened_limit_checks = 0;
     uint64_t fd_limit_checks = 0, fd_sample_failed_checks = 0;
     uint64_t login_success = 0, authentication_failed = 0;
+    uint64_t reconnect_success = 0, reconnect_failed = 0;
     uint64_t credential_busy = 0, authentication_throttled = 0;
     uint64_t authentication_timeouts = 0;
   } diagnostics_;

@@ -266,7 +266,25 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     *completed = CompleteLogin(hdl, j, host_id, credential, registration);
     if (*completed && on_login) on_login();
   };
-  if (host_id.rfind("C-", 0) == 0) {
+  if (j.contains("reconnect_token")) {
+    const auto version = j.find("reconnect_version");
+    std::optional<int64_t> expires;
+    if (version != j.end() && version->is_number_integer() && *version == 1 &&
+        j["reconnect_token"].is_string() &&
+        host_id_with_pwd.find('@') == std::string::npos) {
+      expires = device_db_manager_->VerifyReconnectCredential(
+          host_id, j["reconnect_token"].get<std::string>());
+    }
+    if (!expires) {
+      failure["reconnect_rejected"] = true;
+      send_msg_(hdl, failure);
+      return false;
+    }
+    // High-entropy credentials use a bounded digest lookup, not the password
+    // work queue or its per-IP quota. Never silently fall back to Argon2 here.
+    *completed = CompleteLogin(hdl, j, host_id, {host_id, "", false}, false, expires);
+    if (*completed && on_login) on_login();
+  } else if (host_id.rfind("C-", 0) == 0) {
     finish({host_id, "", false}, false);
   } else if (host_id.empty() || host_id == "web") {
     RunCredentialWork(
@@ -299,7 +317,8 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
 bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
                                       const json& j, const std::string& host_id,
                                       const DeviceCredential& dev_cred,
-                                      bool registration) {
+                                      bool registration,
+                                      std::optional<int64_t> reconnect_expires) {
   const auto connection = hdl.lock();
   if (!connection || !transmission_manager_->GetUserId(hdl).empty())
     return false;
@@ -353,6 +372,22 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
     json message = {{"type", "login"},
                     {"user_id", return_host_id},
                     {"status", "success"}};
+    const auto version = j.find("reconnect_version");
+    if (reconnect_expires) {
+      message["reconnected"] = true;
+      message["reconnect_version"] = 1;
+      message["reconnect_expires_at"] = *reconnect_expires;
+    } else if (ShouldTrackClientInfo(ret_host_id) && version != j.end() &&
+               version->is_number_integer() && *version == 1) {
+      const auto credential = device_db_manager_->IssueReconnectCredential(ret_host_id);
+      if (credential) {
+        message["reconnect_version"] = 1;
+        message["reconnect_token"] = credential->token;
+        message["reconnect_expires_at"] = credential->expires_at;
+      } else {
+        LOG_WARN("Failed to issue reconnect credential for [{}]", ret_host_id);
+      }
+    }
     AddLoginIceConfig(message, j, ret_host_id);
     send_msg_(hdl, message);
   } else {
@@ -370,6 +405,17 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
   }
 
   return true;
+}
+
+bool SignalNegotiation::revoke_reconnect_credential(websocketpp::connection_hdl hdl) {
+  const auto id = transmission_manager_->GetUserId(hdl);
+  const bool revoked = ShouldTrackClientInfo(id) &&
+      device_db_manager_->RevokeReconnectCredential(id);
+  json reply = {{"type", "revoke_reconnect_credential"}, {"user_id", id},
+                {"status", revoked ? "success" : "fail"}};
+  if (!revoked) reply["reason"] = "Unable to revoke reconnect credential";
+  send_msg_(hdl, reply);
+  return revoked;
 }
 
 bool SignalNegotiation::client_info(websocketpp::connection_hdl hdl,

@@ -254,6 +254,24 @@ The source is the TCP peer IP without its port; request fields and `X-Forwarded-
 
 Registration must explicitly use an empty device ID (native clients) or `web` (Web clients). Logging in with an unknown or expired ID returns the generic authentication failure instead of assigning a replacement ID. Clients must reset their local identity to register again.
 
+### Dedicated reconnect credentials
+
+Native clients opt in with `reconnect_version: 1` during registration or password login. A successful response includes `reconnect_token` (32 cryptographically random bytes encoded as 64 lowercase hexadecimal characters) and `reconnect_expires_at` (Unix seconds). Each device has at most one credential with an absolute 30-day lifetime. SQLite stores only its SHA-256 digest, allowing validation after server restarts. Clients that omit the opt-in retain the existing protocol.
+
+Subsequent reconnects send only the device ID, without its password. Existing session recovery and ICE capability fields can be included:
+
+```json
+{"type":"login","user_id":"123456789","reconnect_version":1,"reconnect_token":"<64 lowercase hexadecimal characters>","session_resume_version":1,"ice_config_version":1}
+```
+
+Success returns `status: "success"`, `reconnected: true`, `reconnect_version: 1` and the original expiry, followed by normal presence updates, session recovery and a fresh heartbeat interval. This path bypasses the Argon2id queue and password source budget without reading or changing password failure counters. Connection and message queue limits still apply. Reconnects neither rotate the credential nor extend its lifetime, so a lost response can be retried.
+
+Credentials authenticate only the device itself; access to another device still requires the existing password/session authorization. Empty, `web`, `web-*` and `C-*` temporary identities do not receive credentials. Another opted-in password login replaces the credential; changing the device password, deleting the device or reaching expiry invalidates it. An authenticated device can revoke its own credential with `{"type":"revoke_reconnect_credential"}`; success returns the same `type` and `status: "success"` without closing active connections.
+
+Invalid credentials receive `Authentication failed` with `reconnect_rejected: true`, without implicit password work. MiniRTC clears the rejected credential and retries password login once on the same connection; a second failure follows existing error handling. Credentials stay in memory for the lifetime of the client connection instance and survive network outages/server restarts. Exiting the app, recreating the instance, switching servers or changing identity requires password authentication; no new plaintext credential file is written. New clients keep using password authentication with older servers.
+
+`Connection diagnostics` adds `reconnect_success_total` and `reconnect_failed_total`. Successful reconnects also count toward `login_success_total` without increasing password work in `Credential diagnostics`.
+
 ### Online capacity and restart recovery
 
 Configure these options in `.env` and recreate the signaling container:
@@ -268,7 +286,7 @@ Configure these options in `.env` and recreate the signaling container:
 | `CROSSDESK_AUTH_SOURCE_PER_MINUTE` | `60` | Starts per IP per minute, 1–6000; shared behind NAT or a reverse proxy |
 | `CROSSDESK_AUTH_TIMEOUT_SECONDS` | `600` | Maximum accepted authentication lifetime, 15–900 seconds |
 
-Keeping 2000 devices online does not require 2000 authentication threads. Only operations that verify passwords use these workers. Start with two, measure throughput on the deployment machine, and increase only with CPU headroom for TLS, heartbeats and database work. Each active Argon2id calculation needs approximately 19 MiB of algorithm memory; waiting requests do not allocate it. Burst recovery time is approximately the request count divided by measured completion throughput, also constrained by source quotas. Choose a deadline covering that recovery time. Shared-egress deployments need source capacity, source rate and deadlines considered together.
+Keeping 2000 devices online does not require 2000 authentication threads. Only operations that verify passwords use these workers. Start with two, measure throughput on the deployment machine, and increase only with CPU headroom for TLS, heartbeats and database work. Each active Argon2id calculation needs approximately 19 MiB of algorithm memory; waiting requests do not allocate it. Password-based burst recovery time is approximately the request count divided by measured completion throughput, also constrained by source quotas. Choose a deadline covering that recovery time. Shared-egress deployments need source capacity, source rate and deadlines considered together.
 
 Existing `.env` settings override new defaults: an existing `CROSSDESK_MAX_CONNECTIONS=2048` remains 2048. The requested TCP listen backlog is 4096, subject to the OS limit, while concurrent unopened connections remain capped at 128. These settings cover signaling and reconnect recovery; sustained online operation, concurrent remote sessions and TURN bandwidth still need tests on the deployment machine.
 

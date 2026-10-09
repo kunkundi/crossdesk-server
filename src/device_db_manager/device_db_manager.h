@@ -26,6 +26,11 @@ struct DeviceCredential {
   bool update;
 };
 
+struct ReconnectCredential {
+  std::string token;
+  int64_t expires_at = 0;
+};
+
 struct OnlineDeviceInfo {
   std::string device_id;
   bool online = false;
@@ -106,6 +111,13 @@ class DeviceDBManager {
                                   const std::string& password,
                                   const DevicePasswordRecord& record);
   bool RemoveDevice(const std::string& device_id);
+  // Only persistent device identities receive credentials. Store the digest,
+  // never the bearer token; successful password login replaces the old token.
+  std::optional<ReconnectCredential> IssueReconnectCredential(
+      const std::string& device_id);
+  std::optional<int64_t> VerifyReconnectCredential(
+      const std::string& device_id, const std::string& token);
+  bool RevokeReconnectCredential(const std::string& device_id);
 
   bool SetDeviceOnline(const std::string& device_id, bool online);
   bool UpdateDeviceClientInfo(const std::string& device_id,
