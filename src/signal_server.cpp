@@ -1020,6 +1020,9 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
           ++diagnostics_.login_success;
           it->second->device_id = login_id;
           it->second->authenticated = true;
+          // Clients may start heartbeats only after login. Give them a full
+          // heartbeat interval even if credential work spent minutes queued.
+          it->second->last_heartbeat = Clock::now();
         }
         if (failure_reason == "Authentication failed")
           ++diagnostics_.authentication_failed;
