@@ -132,6 +132,8 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       "db_path: {}",
       port_, certs_dir_, db_path);
 
+  DevicePassword::CheckSupport();
+
   server_.set_error_channels(websocketpp::log::elevel::none);
   server_.set_access_channels(websocketpp::log::alevel::none);
   server_.init_asio();
@@ -217,9 +219,13 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 2048, 1, 65536);
   auto on_error = [this](std::exception_ptr error) { WorkerFailed(error); };
   application_worker_ =
-      std::make_unique<BoundedExecutor>(1024, max_connections_ + 4, on_error);
+      std::make_unique<BoundedExecutor>(
+          1024, max_connections_ + kMaxCredentialJobs + 4, on_error);
   admin_worker_ = std::make_unique<BoundedExecutor>(32, 0, on_error);
   maintenance_worker_ = std::make_unique<BoundedExecutor>(2, 0, on_error);
+  for (size_t i = 0; i < kCredentialWorkers; ++i)
+    credential_workers_.push_back(
+        std::make_unique<BoundedExecutor>(kCredentialQueueCapacity, 0, on_error));
   server_.set_max_message_size(64 * 1024);
   server_.set_max_http_body_size(16 * 1024);
   server_.set_open_handshake_timeout(10000);
@@ -231,6 +237,7 @@ SignalServer::~SignalServer() {
   // Join before any manager or endpoint is destroyed. Worker completions only
   // post back to the still-owned io_service; no worker accesses a connection.
   if (admin_worker_) admin_worker_->Stop();
+  for (auto& worker : credential_workers_) worker->Stop();
   if (application_worker_) application_worker_->Stop();
   if (maintenance_worker_) maintenance_worker_->Stop();
 }
@@ -490,7 +497,9 @@ void SignalServer::QueueSessionCleanup(
   if (!state->alive.exchange(false) || !state->opened) return;
   ++pending_cleanup_;
   if (!application_worker_->Submit(
-          [this, hdl] {
+          [this, hdl, state] {
+            state->pending_messages -= state->deferred_messages.size();
+            state->deferred_messages.clear();
             // On process shutdown the durable session ledger is the checkpoint.
             // Releasing individual users here would erase it before restart.
             if (stopping_) {
@@ -1015,14 +1024,70 @@ void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
                     websocketpp::close::status::policy_violation);
     return;
   }
-  if (!application_worker_->Submit([this, hdl, state, j = std::move(j)] {
-        if (state->alive) ProcessMessage(hdl, j, state);
-        --state->pending_messages;
-      })) {
+  if (!application_worker_->Submit(
+          [this, hdl, state, j = std::move(j)]() mutable {
+            DispatchMessage(hdl, std::move(j), state);
+          })) {
     --state->pending_messages;
     CloseConnection(hdl, "Server busy",
                     websocketpp::close::status::try_again_later);
   }
+}
+
+void SignalServer::DispatchMessage(
+    websocketpp::connection_hdl hdl, json message,
+    const std::shared_ptr<ConnectionState>& state) {
+  if (state->alive && !stopping_) {
+    if (state->credential_pending) {
+      state->deferred_messages.push_back(std::move(message));
+      return;
+    }
+    ProcessMessage(hdl, message, state);
+  }
+  --state->pending_messages;
+}
+
+bool SignalServer::SubmitCredentialWork(
+    websocketpp::connection_hdl hdl,
+    const std::shared_ptr<ConnectionState>& state,
+    SignalNegotiation::CredentialWork work) {
+  if (stopping_ || !state->alive || state->credential_pending ||
+      credential_jobs_ >= kMaxCredentialJobs)
+    return false;
+  auto job = [this, hdl, state, work = std::move(work)] {
+    std::function<void()> finish;
+    if (!stopping_ && state->alive) finish = work();
+    // At most 34 completions can be outstanding; they have reserved slots so
+    // load cannot strand a connection after consuming a credential-work slot.
+    if (!application_worker_->Submit(
+            [this, hdl, state, finish = std::move(finish)] {
+              --credential_jobs_;
+              state->credential_pending = false;
+              try {
+                if (!stopping_ && state->alive && finish) finish();
+              } catch (const json::exception&) {
+                LOG_WARN("Invalid signaling fields on connection [{}]", state->id);
+              }
+              while (!state->credential_pending &&
+                     !state->deferred_messages.empty()) {
+                auto message = std::move(state->deferred_messages.front());
+                state->deferred_messages.pop_front();
+                DispatchMessage(hdl, std::move(message), state);
+              }
+            },
+            true))
+      throw std::runtime_error("Credential completion reserve exhausted");
+  };
+  for (size_t i = 0; i < credential_workers_.size(); ++i) {
+    auto& worker = credential_workers_[next_credential_worker_++ %
+                                       credential_workers_.size()];
+    if (worker->Submit(job)) {
+      ++credential_jobs_;
+      state->credential_pending = true;
+      return true;
+    }
+  }
+  return false;
 }
 
 void SignalServer::ProcessMessage(
@@ -1038,17 +1103,18 @@ void SignalServer::ProcessMessage(
       }
       return;
     }
+    auto dispatch = [this, hdl, state](SignalNegotiation::CredentialWork work) {
+      return SubmitCredentialWork(hdl, state, std::move(work));
+    };
     switch (HASH_STRING_PIECE(type.c_str())) {
       case "login"_H:
-        if (!signal_negotiation_->login_user(hdl, j, state->source_address))
-          break;
-        session_recovery_->Login(hdl, j);
-        if (presence_manager_) {
-          std::string id = transmission_manager_->GetUserId(hdl);
-          if (!id.empty()) {
-            presence_manager_->OnLogin(id, id, hdl);
-          }
-        }
+        signal_negotiation_->login_user(
+            hdl, j, state->source_address, dispatch, [this, hdl, j] {
+              session_recovery_->Login(hdl, j);
+              const auto id = transmission_manager_->GetUserId(hdl);
+              if (presence_manager_ && !id.empty())
+                presence_manager_->OnLogin(id, id, hdl);
+            });
         break;
       case "session_report"_H:
         session_recovery_->Report(hdl, j);
@@ -1060,10 +1126,12 @@ void SignalServer::ProcessMessage(
         signal_negotiation_->disconnect_peer(hdl, j);
         break;
       case "query_user_id_list"_H:
-        signal_negotiation_->query_user_id_list(hdl, j, state->source_address);
+        signal_negotiation_->query_user_id_list(hdl, j, state->source_address,
+                                                dispatch);
         break;
       case "join_transmission"_H:
-        signal_negotiation_->join_transmission(hdl, j, state->source_address);
+        signal_negotiation_->join_transmission(hdl, j, state->source_address,
+                                               dispatch);
         break;
       case "offer"_H:
         signal_negotiation_->offer(hdl, j);
@@ -1078,7 +1146,8 @@ void SignalServer::ProcessMessage(
         signal_negotiation_->new_candidate_mid(hdl, j);
         break;
       case "change_password"_H:
-        signal_negotiation_->change_password(hdl, j);
+        signal_negotiation_->change_password(hdl, j, state->source_address,
+                                             dispatch);
         break;
       case "turn_credentials"_H:
         signal_negotiation_->turn_credentials(hdl, j);

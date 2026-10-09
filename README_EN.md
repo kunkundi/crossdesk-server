@@ -232,6 +232,14 @@ Warnings for admission pauses, accept/resource errors, pre-open failures, and ev
 
 ### Device password protection
 
+Device passwords remain **6 alphanumeric characters**, generated using OpenSSL `RAND_priv_bytes()` with rejection sampling. Each credential gets an independent 16-byte salt from `RAND_bytes()`. Unavailable randomness or Argon2id fails startup/the operation; there is no fallback to a weak PRNG or SHA-256.
+
+Registration and password changes use **Argon2id v19 with 19 MiB memory, 2 iterations, parallelism 1 and a 32-byte digest**. The existing `password_hash` column contains the `argon2id$v=19$m=19456,t=2,p=1$` prefix and a hex digest; `password_salt` contains a hex salt. Legacy salted SHA-256 records migrate atomically after successful verification without changing the ID or six-character password. Unused legacy records remain subject to device retention. Rehashing does not invalidate old passwords or leaked backups; rotate passwords through the client when necessary. Older servers cannot verify upgraded records; rollback requires a pre-upgrade backup.
+
+Two dedicated workers perform password calculations, with at most 34 jobs including results awaiting commit. Hashing holds neither the database nor the failure-limiter lock. Messages stay ordered per connection; completion rechecks the connection identity and credential snapshot, so stale work cannot overwrite concurrent password changes or restore deleted identities. Missing devices, wrong legacy passwords and malformed records also run one Argon2id calculation to reduce timing differences. Startup checks the actual OpenSSL provider and parameters.
+
+Registration, login, queries, joins and new password-change calculations share admission limits of 60 attempts per source IP per minute and 300 per process per minute, including successful operations. Rate exhaustion returns `Too many credential requests`; a full calculation queue returns `Credential service busy`, both with `retry_after` seconds. Six-character passwords still have limited strength: these budgets and the failure cooldown below constrain online guessing, while slow hashing raises the cost of offline guessing after a database leak.
+
 Each WebSocket connection allows one successful login. Subsequent `login` requests return `Already authenticated` without registering devices, verifying passwords or updating presence. Open a new connection to log in again; an initial failed login can still be retried on the same connection.
 
 `query_user_id_list` and `join_transmission` require a logged-in connection; joining also checks that the requester's identity matches its connection binding. Wrong passwords and unknown device IDs both return `Authentication failed`, without a device list or connection credentials.

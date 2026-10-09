@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 // Failure budgets keyed by transport peer IP and credential target, never a
 // connection handle. Use separate instances for independent auth domains.
@@ -39,6 +40,7 @@ class DeviceAuthLimiter {
  private:
   struct Failures {
     size_t count = 0;
+    size_t pending = 0;
     Clock::time_point expires;
   };
   using Buckets = std::unordered_map<std::string, Failures>;
@@ -51,6 +53,26 @@ class DeviceAuthLimiter {
   std::mutex mutex_;
   Buckets sources_, targets_;
   Clock::time_point next_cleanup_{};
+};
+
+// Admission before expensive work, including successful authentication,
+// registration and password changes. Separate from credential failure budgets.
+class CredentialWorkLimiter {
+ public:
+  explicit CredentialWorkLimiter(
+      DeviceAuthLimiter::Now now = DeviceAuthLimiter::Clock::now)
+      : now_(std::move(now)) {}
+  int Admit(const std::string& source);
+
+ private:
+  struct Window {
+    size_t count = 0;
+    DeviceAuthLimiter::Clock::time_point expires{};
+  };
+  DeviceAuthLimiter::Now now_;
+  std::mutex mutex_;
+  Window global_;
+  std::unordered_map<std::string, Window> sources_;
 };
 
 #endif

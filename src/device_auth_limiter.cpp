@@ -1,6 +1,7 @@
 #include "device_auth_limiter.h"
 
 #include <algorithm>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 
@@ -15,7 +16,7 @@ DeviceAuthLimiter::DeviceAuthLimiter(Now now, size_t source_failure_limit,
 
 void DeviceAuthLimiter::Prune(Buckets& buckets, Clock::time_point now) {
   for (auto it = buckets.begin(); it != buckets.end();) {
-    if (it->second.expires <= now)
+    if (it->second.expires <= now && it->second.pending == 0)
       it = buckets.erase(it);
     else
       ++it;
@@ -24,7 +25,7 @@ void DeviceAuthLimiter::Prune(Buckets& buckets, Clock::time_point now) {
 
 void DeviceAuthLimiter::Record(Buckets& buckets, const std::string& key,
                                size_t limit, Clock::time_point now) {
-  auto result = buckets.try_emplace(key, Failures{0, now + kWindow});
+  auto result = buckets.try_emplace(key, Failures{0, 0, now + kWindow});
   auto& failures = result.first->second;
   // A full cooldown starts at the threshold; blocked requests do not extend it.
   if (++failures.count == limit) failures.expires = now + kWindow;
@@ -33,8 +34,8 @@ void DeviceAuthLimiter::Record(Buckets& buckets, const std::string& key,
 DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
     const std::string& source, const std::string& target,
     const std::function<bool()>& verify) {
-  // Keep check, verification and accounting atomic across concurrent callers.
-  std::lock_guard<std::mutex> lock(mutex_);
+  // Reserve both budgets atomically, then release the lock for slow hashing.
+  std::unique_lock<std::mutex> lock(mutex_);
   const auto now = now_();
   if (now >= next_cleanup_) {
     Prune(sources_, now);
@@ -47,10 +48,11 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
     const auto it = buckets.find(key);
     if (it == buckets.end()) return 0;
     if (it->second.expires <= now) {
-      buckets.erase(it);
-      return 0;
+      it->second.count = 0;
+      it->second.expires = now + kWindow;
     }
-    if (it->second.count < limit) return 0;
+    if (it->second.count < limit)
+      return it->second.count + it->second.pending >= limit ? 1 : 0;
     return static_cast<int>(
         std::chrono::ceil<std::chrono::seconds>(it->second.expires - now)
             .count());
@@ -66,11 +68,66 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
       (!targets_.count(target) && targets_.size() >= kMaxEntries)) {
     return {false, static_cast<int>(kWindow.count())};
   }
-  if (verify()) return {true, 0};
+  for (auto entry : {std::make_pair(&sources_, source_key),
+                     std::make_pair(&targets_, target)}) {
+    auto& bucket =
+        entry.first->try_emplace(entry.second, Failures{0, 0, now + kWindow})
+            .first->second;
+    ++bucket.pending;
+  }
+  lock.unlock();
+  bool authenticated = false;
+  std::exception_ptr error;
+  try {
+    authenticated = verify();
+  } catch (...) {
+    error = std::current_exception();
+  }
+  lock.lock();
+  const auto finished = now_();
+  auto finish = [&](Buckets& buckets, const std::string& key, size_t limit) {
+    auto& bucket = buckets.at(key);
+    --bucket.pending;
+    if (bucket.expires <= finished) {
+      bucket.count = 0;
+      bucket.expires = finished + kWindow;
+    }
+    if (!authenticated) Record(buckets, key, limit, finished);
+    if (bucket.count == 0 && bucket.pending == 0) buckets.erase(key);
+  };
+  finish(sources_, source_key, source_failure_limit_);
+  finish(targets_, target, target_failure_limit_);
+  lock.unlock();
+  if (error) std::rethrow_exception(error);
+  return {authenticated, 0};
+}
 
-  // Success never clears shared failure history: an attacker may know a valid
-  // password for another device. Unknown devices accrue identical failures.
-  Record(sources_, source_key, source_failure_limit_, now);
-  Record(targets_, target, target_failure_limit_, now);
-  return {false, 0};
+int CredentialWorkLimiter::Admit(const std::string& source) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto now = now_();
+  constexpr auto window = std::chrono::minutes(1);
+  for (auto it = sources_.begin(); it != sources_.end();) {
+    if (it->second.expires <= now)
+      it = sources_.erase(it);
+    else
+      ++it;
+  }
+  if (global_.expires <= now) global_ = {0, now + window};
+  const auto key = source.empty() ? "unknown" : source;
+  if (!sources_.count(key) && sources_.size() >= DeviceAuthLimiter::kMaxEntries)
+    return 60;
+  auto& local =
+      sources_.try_emplace(key, Window{0, now + window}).first->second;
+  auto retry = [now](const Window& value, size_t limit) {
+    return value.count < limit
+               ? 0
+               : static_cast<int>(std::chrono::ceil<std::chrono::seconds>(
+                                      value.expires - now)
+                                      .count());
+  };
+  const int delay = std::max(retry(local, 60), retry(global_, 300));
+  if (delay > 0) return delay;
+  ++local.count;
+  ++global_.count;
+  return 0;
 }

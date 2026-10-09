@@ -1,7 +1,6 @@
 #include "device_db_manager.h"
 
-#include <openssl/crypto.h>
-#include <openssl/sha.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <cctype>
@@ -10,7 +9,6 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -566,35 +564,6 @@ void DeviceDBManager::InitDB() {
   }
 }
 
-std::string DeviceDBManager::Sha256(const std::string& str) {
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256(reinterpret_cast<const unsigned char*>(str.c_str()), str.size(), hash);
-
-  std::stringstream ss;
-  for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
-    ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-
-  return ss.str();
-}
-
-std::string DeviceDBManager::GenerateSalt() {
-  static const char charset[] = "0123456789ABCDEF";
-  static std::mt19937 rng(static_cast<unsigned>(
-      std::chrono::steady_clock::now().time_since_epoch().count()));
-  std::uniform_int_distribution<int> dist(0, 15);
-
-  std::string salt;
-  for (int i = 0; i < 16; ++i) {
-    salt += charset[dist(rng)];
-  }
-  return salt;
-}
-
-std::string DeviceDBManager::HashPasswordWithSalt(const std::string& salt,
-                                                  const std::string& password) {
-  return Sha256(salt + password);
-}
-
 bool DeviceDBManager::DeviceIdExists(const std::string& device_id) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   if (db_ == nullptr || device_id.empty()) {
@@ -626,13 +595,17 @@ std::string DeviceDBManager::GenerateDeviceId() {
   const int MAX_ID = 999999999;
   const int MAX_RETRIES = 100;
 
-  std::random_device rd;
-  std::mt19937 rng(rd());
-  std::uniform_int_distribution<int> dist(MIN_ID, MAX_ID);
+  constexpr uint32_t range = MAX_ID - MIN_ID + 1;
+  constexpr uint32_t ceiling = UINT32_MAX - UINT32_MAX % range;
 
   // try to generate unique ID
   for (int attempt = 0; attempt < MAX_RETRIES; ++attempt) {
-    int obfuscated_id = dist(rng);
+    uint32_t random;
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&random), sizeof(random)) !=
+        1)
+      return {};
+    if (random >= ceiling) continue;
+    int obfuscated_id = MIN_ID + random % range;
 
     char buf[10] = {0};
     snprintf(buf, sizeof(buf), "%09d", obfuscated_id);
@@ -649,61 +622,29 @@ std::string DeviceDBManager::GenerateDeviceId() {
   return {};
 }
 
-std::string DeviceDBManager::GeneratePassword() {
-  static const char charset[] =
-      "0123456789"
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-      "abcdefghijklmnopqrstuvwxyz";
-  static std::mt19937 rng(static_cast<unsigned>(
-      std::chrono::steady_clock::now().time_since_epoch().count()));
-  std::uniform_int_distribution<int> dist(0,
-                                          sizeof(charset) - 2);  // exclude '\0'
-
-  std::string pwd;
-  for (int i = 0; i < 6; ++i) {
-    pwd += charset[dist(rng)];
-  }
-  return pwd;
-}
-
 DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
                                             const std::string& password) {
-  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-  if (db_ == nullptr) {
-    LOG_ERROR("Database is not initialized.");
+  if (!device_id.empty() && device_id != "web" && ReadPassword(device_id)) {
+    return VerifyDevice(device_id, password) == 0
+               ? DeviceCredential{device_id, "", false}
+               : DeviceCredential{};
+  }
+  const auto generated = DevicePassword::Generate();
+  if (generated.empty()) return {};
+  const auto record = DevicePassword::Hash(generated);
+  return record ? RegisterDevice(device_id == "web" ? "web" : "", generated,
+                                 *record)
+                : DeviceCredential{};
+}
+
+DeviceCredential DeviceDBManager::RegisterDevice(
+    const std::string& device_id, const std::string& password,
+    const DevicePasswordRecord& record) {
+  if ((!device_id.empty() && device_id != "web") || password.empty() ||
+      !DevicePassword::IsCurrent(record))
     return {};
-  }
-
-  if (!device_id.empty() && device_id != "web") {
-    const char* select_sql =
-        "SELECT password_salt, password_hash FROM devices WHERE device_id = ?;";
-    sqlite3_stmt* stmt = nullptr;
-    int rc = sqlite3_prepare_v2(db_, select_sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-      LOG_ERROR("Failed to prepare select statement.");
-      return {};
-    }
-
-    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
-
-    rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-      // Device exists
-      std::string salt = ColumnText(stmt, 0);
-      std::string stored_hash = ColumnText(stmt, 1);
-      std::string hash = HashPasswordWithSalt(salt, password);
-
-      sqlite3_finalize(stmt);
-      if (stored_hash != hash) {
-        LOG_WARN("Reject existing device [{}] login: password mismatch.",
-                 device_id);
-        return {};
-      }
-      return {device_id, "", false};  // same password
-    }
-    sqlite3_finalize(stmt);
-  }
-
+  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+  if (!db_) return {};
   // Device not exists or device_id is empty — generate new
   const int MAX_RETRIES = 10;
   for (int i = 0; i < MAX_RETRIES; ++i) {
@@ -729,17 +670,10 @@ DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
       continue;
     }
 
-    std::string new_pwd = GeneratePassword();
-    if (new_pwd.empty()) {
-      LOG_ERROR("Failed to generate password.");
-      return {};
-    }
-
-    std::string salt = GenerateSalt();
-    std::string hash = HashPasswordWithSalt(salt, new_pwd);
-
     // Use transaction to reduce race condition
-    sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr);
+    if (sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr) !=
+        SQLITE_OK)
+      return {};
 
     // Double-check ID uniqueness within transaction
     if (DeviceIdExists(new_id)) {
@@ -761,18 +695,22 @@ DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
     }
 
     sqlite3_bind_text(stmt, 1, new_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, salt.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, record.hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, record.salt.c_str(), -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
     if (rc == SQLITE_DONE) {
-      sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr);
+      if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) !=
+          SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return {};
+      }
       // For web clients, return empty password
       if (device_id == "web") {
         return {new_id, "", false};
       }
-      return {new_id, new_pwd, false};
+      return {new_id, password, false};
     } else if (rc == SQLITE_CONSTRAINT) {
       sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
       LOG_WARN(
@@ -792,65 +730,72 @@ DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
   return {};
 }
 
+std::optional<DevicePasswordRecord> DeviceDBManager::ReadPassword(
+    const std::string& device_id) {
+  if (device_id.empty() || device_id.size() > 128 ||
+      device_id.find('\0') != std::string::npos)
+    return std::nullopt;
+  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+  if (!db_) return std::nullopt;
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(
+          db_,
+          "SELECT password_salt,password_hash FROM devices WHERE device_id=?;",
+          -1, &stmt, nullptr) != SQLITE_OK)
+    return std::nullopt;
+  sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+  std::optional<DevicePasswordRecord> result;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    result = DevicePasswordRecord{ColumnText(stmt, 0), ColumnText(stmt, 1)};
+  sqlite3_finalize(stmt);
+  return result;
+}
+
+bool DeviceDBManager::CommitPassword(const std::string& device_id,
+                                     const DevicePasswordRecord& expected,
+                                     const DevicePasswordRecord& replacement) {
+  if (!DevicePassword::IsCurrent(replacement)) return false;
+  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+  if (!db_) return false;
+  // Recheck even when no migration is needed: a concurrent reset/deletion
+  // must invalidate work computed from an older snapshot.
+  const auto current = ReadPassword(device_id);
+  if (!current || !(*current == expected)) return false;
+  if (expected == replacement) return true;
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db_,
+                         "UPDATE devices SET password_salt=?,password_hash=? "
+                         "WHERE device_id=? "
+                         "AND password_salt=? AND password_hash=?;",
+                         -1, &stmt, nullptr) != SQLITE_OK)
+    return false;
+  sqlite3_bind_text(stmt, 1, replacement.salt.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, replacement.hash.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 3, device_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 4, expected.salt.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 5, expected.hash.c_str(), -1, SQLITE_TRANSIENT);
+  const bool success =
+      sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) == 1;
+  sqlite3_finalize(stmt);
+  return success;
+}
+
 int DeviceDBManager::VerifyDevice(const std::string& device_id,
                                   const std::string& password) {
-  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-  if (db_ == nullptr) {
-    LOG_ERROR("Database is not initialized in VerifyDevice.");
-    return -1;
-  }
-
-  const char* sql =
-      "SELECT password_salt, password_hash FROM devices WHERE device_id = ?;";
-
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-    return -1;
-  }
-
-  sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
-
-  const bool exists = sqlite3_step(stmt) == SQLITE_ROW;
-  // Perform the same hash/comparison for missing IDs to reduce the timing
-  // difference between an unknown device and an incorrect password.
-  const std::string salt = exists ? ColumnText(stmt, 0) : "0000000000000000";
-  const std::string stored_hash =
-      exists ? ColumnText(stmt, 1) : std::string(SHA256_DIGEST_LENGTH * 2, '0');
-  sqlite3_finalize(stmt);
-  const std::string hash = HashPasswordWithSalt(salt, password);
-  const bool matches =
-      stored_hash.size() == hash.size() &&
-      CRYPTO_memcmp(stored_hash.data(), hash.data(), hash.size()) == 0;
-  return exists ? (matches ? 0 : -1) : -2;
+  const auto record = ReadPassword(device_id);
+  const auto verified = DevicePassword::Verify(record, password);
+  return record
+             ? (verified && CommitPassword(device_id, *record, *verified) ? 0
+                                                                          : -1)
+             : -2;
 }
 
 bool DeviceDBManager::UpdatePassword(const std::string& device_id,
                                      const std::string& new_password) {
-  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-  if (db_ == nullptr) {
-    LOG_ERROR("Database is not initialized in UpdatePassword.");
-    return false;
-  }
-
-  std::string salt = GenerateSalt();
-  std::string hash = HashPasswordWithSalt(salt, new_password);
-
-  const char* sql =
-      "UPDATE devices SET password_salt = ?, password_hash = ? WHERE device_id "
-      "= ?;";
-
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-    return false;
-  }
-
-  sqlite3_bind_text(stmt, 1, salt.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 2, hash.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 3, device_id.c_str(), -1, SQLITE_TRANSIENT);
-
-  bool success = (sqlite3_step(stmt) == SQLITE_DONE);
-  sqlite3_finalize(stmt);
-  return success;
+  const auto record = ReadPassword(device_id);
+  if (!record) return false;
+  const auto replacement = DevicePassword::Hash(new_password);
+  return replacement && CommitPassword(device_id, *record, *replacement);
 }
 
 bool DeviceDBManager::RemoveDevice(const std::string& device_id) {

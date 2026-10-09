@@ -8,15 +8,17 @@
 #define _DEVICE_DB_MANAGER_H_
 
 #include <sqlite3.h>
-#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "device_password.h"
 
 struct DeviceCredential {
   std::string device_id;
@@ -93,6 +95,16 @@ class DeviceDBManager {
                       const std::string& new_password);
 
   int VerifyDevice(const std::string& device_id, const std::string& password);
+  // Snapshot/compute/commit lets credential workers hash without holding the
+  // SQLite mutex. The signaling worker rechecks identity before committing.
+  std::optional<DevicePasswordRecord> ReadPassword(
+      const std::string& device_id);
+  bool CommitPassword(const std::string& device_id,
+                      const DevicePasswordRecord& expected,
+                      const DevicePasswordRecord& replacement);
+  DeviceCredential RegisterDevice(const std::string& kind,
+                                  const std::string& password,
+                                  const DevicePasswordRecord& record);
   bool RemoveDevice(const std::string& device_id);
 
   bool SetDeviceOnline(const std::string& device_id, bool online);
@@ -153,15 +165,9 @@ class DeviceDBManager {
 
  private:
   void InitDB();
-  std::string Sha256(const std::string& str);
   std::string GenerateDeviceId();
-  std::string GeneratePassword();
-  std::string GenerateSalt();
   bool DeviceIdExists(const std::string& device_id);
   int64_t GetRuntimeLastSeen();
-
-  std::string HashPasswordWithSalt(const std::string& salt,
-                                   const std::string& password);
 
  private:
   std::chrono::steady_clock::time_point read_deadline_ = (std::chrono::steady_clock::time_point::max)();

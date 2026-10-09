@@ -24,6 +24,10 @@ class SessionRecovery;
 
 class SignalNegotiation {
  public:
+  // Run computation on a credential worker; run its returned continuation on
+  // the application worker after checking that the connection is still alive.
+  using CredentialWork = std::function<std::function<void()>()>;
+  using CredentialDispatch = std::function<bool(CredentialWork)>;
   SignalNegotiation(
       std::shared_ptr<TransmissionManager> transmission_manager,
       DeviceDBManager* device_db,
@@ -37,20 +41,27 @@ class SignalNegotiation {
     send_msg_ = send_msg;
   }
 
-  // Returns true only when this request successfully logs in the connection.
+  // Returns true for synchronous success. With a dispatcher, success is
+  // reported by on_login after binding, never when work is merely queued.
   bool login_user(websocketpp::connection_hdl hdl, const json& j,
-                   const std::string& source_address = "");
+                  const std::string& source_address = "",
+                  const CredentialDispatch& dispatch = {},
+                  std::function<void()> on_login = {});
   bool leave_transmission(websocketpp::connection_hdl hdl, const json& j);
   bool disconnect_peer(websocketpp::connection_hdl hdl, const json& j);
   bool query_user_id_list(websocketpp::connection_hdl hdl, const json& j,
-                           const std::string& source_address = "");
+                          const std::string& source_address = "",
+                          const CredentialDispatch& dispatch = {});
   bool join_transmission(websocketpp::connection_hdl hdl, const json& j,
-                          const std::string& source_address = "");
+                         const std::string& source_address = "",
+                         const CredentialDispatch& dispatch = {});
   bool offer(websocketpp::connection_hdl hdl, const json& j);
   bool answer(websocketpp::connection_hdl hdl, const json& j);
   bool new_candidate(websocketpp::connection_hdl hdl, const json& j);
   bool new_candidate_mid(websocketpp::connection_hdl hdl, const json& j);
-  bool change_password(websocketpp::connection_hdl hdl, const json& j);
+  bool change_password(websocketpp::connection_hdl hdl, const json& j,
+                       const std::string& source_address = "",
+                       const CredentialDispatch& dispatch = {});
   bool turn_credentials(websocketpp::connection_hdl hdl, const json& j);
   bool client_info(websocketpp::connection_hdl hdl, const json& j);
   void OnWebClientDisconnect(const std::string& user_id);
@@ -71,15 +82,26 @@ class SignalNegotiation {
   void AddLoginIceConfig(json& message, const json& request,
                          const std::string& user_id) const;
   void AddConnectionIceConfig(json& message, const std::string& user_id) const;
-  bool AuthenticateDevice(const std::string& source_address,
+  void AuthenticateDevice(websocketpp::connection_hdl hdl,
+                          const std::string& source_address,
                           const std::string& device_id,
-                          const std::string& password, json& failure);
+                          const std::string& password, json failure,
+                          const CredentialDispatch& dispatch,
+                          std::function<void()> on_verified);
+  bool CompleteLogin(websocketpp::connection_hdl hdl, const json& request,
+                     const std::string& host_id,
+                     const DeviceCredential& credential, bool registration);
+  void RunCredentialWork(websocketpp::connection_hdl hdl,
+                         const std::string& source_address, json failure,
+                         CredentialWork work,
+                         const CredentialDispatch& dispatch);
 
   std::shared_ptr<TransmissionManager> transmission_manager_;
   DeviceDBManager* device_db_manager_;
   std::shared_ptr<TurnCredentialIssuer> turn_credential_issuer_;
   std::shared_ptr<IceServerConfigIssuer> ice_config_issuer_;
   std::shared_ptr<DeviceAuthLimiter> device_auth_limiter_;
+  CredentialWorkLimiter credential_work_limiter_;
   std::function<void(websocketpp::connection_hdl, json)> send_msg_;
   std::mutex password_change_mutex_;
   std::unordered_map<std::string, PasswordChangeResult>

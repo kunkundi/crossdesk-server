@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -29,8 +30,8 @@
 #include "presence_manager.h"
 #include "resource_monitor.h"
 #include "retention_policy.h"
-#include "signal_negotiation.h"
 #include "session_recovery.h"
+#include "signal_negotiation.h"
 
 using nlohmann::json;
 
@@ -63,6 +64,10 @@ class SignalServer {
 
  private:
   using Clock = std::chrono::steady_clock;
+  static constexpr size_t kCredentialWorkers = 2;
+  static constexpr size_t kCredentialQueueCapacity = 16;
+  static constexpr size_t kMaxCredentialJobs =
+      kCredentialWorkers * (kCredentialQueueCapacity + 1);
   struct ConnectionState {
     uint64_t id = 0;
     std::string source_address;  // Set before publication; transport peer IP.
@@ -72,6 +77,9 @@ class SignalServer {
     server::connection_ptr pending_http;  // Network thread; retains deferred HTTP.
     std::atomic<bool> alive{true};
     std::atomic<size_t> pending_messages{0};
+    // Application worker only. Preserve message order across async hashing.
+    bool credential_pending = false;
+    std::deque<json> deferred_messages;
   };
   void AcceptNext();
   void RetryAccept();
@@ -87,6 +95,11 @@ class SignalServer {
   void ReloadTlsContext();
   void ProcessMessage(websocketpp::connection_hdl hdl, const json& message,
                       const std::shared_ptr<ConnectionState>& state);
+  void DispatchMessage(websocketpp::connection_hdl hdl, json message,
+                       const std::shared_ptr<ConnectionState>& state);
+  bool SubmitCredentialWork(websocketpp::connection_hdl hdl,
+                            const std::shared_ptr<ConnectionState>& state,
+                            SignalNegotiation::CredentialWork work);
   void CompleteHttp(websocketpp::connection_hdl hdl,
                     AdminHttpResponse response);
   void WorkerFailed(std::exception_ptr error);
@@ -149,6 +162,10 @@ class SignalServer {
   bool backpressure_posted_ = false;
   std::unique_ptr<BoundedExecutor> application_worker_, admin_worker_,
       maintenance_worker_;
+  std::vector<std::unique_ptr<BoundedExecutor>> credential_workers_;
+  size_t next_credential_worker_ = 0;  // Application worker only.
+  size_t credential_jobs_ =
+      0;  // Includes completions waiting on the application worker.
 
   std::shared_ptr<TransmissionManager> transmission_manager_;
   std::unique_ptr<DeviceDBManager> device_db_manager_;

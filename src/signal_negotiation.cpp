@@ -144,26 +144,72 @@ void SignalNegotiation::AddConnectionIceConfig(
   }
 }
 
-bool SignalNegotiation::AuthenticateDevice(const std::string& source_address,
-                                           const std::string& device_id,
-                                           const std::string& password,
-                                           json& failure) {
-  failure["reason"] = "Authentication failed";
-  if (!ValidDeviceCredentials(device_id, password)) return false;
-  const auto result = device_auth_limiter_->Verify(
-      source_address, device_id, [&] {
-        return device_db_manager_->VerifyDevice(device_id, password) == 0;
-      });
-  if (result.retry_after > 0) {
-    failure["reason"] = "Too many authentication attempts";
-    failure["retry_after"] = result.retry_after;
+void SignalNegotiation::RunCredentialWork(websocketpp::connection_hdl hdl,
+                                          const std::string& source_address,
+                                          json failure, CredentialWork work,
+                                          const CredentialDispatch& dispatch) {
+  const int delay = credential_work_limiter_.Admit(source_address);
+  if (delay > 0) {
+    failure["reason"] = "Too many credential requests";
+    failure["retry_after"] = delay;
+    send_msg_(hdl, failure);
+  } else if (!dispatch) {
+    work()();
+  } else if (!dispatch(std::move(work))) {
+    failure["reason"] = "Credential service busy";
+    failure["retry_after"] = 1;
+    send_msg_(hdl, failure);
   }
-  return result.authenticated;
+}
+
+void SignalNegotiation::AuthenticateDevice(
+    websocketpp::connection_hdl hdl, const std::string& source_address,
+    const std::string& device_id, const std::string& password, json failure,
+    const CredentialDispatch& dispatch, std::function<void()> on_verified) {
+  failure["reason"] = "Authentication failed";
+  if (!ValidDeviceCredentials(device_id, password)) {
+    send_msg_(hdl, failure);
+    return;
+  }
+  const auto identity = transmission_manager_->GetUserId(hdl);
+  const auto record = device_db_manager_->ReadPassword(device_id);
+  RunCredentialWork(
+      hdl, source_address, failure,
+      [this, hdl, source_address, device_id, password, record, identity,
+       failure,
+       on_verified = std::move(on_verified)]() -> std::function<void()> {
+        std::optional<DevicePasswordRecord> verified;
+        auto result =
+            device_auth_limiter_->Verify(source_address, device_id, [&] {
+              verified = DevicePassword::Verify(record, password);
+              return verified.has_value();
+            });
+        return [this, hdl, device_id, record, identity, verified, result,
+                failure, on_verified]() mutable {
+          if (hdl.expired() ||
+              transmission_manager_->GetUserId(hdl) != identity)
+            return;
+          if (result.authenticated && record && verified &&
+              device_db_manager_->CommitPassword(device_id, *record,
+                                                 *verified)) {
+            on_verified();
+          } else {
+            if (result.retry_after > 0) {
+              failure["reason"] = "Too many authentication attempts";
+              failure["retry_after"] = result.retry_after;
+            }
+            send_msg_(hdl, failure);
+          }
+        };
+      },
+      dispatch);
 }
 
 bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
-                                  const json& j,
-                                  const std::string& source_address) {
+                                   const json& j,
+                                   const std::string& source_address,
+                                   const CredentialDispatch& dispatch,
+                                   std::function<void()> on_login) {
   // Login and connection cleanup run on the same application worker. Check
   // its binding before registration/authentication, not the network thread's
   // asynchronously updated authenticated flag. Pin the handle through binding.
@@ -185,7 +231,6 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
 
   std::string host_id;
   std::string password;
-  std::string return_host_id;
 
   if (host_id_with_pwd.find("@") != std::string::npos) {
     host_id = host_id_with_pwd.substr(0, host_id_with_pwd.find("@"));
@@ -204,21 +249,55 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     return false;
   }
 
-  if (host_id.rfind("C-", 0) != 0) {
-    const bool registration = host_id.empty() || host_id == "web";
-    DeviceCredential dev_cred;
-    if (registration) {
-      dev_cred = device_db_manager_->AddDevice(host_id, password);
-    } else {
-      // A supplied ID is a login, not registration. Automatically registering
-      // unknown IDs reveals existence even if query/join errors are generic.
-      if (!AuthenticateDevice(source_address, host_id, password, failure)) {
-        send_msg_(hdl, failure);
-        return false;
-      }
-      dev_cred = {host_id, "", false};
-    }
+  auto completed = std::make_shared<bool>(false);
+  auto finish = [this, hdl, j, host_id, completed, on_login](
+                    const DeviceCredential& credential, bool registration) {
+    *completed = CompleteLogin(hdl, j, host_id, credential, registration);
+    if (*completed && on_login) on_login();
+  };
+  if (host_id.rfind("C-", 0) == 0) {
+    finish({host_id, "", false}, false);
+  } else if (host_id.empty() || host_id == "web") {
+    RunCredentialWork(
+        hdl, source_address, failure,
+        [this, hdl, host_id, failure, finish]() -> std::function<void()> {
+          const auto password = DevicePassword::Generate();
+          const auto record =
+              password.empty() ? std::nullopt : DevicePassword::Hash(password);
+          return [this, hdl, host_id, failure, finish, password, record] {
+            if (hdl.expired() || !transmission_manager_->GetUserId(hdl).empty())
+              return;
+            if (!record) {
+              send_msg_(hdl, failure);
+              return;
+            }
+            finish(
+                device_db_manager_->RegisterDevice(host_id, password, *record),
+                true);
+          };
+        },
+        dispatch);
+  } else {
+    AuthenticateDevice(
+        hdl, source_address, host_id, password, failure, dispatch,
+        [finish, host_id] { finish({host_id, "", false}, false); });
+  }
+  return *completed;
+}
 
+bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
+                                      const json& j, const std::string& host_id,
+                                      const DeviceCredential& dev_cred,
+                                      bool registration) {
+  const auto connection = hdl.lock();
+  if (!connection || !transmission_manager_->GetUserId(hdl).empty())
+    return false;
+  json failure = {{"type", "login"},
+                  {"user_id", ""},
+                  {"status", "fail"},
+                  {"reason", "Authentication failed"}};
+  std::string return_host_id;
+  if (host_id.rfind("C-", 0) != 0) {
     std::string ret_host_id = dev_cred.device_id;
     std::string ret_password = dev_cred.password;
     bool update_password = dev_cred.update;
@@ -402,8 +481,9 @@ bool SignalNegotiation::disconnect_peer(websocketpp::connection_hdl hdl,
 }
 
 bool SignalNegotiation::query_user_id_list(websocketpp::connection_hdl hdl,
-                                          const json& j,
-                                          const std::string& source_address) {
+                                           const json& j,
+                                           const std::string& source_address,
+                                           const CredentialDispatch& dispatch) {
   std::string transmission_id_pwd;
   if (!GetStringField(j, "transmission_id", transmission_id_pwd)) {
     LOG_ERROR("query_user_id_list missing or invalid field: transmission_id");
@@ -431,26 +511,27 @@ bool SignalNegotiation::query_user_id_list(websocketpp::connection_hdl hdl,
     send_msg_(hdl, failure);
     return true;
   }
-  if (AuthenticateDevice(source_address, transmission_id, password, failure)) {
-    std::vector<std::string> user_id_list =
-        transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
+  AuthenticateDevice(
+      hdl, source_address, transmission_id, password, failure, dispatch,
+      [this, hdl, transmission_id] {
+        std::vector<std::string> user_id_list =
+            transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
 
-    json message = {{"type", "user_id_list"},
-                    {"transmission_id", transmission_id},
-                    {"user_id_list", user_id_list},
-                    {"status", "success"}};
+        json message = {{"type", "user_id_list"},
+                        {"transmission_id", transmission_id},
+                        {"user_id_list", user_id_list},
+                        {"status", "success"}};
 
-    send_msg_(hdl, message);
-  } else {
-    send_msg_(hdl, failure);
-  }
+        send_msg_(hdl, message);
+      });
 
   return true;
 }
 
 bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
-                                         const json& j,
-                                         const std::string& source_address) {
+                                          const json& j,
+                                          const std::string& source_address,
+                                          const CredentialDispatch& dispatch) {
   std::string transmission_id_pwd;
   if (!GetStringField(j, "transmission_id", transmission_id_pwd)) {
     LOG_ERROR("join_transmission missing or invalid field: transmission_id");
@@ -483,40 +564,40 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
     send_msg_(hdl, failure);
     return true;
   }
-  if (AuthenticateDevice(source_address, transmission_id, password, failure)) {
-    std::string host_id =
-        transmission_manager_->GetHostIdOfTransmission(transmission_id);
-    websocketpp::connection_hdl host_hdl =
-        transmission_manager_->GetWsHandle(host_id);
+  AuthenticateDevice(
+      hdl, source_address, transmission_id, password, failure, dispatch,
+      [this, hdl, transmission_id, user_id] {
+        std::string host_id =
+            transmission_manager_->GetHostIdOfTransmission(transmission_id);
+        websocketpp::connection_hdl host_hdl =
+            transmission_manager_->GetWsHandle(host_id);
 
-    if (host_id.empty() || host_hdl.expired()) {
-      LOG_WARN("Remote [{}] is unavailable, cannot join transmission",
-               transmission_id.c_str());
-      json message = {{"type", "user_join_transmission"},
-                      {"transmission_id", transmission_id},
-                      {"status", "failed"},
-                      {"reason", "Remote unavailable"}};
-      send_msg_(hdl, message);
-      return true;
-    }
+        if (host_id.empty() || host_hdl.expired()) {
+          LOG_WARN("Remote [{}] is unavailable, cannot join transmission",
+                   transmission_id.c_str());
+          json message = {{"type", "user_join_transmission"},
+                          {"transmission_id", transmission_id},
+                          {"status", "failed"},
+                          {"reason", "Remote unavailable"}};
+          send_msg_(hdl, message);
+          return;
+        }
 
-    if (!transmission_manager_->BindGuestToTransmission(user_id, transmission_id,
-                                                       hdl)) {
-      LOG_WARN("Reject connection request without a valid guest binding");
-      return false;
-    }
+        if (!transmission_manager_->BindGuestToTransmission(
+                user_id, transmission_id, hdl)) {
+          LOG_WARN("Reject connection request without a valid guest binding");
+          return;
+        }
 
-    json message = {{"type", "user_join_transmission"},
-                    {"transmission_id", transmission_id},
-                    {"user_id", user_id},
-                    {"status", "success"}};
+        json message = {{"type", "user_join_transmission"},
+                        {"transmission_id", transmission_id},
+                        {"user_id", user_id},
+                        {"status", "success"}};
 
-    if (recovery_) recovery_->Issue(transmission_id, host_id, user_id, hdl);
-    AddConnectionIceConfig(message, host_id);
-    send_msg_(host_hdl, message);
-  } else {
-    send_msg_(hdl, failure);
-  }
+        if (recovery_) recovery_->Issue(transmission_id, host_id, user_id, hdl);
+        AddConnectionIceConfig(message, host_id);
+        send_msg_(host_hdl, message);
+      });
 
   return true;
 }
@@ -669,74 +750,85 @@ bool SignalNegotiation::new_candidate_mid(websocketpp::connection_hdl hdl,
 }
 
 bool SignalNegotiation::change_password(websocketpp::connection_hdl hdl,
-                                        const json& j) {
-  constexpr size_t kMaxRememberedPasswordChanges = 4096;
-  constexpr size_t kMaxPasswordChangeRequestIdLength = 128;
-  json message = {{"type", "change_password"}};
+                                        const json& j,
+                                        const std::string& source_address,
+                                        const CredentialDispatch& dispatch) {
+  json message = {{"type", "change_password"}, {"status", "fail"}};
   std::string request_id;
   if (!GetStringField(j, "request_id", request_id) || request_id.empty() ||
-      request_id.size() > kMaxPasswordChangeRequestIdLength) {
-    message["status"] = "fail";
+      request_id.size() > 128 || request_id.find('\0') != std::string::npos) {
     message["reason"] = "Missing or invalid request ID";
     send_msg_(hdl, message);
     return true;
   }
   message["request_id"] = request_id;
-
   const std::string user_id = transmission_manager_->GetUserId(hdl);
   message["user_id"] = user_id;
-
+  std::string new_password;
   if (user_id.empty()) {
-    message["status"] = "fail";
     message["reason"] = "Not authenticated";
-  } else if (user_id.rfind("C-", 0) == 0 ||
-             user_id.rfind("web-", 0) == 0) {
-    // Controller and browser identities are temporary and are not authenticated
-    // against a persisted device password.
-    message["status"] = "fail";
+  } else if (user_id.rfind("C-", 0) == 0 || user_id.rfind("web-", 0) == 0) {
     message["reason"] = "Password changes are not allowed for this identity";
+  } else if (!GetStringField(j, "new_password", new_password) ||
+             new_password.size() != 6 ||
+             !DevicePassword::ValidInput(new_password)) {
+    message["reason"] = "Password must contain exactly 6 characters";
   } else {
-    std::string new_password;
-    if (!GetStringField(j, "new_password", new_password) ||
-        new_password.size() != 6) {
-      message["status"] = "fail";
-      message["reason"] = "Password must contain exactly 6 characters";
-    } else {
-      const std::string cache_key = user_id + "\n" + request_id;
-      const std::string password_fingerprint =
-          PasswordFingerprint(new_password);
+    const auto cache_key = user_id + "\n" + request_id;
+    const auto fingerprint = PasswordFingerprint(new_password);
+    {
       std::lock_guard<std::mutex> lock(password_change_mutex_);
       const auto cached = password_change_results_.find(cache_key);
       if (cached != password_change_results_.end()) {
-        if (cached->second.password_fingerprint != password_fingerprint) {
-          message["status"] = "fail";
-          message["reason"] = "Request ID was already used";
-        } else {
+        if (cached->second.password_fingerprint == fingerprint)
           message = cached->second.response;
-          LOG_INFO("Replay password change result for authenticated client "
-                   "[{}] request [{}]",
-                   user_id, request_id);
-        }
-      } else if (!device_db_manager_->UpdatePassword(user_id, new_password)) {
-        message["status"] = "fail";
-        message["reason"] = "Failed to update password";
-      } else {
-        message["status"] = "success";
-        password_change_results_.emplace(
-            cache_key, PasswordChangeResult{password_fingerprint, message});
-        password_change_result_order_.push_back(cache_key);
-        while (password_change_result_order_.size() >
-               kMaxRememberedPasswordChanges) {
-          password_change_results_.erase(
-              password_change_result_order_.front());
-          password_change_result_order_.pop_front();
-        }
-        LOG_INFO("Authenticated client [{}] changed its device password",
-                 user_id);
+        else
+          message["reason"] = "Request ID was already used";
+        send_msg_(hdl, message);
+        return true;
       }
     }
+    const auto record = device_db_manager_->ReadPassword(user_id);
+    RunCredentialWork(
+        hdl, source_address, message,
+        [this, hdl, user_id, new_password, record, message, cache_key,
+         fingerprint]() -> std::function<void()> {
+          const auto replacement = DevicePassword::Hash(new_password);
+          return [this, hdl, user_id, record, replacement, message, cache_key,
+                  fingerprint]() mutable {
+            if (hdl.expired() ||
+                transmission_manager_->GetUserId(hdl) != user_id)
+              return;
+            std::lock_guard<std::mutex> lock(password_change_mutex_);
+            const auto cached = password_change_results_.find(cache_key);
+            if (cached != password_change_results_.end()) {
+              if (cached->second.password_fingerprint == fingerprint)
+                message = cached->second.response;
+              else
+                message["reason"] = "Request ID was already used";
+            } else if (!record || !replacement ||
+                       !device_db_manager_->CommitPassword(user_id, *record,
+                                                           *replacement)) {
+              message["reason"] = "Failed to update password";
+            } else {
+              message["status"] = "success";
+              password_change_results_.emplace(
+                  cache_key, PasswordChangeResult{fingerprint, message});
+              password_change_result_order_.push_back(cache_key);
+              while (password_change_result_order_.size() > 4096) {
+                password_change_results_.erase(
+                    password_change_result_order_.front());
+                password_change_result_order_.pop_front();
+              }
+              LOG_INFO("Authenticated client [{}] changed its device password",
+                       user_id);
+            }
+            send_msg_(hdl, message);
+          };
+        },
+        dispatch);
+    return true;
   }
-
   send_msg_(hdl, message);
   return true;
 }
