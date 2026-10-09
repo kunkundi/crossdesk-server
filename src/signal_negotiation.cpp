@@ -185,7 +185,7 @@ void SignalNegotiation::AuthenticateDevice(
               return verified.has_value();
             });
         return [this, hdl, device_id, record, identity, verified, result,
-                failure, on_verified]() mutable {
+                failure = failure, on_verified]() mutable {
           if (hdl.expired() ||
               transmission_manager_->GetUserId(hdl) != identity)
             return;
@@ -794,8 +794,8 @@ bool SignalNegotiation::change_password(websocketpp::connection_hdl hdl,
         [this, hdl, user_id, new_password, record, message, cache_key,
          fingerprint]() -> std::function<void()> {
           const auto replacement = DevicePassword::Hash(new_password);
-          return [this, hdl, user_id, record, replacement, message, cache_key,
-                  fingerprint]() mutable {
+          return [this, hdl, user_id, record, replacement, message = message,
+                  cache_key, fingerprint]() mutable {
             if (hdl.expired() ||
                 transmission_manager_->GetUserId(hdl) != user_id)
               return;
