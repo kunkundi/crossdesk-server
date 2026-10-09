@@ -164,6 +164,19 @@ bool SignalNegotiation::AuthenticateDevice(const std::string& source_address,
 bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
                                   const json& j,
                                   const std::string& source_address) {
+  // Login and connection cleanup run on the same application worker. Check
+  // its binding before registration/authentication, not the network thread's
+  // asynchronously updated authenticated flag. Pin the handle through binding.
+  const auto connection = hdl.lock();
+  if (!connection) return false;
+  if (!transmission_manager_->GetUserId(hdl).empty()) {
+    send_msg_(hdl, {{"type", "login"},
+                    {"user_id", ""},
+                    {"status", "fail"},
+                    {"reason", "Already authenticated"}});
+    return false;
+  }
+
   std::string host_id_with_pwd;
   if (!GetStringField(j, "user_id", host_id_with_pwd)) {
     LOG_ERROR("login_user missing or invalid field: user_id");
@@ -188,19 +201,20 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
                   {"reason", "Authentication failed"}};
   if (!ValidDeviceCredentials(host_id, password)) {
     send_msg_(hdl, failure);
-    return true;
+    return false;
   }
 
   if (host_id.rfind("C-", 0) != 0) {
+    const bool registration = host_id.empty() || host_id == "web";
     DeviceCredential dev_cred;
-    if (host_id.empty() || host_id == "web") {
+    if (registration) {
       dev_cred = device_db_manager_->AddDevice(host_id, password);
     } else {
       // A supplied ID is a login, not registration. Automatically registering
       // unknown IDs reveals existence even if query/join errors are generic.
       if (!AuthenticateDevice(source_address, host_id, password, failure)) {
         send_msg_(hdl, failure);
-        return true;
+        return false;
       }
       dev_cred = {host_id, "", false};
     }
@@ -211,8 +225,19 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
 
     if (ret_host_id.empty()) {
       send_msg_(hdl, failure);
-      return true;
+      return false;
     }
+
+    if (!transmission_manager_->BindUserToWsHandle(ret_host_id, hdl)) {
+      // Only remove credentials created by this request; an existing device
+      // must survive a failed connection binding.
+      if (registration && !device_db_manager_->RemoveDevice(ret_host_id)) {
+        LOG_ERROR("Failed to remove unbound registration [{}]", ret_host_id);
+      }
+      send_msg_(hdl, failure);
+      return false;
+    }
+    transmission_manager_->BindHostToTransmission(ret_host_id, ret_host_id);
 
     bool update_success = ret_host_id != "" && update_password;
     bool login_success =
@@ -231,39 +256,27 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
       return_host_id = ret_host_id;
     }
 
-    bool success = transmission_manager_->BindUserToWsHandle(ret_host_id, hdl);
-    if (success) transmission_manager_->BindHostToTransmission(ret_host_id, ret_host_id);
-
-    if (success) {
-      if (ShouldTrackClientInfo(ret_host_id) &&
-          !device_db_manager_->UpdateDeviceClientInfo(ret_host_id, "", "")) {
-        LOG_WARN("Failed to clear client information for [{}]", ret_host_id);
-      }
-      json message = {{"type", "login"},
-                      {"user_id", return_host_id},
-                      {"status", "success"}};
-      AddLoginIceConfig(message, j, ret_host_id);
-      send_msg_(hdl, message);
-    } else {
-      json message = {
-          {"type", "login"}, {"user_id", return_host_id}, {"status", "fail"}};
-      send_msg_(hdl, message);
+    if (ShouldTrackClientInfo(ret_host_id) &&
+        !device_db_manager_->UpdateDeviceClientInfo(ret_host_id, "", "")) {
+      LOG_WARN("Failed to clear client information for [{}]", ret_host_id);
     }
+    json message = {{"type", "login"},
+                    {"user_id", return_host_id},
+                    {"status", "success"}};
+    AddLoginIceConfig(message, j, ret_host_id);
+    send_msg_(hdl, message);
   } else {
-    bool success = transmission_manager_->BindUserToWsHandle(host_id, hdl);
-    if (success) transmission_manager_->BindHostToTransmission(host_id, host_id);
+    if (!transmission_manager_->BindUserToWsHandle(host_id, hdl)) {
+      send_msg_(hdl, failure);
+      return false;
+    }
+    transmission_manager_->BindHostToTransmission(host_id, host_id);
     LOG_INFO("Receive login request with id [{}]", host_id);
 
-    if (success) {
-      json message = {
-          {"type", "login"}, {"user_id", host_id}, {"status", "success"}};
-      AddLoginIceConfig(message, j, host_id);
-      send_msg_(hdl, message);
-    } else {
-      json message = {
-          {"type", "login"}, {"user_id", host_id}, {"status", "fail"}};
-      send_msg_(hdl, message);
-    }
+    json message = {
+        {"type", "login"}, {"user_id", host_id}, {"status", "success"}};
+    AddLoginIceConfig(message, j, host_id);
+    send_msg_(hdl, message);
   }
 
   return true;

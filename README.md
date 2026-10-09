@@ -246,6 +246,8 @@ sudo docker compose up -d --no-build
 
 ### 设备密码验证保护
 
+同一 WebSocket 连接只允许一次成功登录。后续 `login` 请求返回 `Already authenticated`，不会再注册设备、验证密码或更新在线状态；如需重新登录，请建立新连接。首次登录失败后仍可在原连接重试。
+
 `query_user_id_list` 和 `join_transmission` 要求连接先完成登录，加入会话时还校验请求者身份与连接绑定。设备密码错误和设备 ID 不存在均返回 `Authentication failed`，不会返回设备列表或连接凭据。
 
 设备登录、查询和加入会话共用失败计数：15 分钟内，同一来源 IP 失败 20 次，或同一目标设备失败 5 次，将从达到阈值时起冷却 15 分钟。冷却期间跳过密码验证（包括正确密码），返回 `Too many authentication attempts` 和以秒计的 `retry_after`。重连、更换控制端 ID、切换接口或成功验证其他设备都不会清除失败计数；被限流的请求不延长冷却时间。已有远控会话不受影响。

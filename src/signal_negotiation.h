@@ -37,6 +37,7 @@ class SignalNegotiation {
     send_msg_ = send_msg;
   }
 
+  // Returns true only when this request successfully logs in the connection.
   bool login_user(websocketpp::connection_hdl hdl, const json& j,
                    const std::string& source_address = "");
   bool leave_transmission(websocketpp::connection_hdl hdl, const json& j);

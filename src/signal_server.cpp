@@ -1039,9 +1039,9 @@ void SignalServer::ProcessMessage(
     }
     switch (HASH_STRING_PIECE(type.c_str())) {
       case "login"_H:
-        signal_negotiation_->login_user(hdl, j, state->source_address);
-        if (!transmission_manager_->GetUserId(hdl).empty())
-          session_recovery_->Login(hdl, j);
+        if (!signal_negotiation_->login_user(hdl, j, state->source_address))
+          break;
+        session_recovery_->Login(hdl, j);
         if (presence_manager_) {
           std::string id = transmission_manager_->GetUserId(hdl);
           if (!id.empty()) {

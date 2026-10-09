@@ -228,6 +228,8 @@ Warnings for admission pauses, accept/resource errors, pre-open failures, and ev
 
 ### Device password protection
 
+Each WebSocket connection allows one successful login. Subsequent `login` requests return `Already authenticated` without registering devices, verifying passwords or updating presence. Open a new connection to log in again; an initial failed login can still be retried on the same connection.
+
 `query_user_id_list` and `join_transmission` require a logged-in connection; joining also checks that the requester's identity matches its connection binding. Wrong passwords and unknown device IDs both return `Authentication failed`, without a device list or connection credentials.
 
 Device login, queries and joins share failure counts. Within a 15-minute window, 20 failures from one source IP or 5 failures against one target device start a 15-minute cooldown at the threshold. During cooldown, password verification is skipped even for correct passwords; responses include `Too many authentication attempts` and `retry_after` in seconds. Reconnecting, changing controller IDs, switching endpoints or successfully authenticating other devices does not clear failures. Blocked requests do not extend cooldown. Existing remote-control sessions remain active.
