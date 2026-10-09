@@ -16,7 +16,6 @@
 
 namespace {
 
-constexpr long kRecoveredSessionCleanupDelayMs = 120000;
 constexpr int kDefaultTurnCredentialTtlSeconds = 3600;
 constexpr auto kDiagnosticInterval = std::chrono::seconds(60);
 constexpr auto kDiagnosticWarningInterval = std::chrono::seconds(30);
@@ -133,6 +132,22 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       port_, certs_dir_, db_path);
 
   DevicePassword::CheckSupport();
+  credential_worker_count_ = EnvMillis("CROSSDESK_AUTH_WORKERS", 2, 1, 32);
+  credential_timeout_seconds_ =
+      EnvMillis("CROSSDESK_AUTH_TIMEOUT_SECONDS", 600, 15, 900);
+  const auto credential_capacity =
+      EnvMillis("CROSSDESK_AUTH_QUEUE_CAPACITY", 4096, 1, 16384);
+  const auto source_capacity =
+      EnvMillis("CROSSDESK_AUTH_SOURCE_CAPACITY", 256, 1, 4096);
+  const auto source_rate =
+      EnvMillis("CROSSDESK_AUTH_SOURCE_PER_MINUTE", 60, 1, 6000);
+  credential_queue_ = std::make_unique<CredentialQueue>(
+      credential_worker_count_, credential_capacity, source_capacity);
+  LOG_INFO("Credential capacity: workers={} outstanding_limit={} "
+           "source_outstanding_limit={} source_per_minute={} timeout_seconds={} "
+           "global_rate_limit=disabled", credential_worker_count_,
+           credential_capacity, source_capacity, source_rate,
+           credential_timeout_seconds_);
 
   server_.set_error_channels(websocketpp::log::elevel::none);
   server_.set_access_channels(websocketpp::log::alevel::none);
@@ -176,12 +191,13 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       });
   session_recovery_ = std::make_unique<SessionRecovery>(db_path,
       device_db_manager_.get(), transmission_manager_,
-      [this](websocketpp::connection_hdl hdl, json msg) { SendMsg(hdl, std::move(msg)); });
+      [this](websocketpp::connection_hdl hdl, json msg) { SendMsg(hdl, std::move(msg)); },
+      std::max(120, credential_timeout_seconds_ + 15));
   RestorePersistedRemoteControlSessions(transmission_manager_,
                                         device_db_manager_.get(), session_recovery_.get());
   signal_negotiation_ = std::make_unique<SignalNegotiation>(
       transmission_manager_, device_db_manager_.get(), nullptr,
-      CreateIceServerConfigIssuer());
+      CreateIceServerConfigIssuer(), nullptr, source_rate);
   signal_negotiation_->SetSessionRecovery(session_recovery_.get());
   signal_negotiation_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg,
                                                     this, std::placeholders::_1,
@@ -216,16 +232,17 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       notification_read_service_.get());
   admin_controller_->SetSessionRecovery(session_recovery_.get());
   admin_read_controller_->SetSessionRecovery(session_recovery_.get());
-  max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 2048, 1, 65536);
+  max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 8192, 1, 65536);
   auto on_error = [this](std::exception_ptr error) { WorkerFailed(error); };
   application_worker_ =
       std::make_unique<BoundedExecutor>(
-          1024, max_connections_ + kMaxCredentialJobs + 4, on_error);
+          std::max<size_t>(1024, credential_capacity),
+          max_connections_ + credential_worker_count_ + 4, on_error);
   admin_worker_ = std::make_unique<BoundedExecutor>(32, 0, on_error);
   maintenance_worker_ = std::make_unique<BoundedExecutor>(2, 0, on_error);
-  for (size_t i = 0; i < kCredentialWorkers; ++i)
+  for (size_t i = 0; i < credential_worker_count_; ++i)
     credential_workers_.push_back(
-        std::make_unique<BoundedExecutor>(kCredentialQueueCapacity, 0, on_error));
+        std::make_unique<BoundedExecutor>(1, 0, on_error));
   server_.set_max_message_size(64 * 1024);
   server_.set_max_http_body_size(16 * 1024);
   server_.set_open_handshake_timeout(10000);
@@ -344,13 +361,17 @@ void SignalServer::LogConnectionDiagnostics() {
       "accept_failures_total={} init_resource_failures_total={} "
       "connection_limit_checks_total={} unopened_limit_checks_total={} "
       "fd_limit_checks_total={} fd_sample_failed_checks_total={} "
-      "event_loop_stalls_total={}",
+      "event_loop_stalls_total={} login_success_total={} "
+      "authentication_failed_total={} credential_busy_replies_total={} "
+      "authentication_cooldown_replies_total={} authentication_timeouts_total={}",
       DescribeConnectionResources(), diagnostics_.accepted, diagnostics_.opened,
       diagnostics_.preopen_failed,
       diagnostics_.accept_failed, diagnostics_.init_resource_failed,
       diagnostics_.connection_limit_checks, diagnostics_.unopened_limit_checks,
       diagnostics_.fd_limit_checks, diagnostics_.fd_sample_failed_checks,
-      diagnostics_.loop_stalls);
+      diagnostics_.loop_stalls, diagnostics_.login_success,
+      diagnostics_.authentication_failed, diagnostics_.credential_busy,
+      diagnostics_.authentication_throttled, diagnostics_.authentication_timeouts);
 }
 
 void SignalServer::AcceptNext() {
@@ -440,6 +461,7 @@ void SignalServer::AcceptNext() {
       con->get_raw_socket() = std::move(*socket);
       auto state = std::make_shared<ConnectionState>();
       state->id = next_connection_id_++;
+      state->handle = con->get_handle();
       // Read transport metadata on the network thread. Never use forwarded
       // headers or source ports as authentication rate-limit keys.
       asio::error_code peer_error;
@@ -498,7 +520,9 @@ void SignalServer::QueueSessionCleanup(
   ++pending_cleanup_;
   if (!application_worker_->Submit(
           [this, hdl, state] {
+            credential_queue_->Cancel(state->id);
             state->pending_messages -= state->deferred_messages.size();
+            deferred_message_count_ -= state->deferred_messages.size();
             state->deferred_messages.clear();
             // On process shutdown the durable session ledger is the checkpoint.
             // Releasing individual users here would erase it before restart.
@@ -679,7 +703,8 @@ void SignalServer::ScheduleRuntimeHeartbeat() {
 
 void SignalServer::ScheduleRecoveredSessionCleanup() {
   server_.set_timer(
-      kRecoveredSessionCleanupDelayMs, [this](websocketpp::lib::error_code ec) {
+      std::max(120, credential_timeout_seconds_ + 15) * 1000,
+      [this](websocketpp::lib::error_code ec) {
         if (ec || stopping_) return;
         if (!application_worker_->Submit(
                 [this] {
@@ -803,7 +828,11 @@ void SignalServer::ScheduleMaintenance() {
           CloseConnection(entry.first, "Heartbeat timeout",
                           websocketpp::close::status::going_away);
         } else if (state->opened && !state->authenticated &&
-                   lifetime > authentication_timeout_ms_) {
+                   lifetime > authentication_timeout_ms_ &&
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                       now.time_since_epoch()).count() >=
+                       state->credential_deadline_ms.load()) {
+          ++diagnostics_.authentication_timeouts;
           CloseConnection(entry.first, "Authentication timeout",
                           websocketpp::close::status::policy_violation);
         } else if (state->pending_http && lifetime > http_timeout_ms_) {
@@ -880,9 +909,9 @@ void SignalServer::Run() {
   }
   LOG_INFO("Connection capacity: configured_max_connections={} "
            "effective_max_connections={} fd_open={} fd_soft_limit={} "
-           "fd_reserve={} unopened_limit={} accept_retry_ms=500 listen_backlog=128",
+           "fd_reserve={} unopened_limit={} accept_retry_ms=500 listen_backlog={}",
            configured_max_connections, max_connections_, fd_usage_.open,
-           fd_usage_.soft_limit, fd_reserve_, max_handshakes_);
+           fd_usage_.soft_limit, fd_reserve_, max_handshakes_, kListenBacklog);
   LOG_INFO("Retention policy: log_days={} offline_days={} interval_seconds={} "
            "device_credentials=expire_with_device", retention_policy_.log_days,
            retention_policy_.offline_days, retention_policy_.interval_seconds);
@@ -896,7 +925,9 @@ void SignalServer::Run() {
   acceptor_->open(asio::ip::tcp::v4());
   acceptor_->set_option(asio::ip::tcp::acceptor::reuse_address(true));
   acceptor_->bind(asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port_));
-  acceptor_->listen(128);
+  // Absorb restart bursts in the kernel while keeping TLS handshakes bounded.
+  // The OS may clamp this request to its own listen queue limit.
+  acceptor_->listen(kListenBacklog);
   signals_ = std::make_unique<websocketpp::lib::asio::signal_set>(
       server_.get_io_service(), SIGINT, SIGTERM);
   signals_->async_wait([this](websocketpp::lib::error_code ec, int) {
@@ -904,6 +935,7 @@ void SignalServer::Run() {
   });
   AcceptNext();
   ScheduleMaintenance();
+  ScheduleCredentialPump();
   ScheduleRecoveredSessionCleanup();
   LOG_INFO("Signal server listening on port [{}], waiting for connections...",
            port_);
@@ -973,20 +1005,28 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
     return;
   }
   std::string login_id;
+  const auto failure_reason = message.value("reason", "");
   if (type == "login" && message.value("status", "") == "success") {
     login_id = message.value("user_id", "");
     login_id = login_id.substr(0, login_id.find('@'));
   }
   auto payload = message.dump();
   server_.get_io_service().post(
-      [this, hdl, payload = std::move(payload), login_id] {
+      [this, hdl, payload = std::move(payload), login_id, failure_reason] {
         --pending_sends_;
         auto it = connections_.find(hdl);
         if (it == connections_.end() || !it->second->alive) return;
         if (!login_id.empty()) {
+          ++diagnostics_.login_success;
           it->second->device_id = login_id;
           it->second->authenticated = true;
         }
+        if (failure_reason == "Authentication failed")
+          ++diagnostics_.authentication_failed;
+        else if (failure_reason == "Credential service busy")
+          ++diagnostics_.credential_busy;
+        else if (failure_reason == "Too many authentication attempts")
+          ++diagnostics_.authentication_throttled;
         websocketpp::lib::error_code ec;
         auto con = server_.get_con_from_hdl(hdl, ec);
         if (ec) return;
@@ -1039,6 +1079,14 @@ void SignalServer::DispatchMessage(
     const std::shared_ptr<ConnectionState>& state) {
   if (state->alive && !stopping_) {
     if (state->credential_pending) {
+      // A large login queue must not multiply the per-connection message
+      // backlog into hundreds of thousands of retained JSON documents.
+      if (deferred_message_count_ >= 1024) {
+        --state->pending_messages;
+        RequestBackpressureClose(hdl);
+        return;
+      }
+      ++deferred_message_count_;
       state->deferred_messages.push_back(std::move(message));
       return;
     }
@@ -1050,44 +1098,121 @@ void SignalServer::DispatchMessage(
 bool SignalServer::SubmitCredentialWork(
     websocketpp::connection_hdl hdl,
     const std::shared_ptr<ConnectionState>& state,
-    SignalNegotiation::CredentialWork work) {
-  if (stopping_ || !state->alive || state->credential_pending ||
-      credential_jobs_ >= kMaxCredentialJobs)
-    return false;
-  auto job = [this, hdl, state, work = std::move(work)] {
+    SignalNegotiation::CredentialWork work, std::function<int()> admit,
+    std::function<void()> expire) {
+  if (stopping_ || !state->alive || state->credential_pending) return false;
+  const auto deadline = Clock::now() +
+                        std::chrono::seconds(credential_timeout_seconds_);
+  CredentialQueue::Job job{
+      state->id, state->source_address, deadline,
+      [this, state] { return !stopping_ && state->alive.load(); },
+      std::move(admit),
+      [this, hdl, state, work = std::move(work)](size_t worker) mutable {
+        StartCredentialWork(hdl, state, std::move(work), worker);
+      },
+      [this, state, expire = std::move(expire)] {
+        if (!stopping_ && state->alive) expire();
+        FinishCredentialRequest(state);
+      }};
+  if (!credential_queue_->Enqueue(std::move(job))) return false;
+  state->credential_pending = true;
+  // Keep deadlines distinct even for successive requests in one millisecond.
+  const auto deadline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline.time_since_epoch()).count();
+  state->credential_deadline_ms =
+      std::max(deadline_ms, state->credential_deadline_ms.load() + 1);
+  credential_queue_->Pump();
+  return true;
+}
+
+void SignalServer::FinishCredentialRequest(
+    const std::shared_ptr<ConnectionState>& state) {
+  state->credential_pending = false;
+  const auto deadline = state->credential_deadline_ms.load();
+  // Successful login replies are posted before this reset. Do not reset the
+  // deadline of a subsequent request that was queued before this callback ran.
+  server_.get_io_service().post([state, deadline]() mutable {
+    auto expected = deadline;
+    state->credential_deadline_ms.compare_exchange_strong(expected, 0);
+  });
+  while (!state->credential_pending && !state->deferred_messages.empty()) {
+    auto message = std::move(state->deferred_messages.front());
+    state->deferred_messages.pop_front();
+    --deferred_message_count_;
+    DispatchMessage(state->handle, std::move(message), state);
+  }
+}
+
+void SignalServer::StartCredentialWork(
+    websocketpp::connection_hdl hdl,
+    const std::shared_ptr<ConnectionState>& state,
+    SignalNegotiation::CredentialWork work, size_t worker) {
+  auto job = [this, hdl, state, work = std::move(work), worker] {
     std::function<void()> finish;
-    if (!stopping_ && state->alive) finish = work();
-    // At most 34 completions can be outstanding; they have reserved slots so
-    // load cannot strand a connection after consuming a credential-work slot.
+    if (!stopping_ && state->alive) {
+      const auto started = Clock::now();
+      finish = work();
+      credential_work_us_.fetch_add(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              Clock::now() - started).count());
+      ++credential_work_count_;
+    }
+    // One reserved completion per worker, independent of the waiting capacity.
     if (!application_worker_->Submit(
-            [this, hdl, state, finish = std::move(finish)] {
-              --credential_jobs_;
-              state->credential_pending = false;
+            [this, state, finish = std::move(finish), worker] {
+              credential_queue_->Complete(worker);
               try {
                 if (!stopping_ && state->alive && finish) finish();
               } catch (const json::exception&) {
                 LOG_WARN("Invalid signaling fields on connection [{}]", state->id);
               }
-              while (!state->credential_pending &&
-                     !state->deferred_messages.empty()) {
-                auto message = std::move(state->deferred_messages.front());
-                state->deferred_messages.pop_front();
-                DispatchMessage(hdl, std::move(message), state);
-              }
-            },
-            true))
+              FinishCredentialRequest(state);
+              if (!stopping_) credential_queue_->Pump();
+            }, true))
       throw std::runtime_error("Credential completion reserve exhausted");
   };
-  for (size_t i = 0; i < credential_workers_.size(); ++i) {
-    auto& worker = credential_workers_[next_credential_worker_++ %
-                                       credential_workers_.size()];
-    if (worker->Submit(job)) {
-      ++credential_jobs_;
-      state->credential_pending = true;
-      return true;
+  // The scheduler assigns only idle workers. Failure indicates shutdown or an
+  // invariant violation, not normal overload; queued jobs consume no tokens.
+  if (!credential_workers_.at(worker)->Submit(std::move(job)))
+    throw std::runtime_error("Reserved credential worker unavailable");
+}
+
+void SignalServer::LogCredentialDiagnostics() {
+  const auto& stats = credential_queue_->GetStats();
+  const auto count = credential_work_count_.load();
+  LOG_INFO("Credential diagnostics: active={} waiting={} outstanding_limit={} deferred_messages={} "
+           "accepted_total={} started_total={} completed_total={} canceled_total={} "
+           "queue_full_total={} source_full_total={} expired_total={} "
+           "source_rate_waits_total={} max_queue_wait_ms={} max_execution_ms={} "
+           "work_count={} average_work_ms={}",
+           credential_queue_->Active(), credential_queue_->Waiting(),
+           credential_queue_->Capacity(), deferred_message_count_, stats.accepted, stats.started,
+           stats.completed, stats.canceled, stats.full, stats.source_full,
+           stats.expired, stats.source_waits, stats.max_wait_ms,
+           stats.max_execution_ms, count,
+           count ? credential_work_us_.load() / count / 1000 : 0);
+}
+
+void SignalServer::ScheduleCredentialPump() {
+  if (stopping_) return;
+  server_.set_timer(250, [this](websocketpp::lib::error_code ec) {
+    if (ec || stopping_) return;
+    if (!credential_pump_pending_) {
+      credential_pump_pending_ = true;
+      if (!application_worker_->Submit([this] {
+            if (!stopping_) {
+              credential_queue_->Pump();
+              const auto now = Clock::now();
+              if (now >= next_credential_diagnostics_) {
+                LogCredentialDiagnostics();
+                next_credential_diagnostics_ = now + kDiagnosticInterval;
+              }
+            }
+            server_.get_io_service().post([this] { credential_pump_pending_ = false; });
+          })) credential_pump_pending_ = false;
     }
-  }
-  return false;
+    ScheduleCredentialPump();
+  });
 }
 
 void SignalServer::ProcessMessage(
@@ -1103,8 +1228,11 @@ void SignalServer::ProcessMessage(
       }
       return;
     }
-    auto dispatch = [this, hdl, state](SignalNegotiation::CredentialWork work) {
-      return SubmitCredentialWork(hdl, state, std::move(work));
+    auto dispatch = [this, hdl, state](SignalNegotiation::CredentialWork work,
+                                        std::function<int()> admit,
+                                        std::function<void()> expire) {
+      return SubmitCredentialWork(hdl, state, std::move(work),
+                                  std::move(admit), std::move(expire));
     };
     switch (HASH_STRING_PIECE(type.c_str())) {
       case "login"_H:

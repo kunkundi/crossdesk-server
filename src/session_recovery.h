@@ -21,7 +21,8 @@ class SessionRecovery {
  public:
   using Send = std::function<void(websocketpp::connection_hdl, nlohmann::json)>;
   SessionRecovery(const std::string& path, DeviceDBManager* db,
-                  std::shared_ptr<TransmissionManager> transmission, Send send);
+                  std::shared_ptr<TransmissionManager> transmission, Send send,
+                  int recovery_timeout_seconds = 120);
   ~SessionRecovery();
   void Login(websocketpp::connection_hdl hdl, const nlohmann::json& request);
   void Issue(const std::string& tx, const std::string& host,

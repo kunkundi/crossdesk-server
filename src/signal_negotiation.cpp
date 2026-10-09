@@ -74,14 +74,17 @@ SignalNegotiation::SignalNegotiation(
     DeviceDBManager* device_db,
     std::shared_ptr<TurnCredentialIssuer> turn_credential_issuer,
     std::shared_ptr<IceServerConfigIssuer> ice_config_issuer,
-    std::shared_ptr<DeviceAuthLimiter> device_auth_limiter)
+    std::shared_ptr<DeviceAuthLimiter> device_auth_limiter,
+    size_t source_credential_limit)
     : transmission_manager_(transmission_manager),
       device_db_manager_(device_db),
       turn_credential_issuer_(std::move(turn_credential_issuer)),
       ice_config_issuer_(std::move(ice_config_issuer)),
       device_auth_limiter_(device_auth_limiter
                                ? std::move(device_auth_limiter)
-                               : std::make_shared<DeviceAuthLimiter>()) {}
+                               : std::make_shared<DeviceAuthLimiter>()),
+      credential_work_limiter_(DeviceAuthLimiter::Clock::now,
+                               source_credential_limit) {}
 
 SignalNegotiation::~SignalNegotiation() {}
 
@@ -148,17 +151,25 @@ void SignalNegotiation::RunCredentialWork(websocketpp::connection_hdl hdl,
                                           const std::string& source_address,
                                           json failure, CredentialWork work,
                                           const CredentialDispatch& dispatch) {
-  const int delay = credential_work_limiter_.Admit(source_address);
+  auto admit = [this, source_address] {
+    return credential_work_limiter_.Admit(source_address);
+  };
+  if (dispatch) {
+    auto expired = [this, hdl, failure]() mutable {
+      failure["reason"] = "Credential service busy";
+      failure["retry_after"] = 1;
+      send_msg_(hdl, failure);
+    };
+    if (!dispatch(std::move(work), std::move(admit), expired)) expired();
+    return;
+  }
+  const int delay = admit();
   if (delay > 0) {
     failure["reason"] = "Too many credential requests";
     failure["retry_after"] = delay;
     send_msg_(hdl, failure);
-  } else if (!dispatch) {
+  } else {
     work()();
-  } else if (!dispatch(std::move(work))) {
-    failure["reason"] = "Credential service busy";
-    failure["retry_after"] = 1;
-    send_msg_(hdl, failure);
   }
 }
 

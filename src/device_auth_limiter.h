@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <functional>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -60,8 +61,12 @@ class DeviceAuthLimiter {
 class CredentialWorkLimiter {
  public:
   explicit CredentialWorkLimiter(
-      DeviceAuthLimiter::Now now = DeviceAuthLimiter::Clock::now)
-      : now_(std::move(now)) {}
+      DeviceAuthLimiter::Now now = DeviceAuthLimiter::Clock::now,
+      size_t source_limit = 60)
+      : now_(std::move(now)), source_limit_(source_limit) {
+    if (!source_limit_)
+      throw std::invalid_argument("Credential source limit must be positive");
+  }
   int Admit(const std::string& source);
 
  private:
@@ -71,7 +76,8 @@ class CredentialWorkLimiter {
   };
   DeviceAuthLimiter::Now now_;
   std::mutex mutex_;
-  Window global_;
+  const size_t source_limit_;
+  DeviceAuthLimiter::Clock::time_point next_cleanup_{};
   std::unordered_map<std::string, Window> sources_;
 };
 

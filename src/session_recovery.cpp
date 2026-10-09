@@ -38,7 +38,8 @@ struct Statement {
 }
 
 SessionRecovery::SessionRecovery(const std::string& path, DeviceDBManager* db,
-    std::shared_ptr<TransmissionManager> transmission, Send send)
+    std::shared_ptr<TransmissionManager> transmission, Send send,
+    int recovery_timeout_seconds)
     : db_(db), transmission_(std::move(transmission)), send_(std::move(send)) {
   if (sqlite3_open(path.c_str(), &sql_) != SQLITE_OK) {
     if (sql_) sqlite3_close(sql_);
@@ -61,7 +62,7 @@ SessionRecovery::SessionRecovery(const std::string& path, DeviceDBManager* db,
     Ticket ticket;
     ticket.tx = read.Text(0); ticket.host = read.Text(1);
     ticket.guest = read.Text(2); ticket.token = read.Text(3);
-    ticket.recovering = true; ticket.deadline = Now() + 120;
+    ticket.recovering = true; ticket.deadline = Now() + recovery_timeout_seconds;
     tickets_[{ticket.tx, ticket.guest}] = std::move(ticket);
   }
   } catch (...) {

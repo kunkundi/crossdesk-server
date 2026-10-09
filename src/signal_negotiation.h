@@ -27,13 +27,17 @@ class SignalNegotiation {
   // Run computation on a credential worker; run its returned continuation on
   // the application worker after checking that the connection is still alive.
   using CredentialWork = std::function<std::function<void()>()>;
-  using CredentialDispatch = std::function<bool(CredentialWork)>;
+  // Admission is invoked only with a reserved execution slot, never on enqueue.
+  // Expiry sends the original protocol's failure response for legacy clients.
+  using CredentialDispatch = std::function<bool(
+      CredentialWork, std::function<int()>, std::function<void()>)>;
   SignalNegotiation(
       std::shared_ptr<TransmissionManager> transmission_manager,
       DeviceDBManager* device_db,
       std::shared_ptr<TurnCredentialIssuer> turn_credential_issuer = nullptr,
       std::shared_ptr<IceServerConfigIssuer> ice_config_issuer = nullptr,
-      std::shared_ptr<DeviceAuthLimiter> device_auth_limiter = nullptr);
+      std::shared_ptr<DeviceAuthLimiter> device_auth_limiter = nullptr,
+      size_t source_credential_limit = 60);
   ~SignalNegotiation();
 
   void SetSendMsgCallback(

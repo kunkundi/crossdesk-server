@@ -236,9 +236,13 @@ Device passwords remain **6 alphanumeric characters**, generated using OpenSSL `
 
 Registration and password changes use **Argon2id v19 with 19 MiB memory, 2 iterations, parallelism 1 and a 32-byte digest**. The existing `password_hash` column contains the `argon2id$v=19$m=19456,t=2,p=1$` prefix and a hex digest; `password_salt` contains a hex salt. Legacy salted SHA-256 records migrate atomically after successful verification without changing the ID or six-character password. Unused legacy records remain subject to device retention. Rehashing does not invalidate old passwords or leaked backups; rotate passwords through the client when necessary. Older servers cannot verify upgraded records; rollback requires a pre-upgrade backup.
 
-Two dedicated workers perform password calculations, with at most 34 jobs including results awaiting commit. Hashing holds neither the database nor the failure-limiter lock. Messages stay ordered per connection; completion rechecks the connection identity and credential snapshot, so stale work cannot overwrite concurrent password changes or restore deleted identities. Missing devices, wrong legacy passwords and malformed records also run one Argon2id calculation to reduce timing differences. Startup checks the actual OpenSSL provider and parameters.
+Two dedicated workers perform password calculations by default, with a bounded queue scheduled round-robin by source IP. The defaults allow 4096 outstanding jobs, including running jobs and results awaiting commit, and 256 per source. Waiting jobs occupy no hashing worker. Hashing holds neither the database nor the failure-limiter lock. Messages stay ordered per connection; completion rechecks the connection identity and credential snapshot, so stale work cannot overwrite concurrent password changes or restore deleted identities. Missing devices, wrong legacy passwords and malformed records also run one Argon2id calculation to reduce timing differences. Startup checks the actual OpenSSL provider and parameters.
 
-Registration, login, queries, joins and new password-change calculations share admission limits of 60 attempts per source IP per minute and 300 per process per minute, including successful operations. Rate exhaustion returns `Too many credential requests`; a full calculation queue returns `Credential service busy`, both with `retry_after` seconds. Six-character passwords still have limited strength: these budgets and the failure cooldown below constrain online guessing, while slow hashing raises the cost of offline guessing after a database leak.
+Registration, login, queries, joins and new password-change calculations share a source budget: by default, 60 starts per IP per minute, including successful operations. There is no longer a process-wide 300-per-minute quota. A token is consumed only after a worker becomes available; enqueueing, canceling disconnected waiters and rejecting a full queue consume no token. Rate-limited sources wait on the server without blocking unrelated sources. Queue overflow or expiry returns the existing `Credential service busy` response with `retry_after`. Failure cooldowns remain unchanged.
+
+Accepted authentication requests have a default 600-second lifetime and are exempt from the ordinary 15-second unauthenticated-connection timeout while pending. Connections that never submit an accepted request still use the 15-second rule. Legacy clients receive the original login response after waiting, without a new protocol or client-side retry. The 600 seconds is a maximum, not a fixed delay. Disconnected waiters are canceled. The restart recovery window for remote-session records also extends with the authentication lifetime so records survive queued reconnects.
+
+Six-character passwords still have limited strength: source budgets and the failure cooldown below constrain online guessing, while slow hashing raises the cost of offline guessing after a database leak.
 
 Each WebSocket connection allows one successful login. Subsequent `login` requests return `Already authenticated` without registering devices, verifying passwords or updating presence. Open a new connection to log in again; an initial failed login can still be retried on the same connection.
 
@@ -249,6 +253,26 @@ Device login, queries and joins share failure counts. Within a 15-minute window,
 The source is the TCP peer IP without its port; request fields and `X-Forwarded-For` are not trusted. Connections behind one NAT or reverse proxy share a source quota. Counters are local to one server process and reset on restart; multiple instances need coordinated limits in a trusted gateway or shared store. Each dimension holds at most 16,384 records and rejects new verification keys at capacity until expired records free space.
 
 Registration must explicitly use an empty device ID (native clients) or `web` (Web clients). Logging in with an unknown or expired ID returns the generic authentication failure instead of assigning a replacement ID. Clients must reset their local identity to register again.
+
+### Online capacity and restart recovery
+
+Configure these options in `.env` and recreate the signaling container:
+
+| Setting | Default | Effect and range |
+| --- | --- | --- |
+| `CROSSDESK_MAX_CONNECTIONS` | `8192` | Total signaling connections, 1–65536; includes devices, `C-*` controllers and unopened connections |
+| `CROSSDESK_NOFILE` | `32768` | Compose container file-descriptor limit; used and reserved FDs reduce effective capacity |
+| `CROSSDESK_AUTH_WORKERS` | `2` | Concurrent password workers, 1–32; controls CPU, memory and authentication throughput |
+| `CROSSDESK_AUTH_QUEUE_CAPACITY` | `4096` | Total outstanding requests, 1–16384; absorbs bursts without increasing calculation speed |
+| `CROSSDESK_AUTH_SOURCE_CAPACITY` | `256` | Outstanding requests per source IP, 1–4096; prevents one source from filling the queue |
+| `CROSSDESK_AUTH_SOURCE_PER_MINUTE` | `60` | Starts per IP per minute, 1–6000; shared behind NAT or a reverse proxy |
+| `CROSSDESK_AUTH_TIMEOUT_SECONDS` | `600` | Maximum accepted authentication lifetime, 15–900 seconds |
+
+Keeping 2000 devices online does not require 2000 authentication threads. Only operations that verify passwords use these workers. Start with two, measure throughput on the deployment machine, and increase only with CPU headroom for TLS, heartbeats and database work. Each active Argon2id calculation needs approximately 19 MiB of algorithm memory; waiting requests do not allocate it. Burst recovery time is approximately the request count divided by measured completion throughput, also constrained by source quotas. Choose a deadline covering that recovery time. Shared-egress deployments need source capacity, source rate and deadlines considered together.
+
+Existing `.env` settings override new defaults: an existing `CROSSDESK_MAX_CONNECTIONS=2048` remains 2048. The requested TCP listen backlog is 4096, subject to the OS limit, while concurrent unopened connections remain capped at 128. These settings cover signaling and reconnect recovery; sustained online operation, concurrent remote sessions and TURN bandwidth still need tests on the deployment machine.
+
+`Credential capacity` logs effective authentication settings. `Credential diagnostics` reports `active`, `waiting`, `queue_full_total`, `source_full_total`, `expired_total`, `source_rate_waits_total` and calculation timing every minute. `Connection diagnostics` also counts successful logins, authentication failures, busy responses, failure-cooldown responses and authentication timeouts. Persistent queue growth means arrivals exceed processing throughput; increasing workers alone cannot resolve source-rate waits.
 
 ### Retention and automatic cleanup
 
@@ -310,6 +334,18 @@ xmake b -vy crossdesk_server
 ```
 
 Ensure `xmake --version` works before the first build. See [xmake.lua](xmake.lua) for other platform configurations; the current release workflow provides only Linux binaries and images. Select Debug with `xmake f -m debug`; `xmake r -d crossdesk_server` runs through a debugger.
+
+Credential queue regression and legacy WSS integration tests require Python 3, `websockets>=15` and the `openssl` command:
+
+```bash
+xmake b credential_queue_test credential_server_fixture
+xmake r credential_queue_test
+# Substitute the fixture path for your platform, architecture and build mode.
+python3 tests/credential_server_integration.py \
+  --fixture build/linux/x86_64/release/credential_server_fixture --clients 2100
+```
+
+The test creates isolated certificates and databases in a temporary directory. It checks source waits beyond 15 seconds, disconnect cancellation, expiry, burst login and another burst after restart. Every login performs real Argon2id verification with no client login retry. TCP/TLS handshake concurrency is capped at 64 to avoid overflowing the local listen queue first. The burst case raises the loopback source quota; separate cases enforce source limits. Results do not imply default admission of 2100 devices behind one IP or production-machine performance.
 
 ### Build a local runtime image
 

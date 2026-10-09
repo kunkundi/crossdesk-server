@@ -106,18 +106,21 @@ int CredentialWorkLimiter::Admit(const std::string& source) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto now = now_();
   constexpr auto window = std::chrono::minutes(1);
-  for (auto it = sources_.begin(); it != sources_.end();) {
-    if (it->second.expires <= now)
-      it = sources_.erase(it);
-    else
-      ++it;
+  if (now >= next_cleanup_) {
+    for (auto it = sources_.begin(); it != sources_.end();) {
+      if (it->second.expires <= now)
+        it = sources_.erase(it);
+      else
+        ++it;
+    }
+    next_cleanup_ = now + window;
   }
-  if (global_.expires <= now) global_ = {0, now + window};
   const auto key = source.empty() ? "unknown" : source;
   if (!sources_.count(key) && sources_.size() >= DeviceAuthLimiter::kMaxEntries)
     return 60;
   auto& local =
       sources_.try_emplace(key, Window{0, now + window}).first->second;
+  if (local.expires <= now) local = {0, now + window};
   auto retry = [now](const Window& value, size_t limit) {
     return value.count < limit
                ? 0
@@ -125,9 +128,8 @@ int CredentialWorkLimiter::Admit(const std::string& source) {
                                       value.expires - now)
                                       .count());
   };
-  const int delay = std::max(retry(local, 60), retry(global_, 300));
+  const int delay = retry(local, source_limit_);
   if (delay > 0) return delay;
   ++local.count;
-  ++global_.count;
   return 0;
 }

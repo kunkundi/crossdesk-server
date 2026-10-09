@@ -31,6 +31,7 @@
 #include "resource_monitor.h"
 #include "retention_policy.h"
 #include "session_recovery.h"
+#include "credential_queue.h"
 #include "signal_negotiation.h"
 
 using nlohmann::json;
@@ -64,12 +65,9 @@ class SignalServer {
 
  private:
   using Clock = std::chrono::steady_clock;
-  static constexpr size_t kCredentialWorkers = 2;
-  static constexpr size_t kCredentialQueueCapacity = 16;
-  static constexpr size_t kMaxCredentialJobs =
-      kCredentialWorkers * (kCredentialQueueCapacity + 1);
   struct ConnectionState {
     uint64_t id = 0;
+    websocketpp::connection_hdl handle;
     std::string source_address;  // Set before publication; transport peer IP.
     std::string device_id;  // Accessed only on the network thread.
     Clock::time_point accepted = Clock::now(), last_heartbeat = accepted;
@@ -77,6 +75,8 @@ class SignalServer {
     server::connection_ptr pending_http;  // Network thread; retains deferred HTTP.
     std::atomic<bool> alive{true};
     std::atomic<size_t> pending_messages{0};
+    // Steady-clock epoch milliseconds; application worker publishes, I/O reads.
+    std::atomic<int64_t> credential_deadline_ms{0};
     // Application worker only. Preserve message order across async hashing.
     bool credential_pending = false;
     std::deque<json> deferred_messages;
@@ -99,7 +99,15 @@ class SignalServer {
                        const std::shared_ptr<ConnectionState>& state);
   bool SubmitCredentialWork(websocketpp::connection_hdl hdl,
                             const std::shared_ptr<ConnectionState>& state,
-                            SignalNegotiation::CredentialWork work);
+                            SignalNegotiation::CredentialWork work,
+                            std::function<int()> admit,
+                            std::function<void()> expire);
+  void StartCredentialWork(websocketpp::connection_hdl hdl,
+                           const std::shared_ptr<ConnectionState>& state,
+                           SignalNegotiation::CredentialWork work, size_t worker);
+  void FinishCredentialRequest(const std::shared_ptr<ConnectionState>& state);
+  void ScheduleCredentialPump();
+  void LogCredentialDiagnostics();
   void CompleteHttp(websocketpp::connection_hdl hdl,
                     AdminHttpResponse response);
   void WorkerFailed(std::exception_ptr error);
@@ -121,8 +129,9 @@ class SignalServer {
   size_t fd_connections_at_sample_ = 0;
   uint64_t next_connection_id_ = 1;
   size_t pending_cleanup_ = 0;
-  size_t max_connections_ = 2048;
+  size_t max_connections_ = 8192;
   const size_t fd_reserve_ = 256, max_handshakes_ = 128;
+  static constexpr int kListenBacklog = 4096;
   const long heartbeat_timeout_ms_ = 30000, check_interval_ms_ = 5000;
   const long authentication_timeout_ms_ = 15000, http_timeout_ms_ = 10000;
   const long tls_reload_interval_ms_ = 30000;
@@ -134,6 +143,9 @@ class SignalServer {
     uint64_t accept_failed = 0, init_resource_failed = 0, loop_stalls = 0;
     uint64_t connection_limit_checks = 0, unopened_limit_checks = 0;
     uint64_t fd_limit_checks = 0, fd_sample_failed_checks = 0;
+    uint64_t login_success = 0, authentication_failed = 0;
+    uint64_t credential_busy = 0, authentication_throttled = 0;
+    uint64_t authentication_timeouts = 0;
   } diagnostics_;
   Clock::time_point next_diagnostics_{}, next_admission_warning_{};
   Clock::time_point next_loop_warning_{};
@@ -144,6 +156,7 @@ class SignalServer {
   std::atomic<bool> stopping_{false};
   bool accept_pending_ = false, accept_retry_pending_ = false;
   bool runtime_job_pending_ = false, tls_job_pending_ = false;
+  bool credential_pump_pending_ = false;  // I/O thread only.
   const RetentionPolicy retention_policy_ = RetentionPolicy::FromEnvironment();
   bool metadata_cleanup_pending_ = false, log_cleanup_pending_ = false;
   Clock::time_point next_metadata_cleanup_{}, next_log_cleanup_{};
@@ -163,9 +176,12 @@ class SignalServer {
   std::unique_ptr<BoundedExecutor> application_worker_, admin_worker_,
       maintenance_worker_;
   std::vector<std::unique_ptr<BoundedExecutor>> credential_workers_;
-  size_t next_credential_worker_ = 0;  // Application worker only.
-  size_t credential_jobs_ =
-      0;  // Includes completions waiting on the application worker.
+  std::unique_ptr<CredentialQueue> credential_queue_;  // Application worker only.
+  size_t credential_worker_count_ = 2;
+  int credential_timeout_seconds_ = 600;
+  Clock::time_point next_credential_diagnostics_{};
+  size_t deferred_message_count_ = 0;  // Application worker; bounded globally.
+  std::atomic<uint64_t> credential_work_us_{0}, credential_work_count_{0};
 
   std::shared_ptr<TransmissionManager> transmission_manager_;
   std::unique_ptr<DeviceDBManager> device_db_manager_;
