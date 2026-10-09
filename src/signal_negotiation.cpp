@@ -319,6 +319,36 @@ bool SignalNegotiation::leave_transmission(websocketpp::connection_hdl hdl,
   return true;
 }
 
+bool SignalNegotiation::disconnect_peer(websocketpp::connection_hdl hdl,
+                                         const json& j) {
+  std::string transmission_id;
+  std::string user_id;
+  std::string remote_user_id;
+  if (!GetStringField(j, "transmission_id", transmission_id) ||
+      !GetStringField(j, "user_id", user_id) ||
+      !GetStringField(j, "remote_user_id", remote_user_id) ||
+      !IsAuthorizedPeerSignal(hdl, user_id, remote_user_id, transmission_id) ||
+      !transmission_manager_->IsHostOfTransmission(user_id, transmission_id)) {
+    LOG_WARN("Reject unauthorized peer disconnect request");
+    return false;
+  }
+
+  const auto recipient =
+      transmission_manager_->GetWsHandle(remote_user_id, transmission_id);
+  if (!transmission_manager_->ReleaseGuestFromTransmission(remote_user_id,
+                                                          transmission_id)) {
+    return false;
+  }
+  // Preserve the host and other guests. Existing clients already understand
+  // this notification as closure of their connection to the named peer.
+  send_msg_(recipient, {{"type", "user_leave_transmission"},
+                        {"transmission_id", transmission_id},
+                        {"user_id", user_id}});
+  LOG_INFO("[{}] disconnected [{}] from transmission [{}]", user_id,
+           remote_user_id, transmission_id);
+  return true;
+}
+
 bool SignalNegotiation::query_user_id_list(websocketpp::connection_hdl hdl,
                                            const json& j) {
   std::string transmission_id_pwd;

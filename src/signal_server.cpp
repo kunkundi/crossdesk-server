@@ -1044,6 +1044,9 @@ void SignalServer::ProcessMessage(
       case "user_leave_transmission"_H:
         signal_negotiation_->leave_transmission(hdl, j);
         break;
+      case "disconnect_peer"_H:
+        signal_negotiation_->disconnect_peer(hdl, j);
+        break;
       case "query_user_id_list"_H:
         signal_negotiation_->query_user_id_list(hdl, j);
         break;

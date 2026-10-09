@@ -37,6 +37,7 @@ class SignalNegotiation {
 
   bool login_user(websocketpp::connection_hdl hdl, const json& j);
   bool leave_transmission(websocketpp::connection_hdl hdl, const json& j);
+  bool disconnect_peer(websocketpp::connection_hdl hdl, const json& j);
   bool query_user_id_list(websocketpp::connection_hdl hdl, const json& j);
   bool join_transmission(websocketpp::connection_hdl hdl, const json& j);
   bool offer(websocketpp::connection_hdl hdl, const json& j);
