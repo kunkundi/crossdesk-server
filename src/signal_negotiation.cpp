@@ -12,6 +12,21 @@
 
 namespace {
 
+void SetFailure(json& message, const std::string& code,
+                const std::string& reason) {
+  message["error_code"] = code;
+  message["reason"] = reason;
+  // Released MiniRTC clients only recognize these legacy join reasons.
+  // Keep unknown IDs indistinguishable from wrong passwords. New clients use
+  // error_code so cooldowns and busy responses are not mistaken for offline.
+  if (message.value("type", "") == "user_join_transmission") {
+    message["reason"] =
+        code == "AUTHENTICATION_FAILED" || code == "PASSWORD_REQUIRED"
+            ? "Incorrect password"
+            : "Remote unavailable";
+  }
+}
+
 bool GetStringField(const json& j, const char* key, std::string& value) {
   if (!j.contains(key) || !j[key].is_string()) {
     return false;
@@ -156,7 +171,7 @@ void SignalNegotiation::RunCredentialWork(websocketpp::connection_hdl hdl,
   };
   if (dispatch) {
     auto expired = [this, hdl, failure]() mutable {
-      failure["reason"] = "Credential service busy";
+      SetFailure(failure, "CREDENTIAL_SERVICE_BUSY", "Credential service busy");
       failure["retry_after"] = 1;
       send_msg_(hdl, failure);
     };
@@ -165,7 +180,7 @@ void SignalNegotiation::RunCredentialWork(websocketpp::connection_hdl hdl,
   }
   const int delay = admit();
   if (delay > 0) {
-    failure["reason"] = "Too many credential requests";
+    SetFailure(failure, "CREDENTIAL_RATE_LIMITED", "Too many credential requests");
     failure["retry_after"] = delay;
     send_msg_(hdl, failure);
   } else {
@@ -177,7 +192,7 @@ void SignalNegotiation::AuthenticateDevice(
     websocketpp::connection_hdl hdl, const std::string& source_address,
     const std::string& device_id, const std::string& password, json failure,
     const CredentialDispatch& dispatch, std::function<void()> on_verified) {
-  failure["reason"] = "Authentication failed";
+  SetFailure(failure, "AUTHENTICATION_FAILED", "Authentication failed");
   if (!ValidDeviceCredentials(device_id, password)) {
     send_msg_(hdl, failure);
     return;
@@ -206,7 +221,8 @@ void SignalNegotiation::AuthenticateDevice(
             on_verified();
           } else {
             if (result.retry_after > 0) {
-              failure["reason"] = "Too many authentication attempts";
+              SetFailure(failure, "AUTHENTICATION_THROTTLED",
+                         "Too many authentication attempts");
               failure["retry_after"] = result.retry_after;
             }
             send_msg_(hdl, failure);
@@ -617,7 +633,15 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
                   {"transmission_id", transmission_id},
                   {"status", "failed"}};
   if (hdl.expired() || transmission_manager_->GetUserId(hdl) != user_id) {
-    failure["reason"] = "Not authenticated";
+    SetFailure(failure, "NOT_AUTHENTICATED", "Not authenticated");
+    send_msg_(hdl, failure);
+    return true;
+  }
+  if (password.empty() && ValidDeviceCredentials(transmission_id, password)) {
+    // Older desktops probe with ID@ to open their password dialog. This is
+    // not a password guess: never read the target record, spend a credential
+    // worker slot, or consume a failure budget for it.
+    SetFailure(failure, "PASSWORD_REQUIRED", "Password required");
     send_msg_(hdl, failure);
     return true;
   }
@@ -634,8 +658,8 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
                    transmission_id.c_str());
           json message = {{"type", "user_join_transmission"},
                           {"transmission_id", transmission_id},
-                          {"status", "failed"},
-                          {"reason", "Remote unavailable"}};
+                          {"status", "failed"}};
+          SetFailure(message, "REMOTE_UNAVAILABLE", "Remote unavailable");
           send_msg_(hdl, message);
           return;
         }

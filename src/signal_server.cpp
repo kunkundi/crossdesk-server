@@ -1011,6 +1011,7 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
   }
   std::string login_id;
   const auto failure_reason = message.value("reason", "");
+  const auto failure_code = message.value("error_code", "");
   const bool reconnected = type == "login" && message.value("reconnected", false);
   const bool reconnect_rejected = type == "login" && message.value("reconnect_rejected", false);
   if (type == "login" && message.value("status", "") == "success") {
@@ -1019,7 +1020,7 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
   }
   auto payload = message.dump();
   server_.get_io_service().post(
-      [this, hdl, payload = std::move(payload), login_id, failure_reason,
+      [this, hdl, payload = std::move(payload), login_id, failure_reason, failure_code,
        reconnected, reconnect_rejected] {
         --pending_sends_;
         auto it = connections_.find(hdl);
@@ -1034,11 +1035,14 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
           it->second->last_heartbeat = Clock::now();
         }
         if (reconnect_rejected) ++diagnostics_.reconnect_failed;
-        if (failure_reason == "Authentication failed")
+        if (failure_code == "AUTHENTICATION_FAILED" ||
+            (failure_code.empty() && failure_reason == "Authentication failed"))
           ++diagnostics_.authentication_failed;
-        else if (failure_reason == "Credential service busy")
+        else if (failure_code == "CREDENTIAL_SERVICE_BUSY" ||
+                 (failure_code.empty() && failure_reason == "Credential service busy"))
           ++diagnostics_.credential_busy;
-        else if (failure_reason == "Too many authentication attempts")
+        else if (failure_code == "AUTHENTICATION_THROTTLED" ||
+                 (failure_code.empty() && failure_reason == "Too many authentication attempts"))
           ++diagnostics_.authentication_throttled;
         websocketpp::lib::error_code ec;
         auto con = server_.get_con_from_hdl(hdl, ec);

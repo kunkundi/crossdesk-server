@@ -264,9 +264,13 @@ sudo docker compose up -d --no-build
 
 同一 WebSocket 连接只允许一次成功登录。后续 `login` 请求返回 `Already authenticated`，不会再注册设备、验证密码或更新在线状态；如需重新登录，请建立新连接。首次登录失败后仍可在原连接重试。
 
-`query_user_id_list` 和 `join_transmission` 要求连接先完成登录，加入会话时还校验请求者身份与连接绑定。设备密码错误和设备 ID 不存在均返回 `Authentication failed`，不会返回设备列表或连接凭据。
+`query_user_id_list` 和 `join_transmission` 要求连接先完成登录，加入会话时还校验请求者身份与连接绑定。设备密码错误和设备 ID 不存在使用相同回复，不会返回设备列表或连接凭据。登录和查询保留 `Authentication failed`；Join 为兼容已发布桌面端，统一使用 `reason: "Incorrect password"` 和 `error_code: "AUTHENTICATION_FAILED"`，不恢复可区分 ID 是否存在的报错。
 
-设备登录、查询和加入会话共用失败计数：15 分钟内，同一来源 IP 失败 20 次，或同一目标设备失败 5 次，将从达到阈值时起冷却 15 分钟。冷却期间跳过密码验证（包括正确密码），返回 `Too many authentication attempts` 和以秒计的 `retry_after`。重连、更换控制端 ID、切换接口或成功验证其他设备都不会清除失败计数；被限流的请求不延长冷却时间。已有远控会话不受影响。
+旧桌面端的空密码 Join（`ID@`）返回 `Incorrect password` / `PASSWORD_REQUIRED` 以打开密码框；不查询设备是否存在、不进行密码验证，也不消耗密码计算或失败额度。此提示不授予任何会话权限，不清除或延长已有冷却。新客户端应先收集密码再 Join。
+
+Join 的其他拒绝（冷却、认证服务繁忙、未登录、远端不可用）统一保留旧客户端可识别的 `reason: "Remote unavailable"`，使其结束等待；旧版界面会显示设备离线。新客户端优先读取 `error_code`：`AUTHENTICATION_THROTTLED`、`CREDENTIAL_SERVICE_BUSY`、`CREDENTIAL_RATE_LIMITED`、`NOT_AUTHENTICATED` 或 `REMOTE_UNAVAILABLE`，并在存在 `retry_after` 时显示剩余秒数、禁止提前重试。认证诊断按错误码计数，空密码提示不计为鉴权失败。
+
+设备登录、查询和加入会话共用失败计数：15 分钟内，同一来源 IP 失败 20 次，或同一目标设备失败 5 次，将从达到阈值时起冷却 15 分钟。冷却期间跳过密码验证（包括正确密码），返回 `Too many authentication attempts`（Join 使用上述兼容文案）及 `error_code: "AUTHENTICATION_THROTTLED"` 和以秒计的 `retry_after`。重连、更换控制端 ID、切换接口或成功验证其他设备都不会清除失败计数；被限流的请求不延长冷却时间。已有远控会话不受影响。
 
 来源使用 TCP 对端 IP（不含端口），不信任请求字段或 `X-Forwarded-For`。同一 NAT 或反向代理后的连接共用来源额度。计数保存在单个服务进程内，重启后清空；多实例部署需要在可信网关或共享存储中补充统一限流。来源和目标各最多保留 16,384 条记录，容量耗尽时拒绝新增验证键，直到过期记录释放空间。
 
