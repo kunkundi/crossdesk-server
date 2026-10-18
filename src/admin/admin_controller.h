@@ -69,6 +69,7 @@ class AdminController {
 
   bool IsAuthorized(const AdminHttpRequest& request);
   nlohmann::json BuildStats() const;
+  nlohmann::json BuildAdminStats() const;
   AdminHttpResponse JsonResponse(int status, const nlohmann::json& body) const;
   AdminHttpResponse HtmlResponse(int status, const std::string& body) const;
   AdminHttpResponse ErrorResponse(int status, const std::string& error) const;

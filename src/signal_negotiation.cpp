@@ -670,6 +670,11 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
           return;
         }
 
+        // Also confirm an existing legacy routing entry restored at startup;
+        // binding that entry does not emit a new session callback.
+        device_db_manager_->StartRemoteControlSession(transmission_id, host_id,
+                                                      user_id);
+
         json message = {{"type", "user_join_transmission"},
                         {"transmission_id", transmission_id},
                         {"user_id", user_id},

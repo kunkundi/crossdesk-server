@@ -132,6 +132,14 @@ nlohmann::json DeviceDBManager::AdminDeviceData(
   const std::string clone = "C-" + id;
   json credentials = json::array(), presence = json::array();
   json associations = json::array(), sessions = json::array();
+  json daily_activity = json::array();
+  {
+    Statement s(db_, "SELECT day_start,kind FROM daily_controller_activity "
+                     "WHERE device_id=? ORDER BY day_start;");
+    s.Bind(1, id);
+    while (s.Row())
+      daily_activity.push_back({{"day_start", s.Number(0)}, {"kind", s.Text(1)}});
+  }
   {
     Statement s(db_,
                 "SELECT device_id,password_salt,password_hash FROM devices "
@@ -182,20 +190,21 @@ nlohmann::json DeviceDBManager::AdminDeviceData(
       sessions.size() > kMaxRelatedRows)
     return Error("device_data_too_large");
   if (credentials.empty() && presence.empty() && associations.empty() &&
-      sessions.empty())
+      sessions.empty() && daily_activity.empty())
     return Error("device_not_found");
 
   // The revision binds confirmation to the complete related DB state, including
   // credentials. Neither secrets nor other participants' identifiers are
   // returned.
   const auto revision =
-      Digest({id, credentials, presence, associations, sessions});
+      Digest({id, credentials, presence, associations, sessions, daily_activity});
   json report = {{"device_id", id},
                  {"revision", revision},
                  {"credential_records", credentials.size()},
                  {"presence", presence},
                  {"association_records", associations.size()},
                  {"active_session_records", sessions.size()},
+                 {"daily_controller_activity", daily_activity},
                  {"cleanup_allowed", !online && sessions.empty()}};
   json own_sessions = json::array();
   for (const auto& s : sessions)
@@ -221,7 +230,9 @@ nlohmann::json DeviceDBManager::AdminDeviceData(
               "DELETE FROM user_devices WHERE user_id IN "
               "(?1,?2) OR device_id IN (?1,?2);"},
              {"presence",
-              "DELETE FROM device_presence WHERE device_id IN (?1,?2);"}}) {
+              "DELETE FROM device_presence WHERE device_id IN (?1,?2);"},
+             {"daily_controller_activity",
+              "DELETE FROM daily_controller_activity WHERE device_id IN (?1,?2);"}}) {
       Statement s(db_, item.second);
       s.Bind(1, id);
       s.Bind(2, clone);

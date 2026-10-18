@@ -483,6 +483,8 @@ void DeviceDBManager::InitDB() {
   }
   EnsureTextColumn(db_, "remote_control_sessions", "normalized_guest_id");
   EnsureTextColumn(db_, "remote_control_sessions", "normalized_host_id");
+  EnsureIntegerColumn(db_, "remote_control_sessions", "activity_confirmed");
+  InitDailyControllerActivity();
   ExecuteSchemaStatement(
       db_,
       "UPDATE remote_control_sessions SET "
@@ -874,6 +876,7 @@ bool DeviceDBManager::RecordRuntimeHeartbeat() {
     sqlite3_free(err_msg);
     return false;
   }
+  RefreshDailyControllerActivity(NowSeconds());
   return true;
 }
 
@@ -936,10 +939,12 @@ RetentionCleanupResult DeviceDBManager::CleanupExpiredDevices(
         "DELETE FROM device_presence WHERE device_id IN (?1,?2);";
     const char* remove_credentials =
         "DELETE FROM devices WHERE device_id IN (?1,?2);";
+    const char* remove_activity =
+        "DELETE FROM daily_controller_activity WHERE device_id IN (?1,?2);";
     for (const auto& id : ids) {
       const auto clone = "C-" + id;
       for (const char* sql :
-           {remove_associations, remove_presence, remove_credentials}) {
+           {remove_associations, remove_presence, remove_credentials, remove_activity}) {
         if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
           throw std::runtime_error(sqlite3_errmsg(db_));
         sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_TRANSIENT);
@@ -950,7 +955,7 @@ RetentionCleanupResult DeviceDBManager::CleanupExpiredDevices(
           result.associations += sqlite3_changes(db_);
         else if (sql == remove_presence)
           result.devices += sqlite3_changes(db_);
-        else
+        else if (sql == remove_credentials)
           result.credentials += sqlite3_changes(db_);
         sqlite3_finalize(stmt);
         stmt = nullptr;
@@ -1073,6 +1078,7 @@ bool DeviceDBManager::UpdateDeviceClientInfo(
   sqlite3_bind_text(stmt, 3, platform.c_str(), -1, SQLITE_TRANSIENT);
   const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
   sqlite3_finalize(stmt);
+  if (ok && !platform.empty()) UpdateDailyControllerKind(device_id, platform);
   return ok;
 }
 
@@ -1129,10 +1135,11 @@ bool DeviceDBManager::StartRemoteControlSession(
   }
 
   const char* sql =
-      "INSERT OR IGNORE INTO remote_control_sessions "
+      "INSERT INTO remote_control_sessions "
       "(transmission_id, guest_id, host_id, normalized_guest_id, "
-      "normalized_host_id, started_at) "
-      "VALUES (?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER));";
+      "normalized_host_id, started_at, activity_confirmed) "
+      "VALUES (?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER), 1) "
+      "ON CONFLICT(transmission_id, guest_id) DO UPDATE SET activity_confirmed=1;";
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
     rollback();
@@ -1149,6 +1156,14 @@ bool DeviceDBManager::StartRemoteControlSession(
   sqlite3_finalize(stmt);
   if (!ok) {
     rollback();
+    return false;
+  }
+
+  try {
+    RecordDailyControllerActivity(NowSeconds(), transmission_id, guest_id);
+  } catch (const std::exception& error) {
+    rollback();
+    LOG_ERROR("Failed to record controller activity: {}", error.what());
     return false;
   }
 
@@ -1173,6 +1188,10 @@ bool DeviceDBManager::EndRemoteControlSession(
   if (transmission_id.empty() || guest_id.empty()) {
     return false;
   }
+
+  // Include a connection ending just after midnight, before the next heartbeat.
+  // Restored sessions remain unconfirmed until a successful join/resume.
+  RecordDailyControllerActivity(NowSeconds(), transmission_id, guest_id);
 
   const char* sql =
       "DELETE FROM remote_control_sessions "

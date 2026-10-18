@@ -35,6 +35,8 @@
       'Client version': '客户端版本',
       'All platforms': '全部平台',
       'All versions': '全部版本',
+      'Filters': '筛选',
+      'Filters ({count})': '筛选（{count}）',
       'Sort by': '排序',
       'Connection': '在线信息',
       'Control activity': '控制活动',
@@ -43,6 +45,7 @@
       'Host': '被控端',
       'Session {id}': '会话 {id}',
       '{count} participants': '{count} 位参与者',
+      '{count} controllers': '{count} 个控制端',
       'Controllers': '控制方',
       'SERVER CONSOLE': '服务端控制台',
       'Loading console…': '正在加载管理控制台…',
@@ -79,6 +82,18 @@
       'Mobile clients': '移动客户端',
       'Web clients': '网页客户端',
       'Active sessions': '活动会话',
+      'Client overview': '客户端概览',
+      'Beijing time · resets at 00:00': '北京时间 · 每日 00:00 划分',
+      'Counting rules': '统计口径',
+      'Online now': '当前在线',
+      'Active today': '今日日活',
+      'Active yesterday': '昨日日活',
+      'Current connections': '当前远控连接',
+      'Daily activity counts controllers that successfully joined a remote session, including connections continuing past midnight. Merely being online does not count.': '日活统计成功加入远控会话的控制端，跨天持续中的连接计入新一天，仅在线不计入。',
+      'PC and mobile controllers count once per device per day. Web controllers count once per temporary ID; a new ID in the same browser can count again. These are client counts, not unique people.': '电脑和移动控制端按设备每天去重；网页控制端按临时 ID 去重，同一浏览器取得新 ID 后可以再次计入。统计的是客户端数量，不等同于实际人数。',
+      'Disconnecting does not remove daily activity. Unavailable history is shown as —; collection-day totals are partial. Today and yesterday are retained.': '断开连接后保留当日日活。没有采集记录的日期显示 —，首次采集当天为部分数据。仅保留今日和昨日记录。',
+      'Collection started at {time} today · partial data': '今日 {time} 开始采集 · 首日为部分数据',
+      'Yesterday contains partial data from the first collection day.': '昨日为首次采集当天，数据不完整。',
       'Recovering: {count}': '恢复中：{count}',
       'Client Presence': '设备在线状态',
       'Search device ID': '搜索设备 ID',
@@ -652,14 +667,18 @@
         const transmissionCell = document.createElement('td');
         labelCell(transmissionCell, 'Host');
         appendText(transmissionCell, 'div', session.host_id, 'device-id');
-        appendText(transmissionCell, 'span', t('Session {id}', {id: session.transmission_id}), 'subline session-id');
+        if (session.transmission_id !== session.host_id) {
+          appendText(transmissionCell, 'span', t('Session {id}', {id: session.transmission_id}), 'subline session-id');
+        }
         if (session.recovering_count) appendText(transmissionCell, 'span',
           t('Recovering: {count}', {count: session.recovering_count}), 'subline');
         row.appendChild(transmissionCell);
 
         const participantsCell = document.createElement('td');
         labelCell(participantsCell, 'Controllers');
-        appendText(participantsCell, 'span', t('{count} participants', {count: session.participant_count}), 'participant-count');
+        if (session.guest_ids.length > 1) {
+          appendText(participantsCell, 'span', t('{count} controllers', {count: session.guest_ids.length}), 'participant-count');
+        }
         const guests = document.createElement('div');
         guests.className = 'session-guests';
         for (const guest of session.guest_ids) appendText(guests, 'span', guest);
@@ -728,6 +747,7 @@
         document.getElementById('device-sort').value = page.sort;
         document.getElementById('device-order').textContent = t(page.order === 'asc' ? 'ASC' : 'DESC');
         document.getElementById('device-order').title = t(page.order === 'asc' ? 'Ascending' : 'Descending');
+        updateFilterSummary();
       }
     }
 
@@ -785,6 +805,22 @@
         patchListNode(select, next);
         if (select.value !== selected) select.value = selected;
       }
+      updateFilterSummary();
+    }
+
+    function updateFilterSummary() {
+      const count = Number(Boolean(state.devices.platform)) + Number(Boolean(state.devices.version))
+        + Number(state.devices.sort !== 'status' || state.devices.order !== 'desc');
+      setMessage('device-filter-toggle', count ? 'Filters ({count})' : 'Filters', {count});
+      document.getElementById('device-filter-toggle').classList.toggle('has-filters', count > 0);
+    }
+
+    function setMetric(id, value) {
+      const element = document.getElementById(id);
+      const text = String(value ?? '—');
+      element.textContent = text;
+      element.style.setProperty('--metric-digits', Math.max(3, text.length));
+      element.title = text;
     }
 
     function applyStats(stats) {
@@ -792,12 +828,28 @@
         document.getElementById('server-version').textContent = stats.server_version;
         document.getElementById('about-server-version').textContent = stats.server_version;
       }
-      document.getElementById('metric-devices').textContent = stats.online_pc_client_count ?? stats.online_device_count;
-      document.getElementById('metric-mobile').textContent = stats.online_mobile_client_count ?? 0;
-      document.getElementById('metric-web').textContent = stats.online_web_client_count;
-      document.getElementById('metric-sessions').textContent = stats.active_connection_count;
+      setMetric('metric-devices', stats.online_pc_client_count ?? stats.online_device_count);
+      setMetric('metric-mobile', stats.online_mobile_client_count ?? 0);
+      setMetric('metric-web', stats.online_web_client_count);
+      setMetric('metric-sessions', stats.active_connection_count);
+      const daily = stats.daily_active_controllers;
+      for (const kind of ['pc', 'mobile', 'web']) {
+        for (const period of ['today', 'yesterday']) {
+          setMetric(`metric-${kind}-${period}`, daily?.[period]?.[kind]);
+        }
+      }
+      const coverage = document.getElementById('daily-coverage');
+      coverage.classList.toggle('hidden', !daily?.today?.partial && !daily?.yesterday?.partial);
+      if (daily?.today?.partial) {
+        const time = new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+        }).format(new Date(daily.started_at * 1000));
+        setMessage('daily-coverage', 'Collection started at {time} today · partial data', {time});
+      } else if (daily?.yesterday?.partial) {
+        setMessage('daily-coverage', 'Yesterday contains partial data from the first collection day.');
+      }
       const recovery = document.getElementById('recovery-count');
-      recovery.textContent = t('Recovering: {count}', {count: stats.recovering_connection_count || 0});
+      setMessage('recovery-count', 'Recovering: {count}', {count: stats.recovering_connection_count || 0});
       recovery.classList.toggle('hidden', !stats.recovering_connection_count);
       lastRefreshAt = Date.now();
       updateRefreshTime();
@@ -932,6 +984,21 @@
     document.getElementById('language').addEventListener('change', event => setLanguage(event.target.value));
     document.getElementById('login-form').addEventListener('submit', login);
     document.getElementById('logout').addEventListener('click', logout);
+    document.getElementById('device-filter-toggle').addEventListener('click', (event) => {
+      const expanded = event.currentTarget.getAttribute('aria-expanded') !== 'true';
+      event.currentTarget.setAttribute('aria-expanded', String(expanded));
+      document.getElementById('client-filters').classList.toggle('is-expanded', expanded);
+    });
+    const metricsHelp = document.querySelector('.metrics-help');
+    document.addEventListener('click', event => {
+      if (!metricsHelp.contains(event.target)) metricsHelp.open = false;
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && metricsHelp.open) {
+        metricsHelp.open = false;
+        metricsHelp.querySelector('summary').focus();
+      }
+    });
     document.getElementById('device-search').addEventListener('input', (event) => {
       state.devices.search = event.target.value.trim();
       state.devices.offset = 0;
@@ -1033,12 +1100,13 @@
       'Type the device ID again to confirm': '再次输入设备 ID 以确认',
       'Clean selected data': '清理所选数据',
       'Credential records': '设备身份记录数',
+      'Daily activity records': '日活记录数',
       'Association records': '历史关联记录数',
       'Session records': '活动／恢复中会话记录数',
       'Cleanup available': '是否可清理',
       'Yes': '是',
       'No — device or session is active': '否，设备或会话仍在使用',
-      'Removes offline state, version/platform and historical associations. The device ID and admission password remain valid.': '清理离线状态、版本／平台和历史关联；设备 ID 与准入密码保持有效。',
+      'Removes offline state, version/platform, historical associations and daily activity records. The device ID and admission password remain valid.': '清理离线状态、版本／平台、历史关联和日活记录；设备 ID 与准入密码保持有效。',
       'Also removes the registered device ID and password digest. This cannot be undone; reconnecting may register a new device ID.': '同时删除设备登记及密码摘要。此操作不可撤销；再次连接可能登记为新的设备 ID。',
       'Enter the admin password and confirm that you have verified the request.': '请输入管理员密码，并勾选已核验请求权限。',
       'The confirmation device ID does not match.': '确认设备 ID 与当前查询目标不一致。',
@@ -1094,7 +1162,7 @@
       const scope = dataElement('scope').value;
       setMessage('data-cleanup-help', scope === 'identity'
         ? 'Also removes the registered device ID and password digest. This cannot be undone; reconnecting may register a new device ID.'
-        : 'Removes offline state, version/platform and historical associations. The device ID and admission password remain valid.');
+        : 'Removes offline state, version/platform, historical associations and daily activity records. The device ID and admission password remain valid.');
       if (!dataPreview) return;
       const summary = dataElement('summary');
       summary.replaceChildren();
@@ -1103,14 +1171,18 @@
         ['Credential records', dataPreview.credential_records],
         ['Association records', dataPreview.association_records],
         ['Session records', dataPreview.active_session_records],
+        ['Daily activity records', dataPreview.daily_controller_activity?.length ?? 0],
         ['Cleanup available', t(dataPreview.cleanup_allowed ? 'Yes' : 'No — device or session is active')]
       ]) appendDetailItem(summary, label, String(value));
       const rows = dataElement('presence');
       rows.replaceChildren();
       for (const record of dataPreview.presence) {
         const row = document.createElement('tr');
-        for (const value of [record.device_id, t(record.online ? 'Online' : 'Offline'),
-          formatTime(record.updated_at), `${record.client_platform || '-'} / ${record.client_version || '-'}`]) appendText(row, 'td', value);
+        row.className = 'data-presence-row';
+        const values = [record.device_id, t(record.online ? 'Online' : 'Offline'),
+          formatTime(record.updated_at), `${record.client_platform || '-'} / ${record.client_version || '-'}`];
+        const labels = ['Device ID', 'State', 'Last seen', 'Client'];
+        values.forEach((value, index) => labelCell(appendText(row, 'td', value), labels[index]));
         rows.appendChild(row);
       }
       if (!dataPreview.presence.length) appendEmptyRow(rows, 4);

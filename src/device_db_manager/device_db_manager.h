@@ -124,6 +124,8 @@ class DeviceDBManager {
                               const std::string& client_version,
                               const std::string& client_platform);
   bool RecordRuntimeHeartbeat();
+  // Calendar-day controller counts, available only through the admin API.
+  nlohmann::json GetDailyControllerStats();
   // Deletes expired offline identities, presence and associations together.
   // A device and its controller clone share the latest activity deadline.
   // Batches share the writer's transaction ordering with login/logout.
@@ -180,10 +182,18 @@ class DeviceDBManager {
   std::string GenerateDeviceId();
   bool DeviceIdExists(const std::string& device_id);
   int64_t GetRuntimeLastSeen();
+  void InitDailyControllerActivity();
+  void RefreshDailyControllerActivity(int64_t now);
+  void RecordDailyControllerActivity(int64_t now,
+                                    const std::string& transmission_id = "",
+                                    const std::string& guest_id = "");
+  void UpdateDailyControllerKind(const std::string& device_id,
+                                 const std::string& platform);
 
  private:
   std::chrono::steady_clock::time_point read_deadline_ = (std::chrono::steady_clock::time_point::max)();
   sqlite3* db_;
+  int64_t activity_day_ = 0;
   mutable std::recursive_mutex db_mutex_;
 };
 

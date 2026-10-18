@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="light">
     <title>CrossDesk Admin</title>
     <link rel="icon" type="image/png" href="/admin/assets/crossdesk-logo.png">
@@ -112,60 +112,52 @@
             </div>
           </div>
           <div id="refresh-error" class="error refresh-error" role="alert"></div>
+          <div class="metrics-heading">
+            <h2 data-i18n="Client overview">Client overview</h2>
+            <span class="metrics-timezone" data-i18n="Beijing time · resets at 00:00">Beijing time · resets at 00:00</span>
+            <details class="metrics-help">
+              <summary data-i18n="Counting rules">Counting rules</summary>
+              <div class="metrics-help-content">
+                <p data-i18n="Daily activity counts controllers that successfully joined a remote session, including connections continuing past midnight. Merely being online does not count.">Daily activity counts controllers that successfully joined a remote session, including connections continuing past midnight. Merely being online does not count.</p>
+                <p data-i18n="PC and mobile controllers count once per device per day. Web controllers count once per temporary ID; a new ID in the same browser can count again. These are client counts, not unique people.">PC and mobile controllers count once per device per day. Web controllers count once per temporary ID; a new ID in the same browser can count again. These are client counts, not unique people.</p>
+                <p data-i18n="Disconnecting does not remove daily activity. Unavailable history is shown as —; collection-day totals are partial. Today and yesterday are retained.">Disconnecting does not remove daily activity. Unavailable history is shown as —; collection-day totals are partial. Today and yesterday are retained.</p>
+              </div>
+            </details>
+          </div>
           <div class="metrics">
-            <article class="metric teal">
-              <span class="metric-icon">
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="3" y="4" width="18" height="13" rx="2"/>
-                  <path d="M8 21h8M12 17v4"/>
-                </svg>
-              </span>
-              <div class="metric-copy">
-                <span data-i18n="PC clients">PC clients</span>
-                <span class="metric-description" data-i18n="PC clients online">PC clients online</span>
-              </div>
-              <strong id="metric-devices">—</strong>
+            <article class="metric">
+              <h3 data-i18n="PC clients">PC clients</h3>
+              <dl class="metric-values">
+                <div class="metric-online"><dt data-i18n="Online now">Online now</dt><dd id="metric-devices">—</dd></div>
+                <div><dt data-i18n="Active today">Active today</dt><dd id="metric-pc-today">—</dd></div>
+                <div class="metric-yesterday"><dt data-i18n="Active yesterday">Active yesterday</dt><dd id="metric-pc-yesterday">—</dd></div>
+              </dl>
             </article>
-            <article class="metric green">
-              <span class="metric-icon">
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="6" y="2" width="12" height="20" rx="2"/>
-                  <path d="M10 18h4"/>
-                </svg>
-              </span>
-              <div class="metric-copy">
-                <span data-i18n="Mobile clients">Mobile clients</span>
-                <span class="metric-description" data-i18n="Mobile clients online">Mobile clients online</span>
-              </div>
-              <strong id="metric-mobile">—</strong>
+            <article class="metric">
+              <h3 data-i18n="Mobile clients">Mobile clients</h3>
+              <dl class="metric-values">
+                <div class="metric-online"><dt data-i18n="Online now">Online now</dt><dd id="metric-mobile">—</dd></div>
+                <div><dt data-i18n="Active today">Active today</dt><dd id="metric-mobile-today">—</dd></div>
+                <div class="metric-yesterday"><dt data-i18n="Active yesterday">Active yesterday</dt><dd id="metric-mobile-yesterday">—</dd></div>
+              </dl>
             </article>
-            <article class="metric blue">
-              <span class="metric-icon">
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="9"/>
-                  <path d="M3 12h18M12 3a18 18 0 0 1 0 18 18 18 0 0 1 0-18Z"/>
-                </svg>
-              </span>
-              <div class="metric-copy">
-                <span data-i18n="Web clients">Web clients</span>
-                <span class="metric-description" data-i18n="Browser clients online">Browser clients online</span>
-              </div>
-              <strong id="metric-web">—</strong>
+            <article class="metric">
+              <h3 data-i18n="Web clients">Web clients</h3>
+              <dl class="metric-values">
+                <div class="metric-online"><dt data-i18n="Online now">Online now</dt><dd id="metric-web">—</dd></div>
+                <div><dt data-i18n="Active today">Active today</dt><dd id="metric-web-today">—</dd></div>
+                <div class="metric-yesterday"><dt data-i18n="Active yesterday">Active yesterday</dt><dd id="metric-web-yesterday">—</dd></div>
+              </dl>
             </article>
-            <article class="metric violet">
-              <span class="metric-icon">
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M5 7h14l-4-4M19 17H5l4 4M19 7l-4 4M5 17l4-4"/>
-                </svg>
-              </span>
-              <div class="metric-copy">
-                <span data-i18n="Active sessions">Active sessions</span>
-                <span class="metric-description" data-i18n="Remote control connections">Remote control connections</span>
-              </div>
-              <strong id="metric-sessions">—</strong>
+            <article class="metric metric-session">
+              <h3 data-i18n="Active sessions">Active sessions</h3>
+              <dl class="metric-values">
+                <div><dt data-i18n="Current connections">Current connections</dt><dd id="metric-sessions">—</dd></div>
+              </dl>
               <span id="recovery-count" class="hidden" role="status"></span>
             </article>
           </div>
+          <p id="daily-coverage" class="daily-coverage hidden" role="status"></p>
           <div class="monitoring-grid">
             <section id="clients" class="panel presence-panel" aria-labelledby="clients-title">
               <div class="section-heading">
@@ -189,7 +181,7 @@
                   </button>
                 </div>
               </div>
-              <div class="filter-toolbar">
+              <div class="filter-toolbar" id="client-filters">
                 <label class="search-field">
                   <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <circle cx="10.5" cy="10.5" r="6.5"/>
@@ -206,30 +198,33 @@
                     <option value="web" data-i18n="Web">Web</option>
                   </select>
                 </label>
-                <label class="filter-field">
-                  <span data-i18n="Platform">Platform</span>
-                  <select id="device-platform" aria-label="Client platform" data-i18n-aria-label="Client platform">
-                    <option value="" data-i18n="All platforms">All platforms</option>
-                  </select>
-                </label>
-                <label class="filter-field">
-                  <span data-i18n="Version">Version</span>
-                  <select id="device-version" aria-label="Client version" data-i18n-aria-label="Client version">
-                    <option value="" data-i18n="All versions">All versions</option>
-                  </select>
-                </label>
-                <div class="sort-controls">
+                <button id="device-filter-toggle" class="mobile-filter-toggle" type="button" aria-expanded="false" aria-controls="device-extra-filters" data-i18n="Filters">Filters</button>
+                <div class="client-extra-filters" id="device-extra-filters">
                   <label class="filter-field">
-                    <span data-i18n="Sort by">Sort by</span>
-                    <select id="device-sort" aria-label="Device sort" data-i18n-aria-label="Device sort">
-                      <option value="status" data-i18n="Status">Status</option>
-                      <option value="updated_at" data-i18n="Last seen">Last seen</option>
-                      <option value="online_since" data-i18n="Online since">Online since</option>
-                      <option value="current_online" data-i18n="Current online">Current online</option>
-                      <option value="device_id" data-i18n="Device ID">Device ID</option>
+                    <span data-i18n="Platform">Platform</span>
+                    <select id="device-platform" aria-label="Client platform" data-i18n-aria-label="Client platform">
+                      <option value="" data-i18n="All platforms">All platforms</option>
                     </select>
                   </label>
-                  <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order" data-i18n-aria-label="Toggle sort order" data-i18n="DESC">DESC</button>
+                  <label class="filter-field">
+                    <span data-i18n="Version">Version</span>
+                    <select id="device-version" aria-label="Client version" data-i18n-aria-label="Client version">
+                      <option value="" data-i18n="All versions">All versions</option>
+                    </select>
+                  </label>
+                  <div class="sort-controls">
+                    <label class="filter-field">
+                      <span data-i18n="Sort by">Sort by</span>
+                      <select id="device-sort" aria-label="Device sort" data-i18n-aria-label="Device sort">
+                        <option value="status" data-i18n="Status">Status</option>
+                        <option value="updated_at" data-i18n="Last seen">Last seen</option>
+                        <option value="online_since" data-i18n="Online since">Online since</option>
+                        <option value="current_online" data-i18n="Current online">Current online</option>
+                        <option value="device_id" data-i18n="Device ID">Device ID</option>
+                      </select>
+                    </label>
+                    <button id="device-order" class="sort-order" type="button" aria-label="Toggle sort order" data-i18n-aria-label="Toggle sort order" data-i18n="DESC">DESC</button>
+                  </div>
                 </div>
               </div>
               <div class="table-wrap list-scroll" tabindex="0" role="region" aria-labelledby="clients-title">
@@ -278,8 +273,8 @@
                 <table class="sessions-table" aria-labelledby="sessions-title">
                   <thead>
                     <tr>
-                      <th scope="col" data-i18n="Host / session">Host / session</th>
-                      <th scope="col" data-i18n="Participants">Participants</th>
+                      <th scope="col" data-i18n="Host">Host</th>
+                      <th scope="col" data-i18n="Controllers">Controllers</th>
                       <th scope="col" data-i18n="Action">Action</th>
                     </tr>
                   </thead>

@@ -163,6 +163,7 @@ void SessionRecovery::Report(websocketpp::connection_hdl hdl, const nlohmann::js
     if (!transmission_->IsTransmissionExist(ticket.tx))
       transmission_->BindHostToTransmission(ticket.host, ticket.tx);
     if (transmission_->BindGuestToTransmission(ticket.guest, ticket.tx, ticket.guest_hdl)) {
+      db_->StartRemoteControlSession(ticket.tx, ticket.host, ticket.guest);
       ticket.recovering = false;
       const nlohmann::json ack = {{"type", "session_resumed"},
           {"transmission_id", ticket.tx}, {"guest_id", ticket.guest}};

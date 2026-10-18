@@ -175,6 +175,14 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       db_path, NotificationStore::OpenMode::ReadOnly);
   notification_service_->SetBroadcastCallback(
       [this](json message) { BroadcastToClients(std::move(message)); });
+  session_recovery_ = std::make_unique<SessionRecovery>(db_path,
+      device_db_manager_.get(), transmission_manager_,
+      [this](websocketpp::connection_hdl hdl, json msg) { SendMsg(hdl, std::move(msg)); },
+      std::max(120, credential_timeout_seconds_ + 15));
+  // Reconstruct routing before installing the live-session callback. Replaying
+  // persisted connections must not count as confirmed controller activity.
+  RestorePersistedRemoteControlSessions(transmission_manager_,
+                                        device_db_manager_.get(), session_recovery_.get());
   transmission_manager_->SetRemoteControlSessionCallback(
       [this](const std::string& transmission_id, const std::string& host_id,
              const std::string& guest_id, bool started) {
@@ -189,12 +197,6 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
                                                       guest_id);
         }
       });
-  session_recovery_ = std::make_unique<SessionRecovery>(db_path,
-      device_db_manager_.get(), transmission_manager_,
-      [this](websocketpp::connection_hdl hdl, json msg) { SendMsg(hdl, std::move(msg)); },
-      std::max(120, credential_timeout_seconds_ + 15));
-  RestorePersistedRemoteControlSessions(transmission_manager_,
-                                        device_db_manager_.get(), session_recovery_.get());
   signal_negotiation_ = std::make_unique<SignalNegotiation>(
       transmission_manager_, device_db_manager_.get(), nullptr,
       CreateIceServerConfigIssuer(), nullptr, source_rate);

@@ -490,7 +490,7 @@ AdminHttpResponse AdminController::HandleStats(
     return ErrorResponse(405, "method_not_allowed");
   }
 
-  return JsonResponse(200, {{"stats", BuildStats()}});
+  return JsonResponse(200, {{"stats", BuildAdminStats()}});
 }
 
 AdminHttpResponse AdminController::HandleOverview(
@@ -625,7 +625,7 @@ AdminHttpResponse AdminController::HandleOverview(
     }
   }
 
-  nlohmann::json stats = BuildStats();
+  nlohmann::json stats = BuildAdminStats();
 
   nlohmann::json devices_page = {{"limit", device_limit},
                                  {"offset", device_offset},
@@ -742,6 +742,13 @@ bool AdminController::IsAuthorized(const AdminHttpRequest& request) {
   }
   std::string token = AdminAuth::ExtractCookie(request.cookie, kSessionCookieName);
   return auth_->ValidateSession(token);
+}
+
+nlohmann::json AdminController::BuildAdminStats() const {
+  auto stats = BuildStats();
+  stats["daily_active_controllers"] = db_ ? db_->GetDailyControllerStats()
+                                        : nlohmann::json(nullptr);
+  return stats;
 }
 
 nlohmann::json AdminController::BuildStats() const {
