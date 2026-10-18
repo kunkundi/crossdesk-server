@@ -65,6 +65,17 @@ SessionRecovery::SessionRecovery(const std::string& path, DeviceDBManager* db,
     ticket.recovering = true; ticket.deadline = Now() + recovery_timeout_seconds;
     tickets_[{ticket.tx, ticket.guest}] = std::move(ticket);
   }
+  Statement legacy(sql_,
+      "SELECT s.transmission_id,s.host_id,s.guest_id FROM remote_control_sessions s "
+      "WHERE NOT EXISTS (SELECT 1 FROM session_recovery r "
+      "WHERE r.transmission_id=s.transmission_id AND r.guest_id=s.guest_id);");
+  while (legacy.Step() == SQLITE_ROW) {
+    Ticket ticket;
+    ticket.tx = legacy.Text(0); ticket.host = legacy.Text(1);
+    ticket.guest = legacy.Text(2);
+    ticket.deadline = Now() + recovery_timeout_seconds;
+    legacy_[{ticket.tx, ticket.guest}] = std::move(ticket);
+  }
   } catch (...) {
     sqlite3_close(sql_); sql_ = nullptr;
     throw;
@@ -89,6 +100,19 @@ void SessionRecovery::Remove(const Key& key) {
   Statement stmt(sql_, "DELETE FROM session_recovery WHERE transmission_id=? AND guest_id=?;");
   stmt.Bind(1, key.first); stmt.Bind(2, key.second); stmt.Done();
   tickets_.erase(key);
+  legacy_.erase(key);
+}
+
+bool SessionRecovery::ConfirmLegacy(const Ticket& ticket) {
+  if (Now() > ticket.deadline || !Exists(ticket)) return false;
+  const auto host_hdl = transmission_->GetWsHandle(ticket.host);
+  const auto guest_hdl = transmission_->GetWsHandle(ticket.guest);
+  if (host_hdl.expired() || guest_hdl.expired() ||
+      transmission_->GetUserId(host_hdl) != ticket.host ||
+      transmission_->GetUserId(guest_hdl) != ticket.guest) return false;
+  // Keep legacy presence recovery separate from authorization: C- identities
+  // alone must never restore a room's guest socket or bypass its password.
+  return db_->StartRemoteControlSession(ticket.tx, ticket.host, ticket.guest);
 }
 
 bool SessionRecovery::Manages(const std::string& tx, const std::string& guest) {
@@ -99,20 +123,35 @@ bool SessionRecovery::Manages(const std::string& tx, const std::string& guest) {
 bool SessionRecovery::IsRecovering(const std::string& tx, const std::string& guest) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const auto it = tickets_.find({tx, guest});
-  return it != tickets_.end() && it->second.recovering;
+  return legacy_.count({tx, guest}) != 0 ||
+         (it != tickets_.end() && it->second.recovering);
 }
 
 void SessionRecovery::Login(websocketpp::connection_hdl hdl, const nlohmann::json& request) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   capable_[hdl] = request.contains("session_resume_version") &&
                  request["session_resume_version"] == 1;
+  const auto user = transmission_->GetUserId(hdl);
+  for (auto it = legacy_.begin(); it != legacy_.end();) {
+    const auto& ticket = it->second;
+    if ((user == ticket.host || user == ticket.guest) && ConfirmLegacy(ticket))
+      it = legacy_.erase(it);
+    else
+      ++it;
+  }
 }
 
 void SessionRecovery::Issue(const std::string& tx, const std::string& host,
     const std::string& guest, websocketpp::connection_hdl guest_hdl) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const auto host_hdl = transmission_->GetWsHandle(host);
-  if (!capable_[host_hdl] || !capable_[guest_hdl]) return;
+  // Issue follows a successful password-authorized join, which also supersedes
+  // any pending recovery (including a previous ticket on a legacy client).
+  legacy_.erase({tx, guest});
+  if (!capable_[host_hdl] || !capable_[guest_hdl]) {
+    if (tickets_.count({tx, guest})) Remove({tx, guest});
+    return;
+  }
   unsigned char bytes[32];
   if (RAND_bytes(bytes, sizeof(bytes)) != 1)
     throw std::runtime_error("Cannot generate session recovery ticket");
@@ -163,7 +202,7 @@ void SessionRecovery::Report(websocketpp::connection_hdl hdl, const nlohmann::js
     if (!transmission_->IsTransmissionExist(ticket.tx))
       transmission_->BindHostToTransmission(ticket.host, ticket.tx);
     if (transmission_->BindGuestToTransmission(ticket.guest, ticket.tx, ticket.guest_hdl)) {
-      db_->StartRemoteControlSession(ticket.tx, ticket.host, ticket.guest);
+      if (!db_->StartRemoteControlSession(ticket.tx, ticket.host, ticket.guest)) return;
       ticket.recovering = false;
       const nlohmann::json ack = {{"type", "session_resumed"},
           {"transmission_id", ticket.tx}, {"guest_id", ticket.guest}};
@@ -186,6 +225,18 @@ void SessionRecovery::Expire() {
       Remove({ticket.tx, ticket.guest});
     }
   }
+  for (auto it = legacy_.begin(); it != legacy_.end();) {
+    const auto ticket = (it++)->second;
+    if (!Exists(ticket)) {
+      legacy_.erase({ticket.tx, ticket.guest});
+    } else if (Now() > ticket.deadline) {
+      transmission_->ReleaseGuestFromTransmission(ticket.guest, ticket.tx);
+      db_->EndRemoteControlSession(ticket.tx, ticket.host, ticket.guest);
+      legacy_.erase({ticket.tx, ticket.guest});
+    } else if (ConfirmLegacy(ticket)) {
+      legacy_.erase({ticket.tx, ticket.guest});
+    }
+  }
 }
 
 nlohmann::json SessionRecovery::Status() {
@@ -198,6 +249,8 @@ nlohmann::json SessionRecovery::Status() {
     else if (t.host_ready && t.guest_ready && !t.host_hdl.expired() && !t.guest_hdl.expired())
       ++recoverable;
   }
+  for (const auto& pair : legacy_)
+    if (Exists(pair.second)) ++recovering;
   Statement count(sql_, "SELECT COUNT(*) FROM remote_control_sessions;");
   if (count.Step() != SQLITE_ROW) throw std::runtime_error("Cannot count saved sessions");
   const int total = sqlite3_column_int(count.value, 0);

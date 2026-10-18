@@ -44,12 +44,17 @@ class SessionRecovery {
   void Save(const Ticket& ticket);
   bool Exists(const Ticket& ticket);
   void Remove(const Key& key);
+  // Legacy clients cannot report RTC liveness. Reconcile only a persisted
+  // relationship whose two identities returned within the recovery window;
+  // this updates accounting without granting a socket access to the room.
+  bool ConfirmLegacy(const Ticket& ticket);
   sqlite3* sql_ = nullptr;
   DeviceDBManager* db_;
   std::shared_ptr<TransmissionManager> transmission_;
   Send send_;
   std::recursive_mutex mutex_;
   std::map<Key, Ticket> tickets_;
+  std::map<Key, Ticket> legacy_;
   std::map<websocketpp::connection_hdl, bool,
            std::owner_less<websocketpp::connection_hdl>> capable_;
 };
