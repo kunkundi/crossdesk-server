@@ -18,408 +18,98 @@
 | CrossDesk Server | WSS 信令、设备身份与密码验证、在线状态、会话协调、临时 TURN 凭据 |
 | Coturn | 在客户端无法直连时中继媒体与数据；由独立容器运行 |
 | SQLite | 保存设备记录、在线状态及活动会话信息 |
-| Web 管理后台 | 查看指标、客户端与活动会话，搜索 / 筛选 / 排序，断开选定会话 |
+| Web 管理后台 | 在线与日活指标、客户端与会话管理，设备数据查询 / 导出 / 清理 |
 
 客户端优先尝试 P2P 直连，必要时通过 TURN 中继。当前 [Compose](compose.yaml) 和 [CI](.github/workflows/build.yml) 面向 **Linux amd64 / arm64**；发布镜像以 Ubuntu 22.04 为运行环境。
 
-## 运行服务
+<a id="运行服务"></a>
 
-### 1. 准备部署配置
+## 快速部署
 
-在已安装 **Docker Engine 和 Compose 插件**的 Linux 服务器上操作，先确认 `docker compose version` 可用。Compose 使用主机网络；`INTERNAL_IP` 必须是宿主机实际可绑定的地址。
+准备安装了 Docker Engine 与 Compose 插件的 **Linux amd64 / arm64** 服务器，部署使用 host 网络。从**同一 [Release](https://github.com/kunkundi/crossdesk-server/releases)** 下载 `compose.yaml` 和 `env.example` 到独立部署目录，执行：
 
-从同一个 [GitHub Release](https://github.com/kunkundi/crossdesk-server/releases) 下载 **`compose.yaml`** 和 **`env.example`**，放在单独的部署目录中。在该目录执行：
-
-```bash
+```sh
 cp env.example .env
-```
-
-Release 附件中的 `env.example` 已固定对应镜像 tag。源码仓库中的文件名是 [`.env.example`](.env.example)，其镜像值为 `latest`；使用它时请自行选择固定发布 tag。后续 Compose 命令都在配置目录执行。
-
-### 2. 编辑 `.env`
-
-用文本编辑器填写以下配置，替换所有示例地址。云服务器存在公网 NAT 时，公网和内网 IP 通常不同；公网 IP 直接配置在网卡上时，两项可以相同。
-
-| 配置 | 用途 / 默认值 |
-| --- | --- |
-| `CROSSDESK_IMAGE` | 使用与部署文件配套的固定发布 tag |
-| `EXTERNAL_IP` | 公网 IP，用于默认 TURN 地址与自动证书生成 |
-| `INTERNAL_IP` | Coturn 监听和中继使用的本机网卡 IP |
-| `CROSSDESK_SERVER_PORT` | WSS / HTTPS 共用端口，Compose 默认 `9099` |
-| `COTURN_PORT` | STUN / TURN 端口，默认 `3478` |
-| `MIN_PORT` / `MAX_PORT` | TURN 媒体端口范围，默认 `50000`–`60000` |
-| `COTURN_AUTH_SECRET` | 信令服务与 Coturn 共享的签名密钥，不填入客户端 |
-| `COTURN_STATELESS_NONCE_SECRET` | 独立的 nonce 密钥，生成后持久保存 |
-| `CROSSDESK_DATA_DIR` | 数据与证书的宿主机目录，默认 `/var/lib/crossdesk` |
-| `CROSSDESK_LOG_DIR` | 业务日志的宿主机目录，默认 `/var/log/crossdesk` |
-
-分别运行两次下面的命令，将两个不同的输出填入上述两个密钥字段：
-
-```bash
 openssl rand -hex 32
 openssl rand -hex 32
 ```
 
-可选项 `COTURN_PUBLIC_HOST` 用于向客户端公布独立的 TURN 域名 / IP，留空时使用 `EXTERNAL_IP`。`COTURN_CREDENTIAL_TTL_SECONDS` 默认 `3600` 秒，范围为 `60`–`86400`；`COTURN_LOG_LEVEL` 默认 `warning`，`COTURN_MEMORY_LIMIT` 默认 `512m`。完整参数见 [环境变量示例](.env.example)。
+启动前编辑 `.env`：保留对应发布版本的固定镜像 tag，`EXTERNAL_IP` 填公网 IP，`INTERNAL_IP` 填 Coturn 能绑定的本机地址。将上面两次生成的不同密钥分别填入 `COTURN_AUTH_SECRET` 和 `COTURN_STATELESS_NONCE_SECRET`。源码仓库的文件名是 [`.env.example`](.env.example)，默认镜像为 `latest`，使用时需自行选择固定 tag。
 
-客户端登录和会话协商时由信令服务签发临时 TURN 用户名、密码；不要在客户端或 Web 页面中配置服务器共享密钥。更新服务端时同时核对客户端的版本兼容性。
+按配置同时放通防火墙与云安全组：
 
-### 3. 放通端口并启动
-
-防火墙及云安全组需要允许：
-
-| 端口 | 协议 | 用途 |
+| 默认端口 | 协议 | 服务 |
 | --- | --- | --- |
-| `CROSSDESK_SERVER_PORT`，默认 `9099` | TCP | WSS、状态接口与管理后台 |
-| `COTURN_PORT`，默认 `3478` | TCP / UDP | STUN / TURN |
-| `MIN_PORT`–`MAX_PORT`，默认 `50000`–`60000` | UDP | TURN 中继媒体 |
+| `9099` | TCP | WSS 信令、HTTPS 状态接口及后台 |
+| `3478` | TCP / UDP | STUN / TURN |
+| `50000`–`60000` | UDP | TURN 中继 |
 
-保存 `.env` 后执行：
+在配置目录执行：
 
-```bash
+```sh
 sudo docker compose config -q
 sudo docker compose pull
 sudo docker compose up -d --no-build
 sudo docker compose ps
 ```
 
-`crossdesk_server` 会首次生成证书并创建数据库；`crossdesk_coturn` 等待证书文件就绪后启动。Compose 的健康检查只确认密钥和证书文件存在，还需通过下文的状态接口及实际客户端连接验证服务。
+首次启动生成证书与数据库，随后按下文完成**证书信任与客户端配置**。Compose 健康检查仅检查证书文件，仍需验证 HTTPS 与真实远控连接。Compose 默认端口为 `9099`，独立二进制默认端口为 `9090`。
 
-本文连接示例均使用 Compose 默认端口 **9099**；如果修改了端口，后续 URL 和客户端配置也要一起修改。直接运行二进制且不传端口参数时，程序默认使用 **9090**。
+[完整部署指南](docs/DEPLOYMENT.md) · [自定义 ICE / TURN 节点](docs/DEPLOYMENT.md#ice)
 
 <a id="clients"></a>
+<a id="证书与客户端连接"></a>
 
-## 证书与客户端连接
+## 证书与客户端
 
-### 信任自己的服务器证书
+自动生成的证书只覆盖 `EXTERNAL_IP`。将本次部署的 `${CROSSDESK_DATA_DIR}/certs/api.crossdesk.cn_root.crt` 导入各客户端信任库；使用域名时需提供匹配的证书链和私钥。修改 `.env` 的 IP 不会重新生成已有证书。
 
-默认文件位于 `${CROSSDESK_DATA_DIR}/certs/`：
+桌面端打开 **设置 → 常规 → 自建服务配置**，填写主机和信令端口，确认返回后勾选启用并**保存**；两端必须使用同一服务器，TURN 地址由服务端下发。Web 的 WSS 地址与浏览器证书信任见 [Web 部署指南](https://github.com/kunkundi/crossdesk-web-client/blob/HEAD/docs/DEPLOYMENT.md#configuration)。
 
-| 文件 | 用途 |
-| --- | --- |
-| `api.crossdesk.cn_root.crt` | 分发到客户端的根证书 |
-| `api.crossdesk.cn_bundle.crt` | 服务端证书链 |
-| `api.crossdesk.cn.key` | 服务端私钥，保留在服务器 |
-
-这些是程序约定的**文件名**，不要求服务器使用 `api.crossdesk.cn` 域名。[自动生成脚本](docker/generate_certs.sh) 只将 `EXTERNAL_IP` 写入证书的 IP 地址范围；客户端应使用该 IP。使用自定义域名时，需提供包含该域名的有效证书链和私钥，分别放到 `bundle.crt` 和 `.key` 对应的上述路径。
-
-[启动脚本](docker/start.sh) 会复用已有证书，修改 `.env` 中的 IP 不会重新签发证书。重新生成自签证书会更换根证书，所有客户端都需重新信任。使用受系统信任的 CA 证书时通常无需额外导入根证书。
-
-将自己部署的 `api.crossdesk.cn_root.crt` 复制到客户端后，按平台导入系统信任库：
-
-```powershell
-# Windows：管理员 PowerShell，替换为实际文件路径
-certutil -addstore "Root" "C:\path\to\api.crossdesk.cn_root.crt"
-```
-
-```bash
-# Ubuntu / Debian
-sudo cp /path/to/api.crossdesk.cn_root.crt /usr/local/share/ca-certificates/
-sudo update-ca-certificates
-```
-
-```bash
-# macOS
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain /path/to/api.crossdesk.cn_root.crt
-```
-
-### 配置控制端和被控端
-
-1. 在桌面客户端打开 **☰ → 设置 → 自托管配置**。
-2. 填写服务器 IP / 域名、信令端口 `9099`、中继端口 `3478`，点击“确认”。地址栏不填协议前缀、路径或端口。
-3. 返回设置，勾选“自托管配置”，再点击“确认”保存。两端都需使用同一服务器。
-4. 完成证书信任后重新打开客户端，等待“已连接服务器”，使用被控端当前显示的 ID 和密码连接。
-
-当前桌面客户端通过**系统信任库**验证证书，无需在自托管窗口选择证书文件。切换服务器后请重新核对设备 ID。
-
-- **Web：** 在 [Web 客户端](https://github.com/kunkundi/crossdesk-web-client) 的 `web_client.js` 中配置 `signalingUrl`（例如 `wss://203.0.113.10:9099`）及 STUN 地址（例如 `stun:203.0.113.10:3478`），替换示例 IP；浏览器也需信任证书，被控端保持 SRTP 开启。
-- **原生 iOS：** 在“设置 → 服务器”中填写信令主机、信令端口与 STUN/TURN 端口并应用；自签根证书需要在设备上安装并启用信任。
+[证书文件、各系统信任命令与客户端配置](docs/DEPLOYMENT.md#clients)
 
 <a id="admin"></a>
 
 ## 后台管理
 
-在 `.env` 中同时设置 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，然后重新执行 `sudo docker compose up -d --no-build`。只设置其中一项不会启用后台。浏览器访问 **`https://服务器地址:9099/admin`**，信任证书后使用该账户登录。
+在 `.env` 中**同时设置** `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，执行 `sudo docker compose up -d --no-build` 重新创建容器，然后打开 `https://你的服务器:9099/admin`。
 
-顶部导航提供三个独立页面：**运行概览**（`/admin/overview`）查看指标、客户端及活动会话；**数据管理**（`/admin/data`）查询、导出和清理设备记录；**关于**（`/admin/about`）查看服务端版本、项目简介、许可证和项目链接。各页面支持直接访问、刷新和浏览器前进／后退，未登录时先显示登录页，登录后进入原目标页面。`/admin` 仍默认显示运行概览。
-
-| 区域 / 入口 | 操作 |
+| 页面 | 用途 |
 | --- | --- |
-| 顶部指标 | 紧凑展示电脑、移动端（iOS / Android）、Web 的当前在线数、今日及昨日控制端日活；活动连接独立显示 |
-| Client Presence | 默认显示在线 PC；可切换 PC / 移动端 / Web，移动端根据客户端上报的 `ios` / `android` 平台识别；组合筛选平台、版本与 Online / Controlled / Offline / All，搜索 ID、排序和翻页；平台与版本选项来自当前类型的全部已上报记录，统计和分页随筛选同步；Controlled 仅统计和显示正在被控制的设备，同一设备只计一次 |
-| Details | 展开版本、平台、本次在线与远控时长及远控对端 |
-| Active Sessions → Disconnect | 确认后断开所选会话；设备本身保持在线 |
-| Device data requests / 设备数据请求 | 按精确设备 ID 查询数据库摘要，导出 JSON，或清理离线设备的历史／身份数据 |
-| Refresh lists / Logout | 手动刷新列表 / 退出管理登录 |
+| 运行概览 | 电脑 / 移动端 / Web 在线数、控制端日活、活动会话、筛选与断开会话 |
+| 数据管理 | 精确查询设备、导出 JSON 摘要、复核管理员密码后清理数据 |
+| 关于 | 服务端版本、许可证和项目链接 |
 
-控制端日活按**北京时间（UTC+8）的自然日**划分，每日 00:00 开始新一天，与部署机器的时区无关。成功加入远控会话即计入：电脑和移动端按设备 ID 去重（`C-` 控制端身份归并到原设备），Web 按临时 `web-*` ID 去重，同一浏览器取得新 ID 后可再次计入。仅登录、在线或认证失败不计入；日活是客户端数量，不等同于独立用户人数，也不代表已确认建立媒体传输。
-
-连接结束后保留当日日活；跨午夜仍在使用的连接通过约 5 秒一次的维护任务计入新一天。重启后保留已采集数据，待恢复会话在成功重新加入或双方确认恢复后才计入新一天。旧客户端没有恢复凭据时，按已保存的远控关系及双方在恢复窗口内重新登录进行兼容恢复，并补记当日日活；这不能验证媒体连接仍在传输，也不会授予重连套接字新的远控权限。有恢复凭据的会话仍须双方报告连接存活。未确认的会话显示“恢复中”，不计入当前活动连接及新的日活，超时后清理。首次启用从当前时刻开始采集，不补造历史：此前日期显示 `—`，首次采集当天标记为部分数据。日活记录仅保留今日、昨日，启动及跨日维护时清理更早记录。管理统计接口 `/api/admin/stats`、`/api/admin/overview` 的 `stats.daily_active_controllers` 返回分类型计数和采集覆盖信息，公共 `/api/stats` 保持原有字段。
-
-桌面端活动会话采用“被控端 / 控制方 / 操作”三列表格，标题与搜索框同行，宽屏下与设备列表并排展示。被控端与会话 ID 相同时只显示一次；多个控制端显示数量并自动换行。表头固定，列表滚动时搜索和分页仍保持可见。
-
-手机端保留搜索与客户端类型切换，平台、版本和排序收进“筛选”按钮，已选条件数量会显示在按钮上。设备和会话采用紧凑列表，主要操作按钮至少高 44px；统计数字会随可用宽度缩放，数据管理记录在窄屏改为卡片展示。
-
-运行概览可见时每 5 秒刷新数据，时长每秒更新显示；数据管理和关于页不轮询设备及会话列表。管理登录会话保存在内存中，默认有效期 8 小时；服务重启后需要重新登录。后台使用 HTTPS 登录 Cookie。
-
-后台登录在 15 分钟内同一来源 IP 失败 5 次，或所有来源合计失败 20 次后，从达到阈值起冷却 15 分钟。错误用户名与错误密码共用失败额度；更换用户名、Cookie 或连接不会重置计数，成功登录也不清除尚未过期的失败记录。冷却期间不再验证凭据或发放会话 Cookie，接口返回 `429 too_many_login_attempts`、`Retry-After` 响应头和 JSON 的 `retry_after` 秒数，页面显示等待时间；被拒请求不延长冷却，已有管理会话继续有效。
-
-来源使用 TCP 对端 IP，不信任 `X-Forwarded-For` 或请求体中的来源字段；同一 NAT／反向代理后的用户共享来源额度。后台限流与设备密码限流相互独立，计数保存在服务进程内，重启后清空；多实例部署需在可信网关或共享存储中补充统一限流。
-
-前端源码位于 [src/admin/web](src/admin/web)，容器内为 `/crossdesk-server/admin`。自定义 `CROSSDESK_ADMIN_WEB_DIR` 时，还需在 Compose 的 `environment` 中显式传入并挂载对应目录；仅添加到 `.env` 不会自动传入容器。修改前端资源后重启服务以刷新资源缓存。
-
-升级时需部署新版服务端二进制或镜像及配套后台资源，并从部署环境中移除旧 `CROSSDESK_GEOIP_*` 配置和不再使用的 API 密钥。已有数据库可继续使用，其中历史地域列（如存在）不再读写。
-
-### 管理员处理设备数据请求
-
-点击顶部 **数据管理**，在 **设备数据请求** 中输入原设备 ID（不含控制端的 `C-` 前缀）及不含个人信息的请求编号，例如 `REQ-2026-001`。查询精确匹配该 ID 及其 `C-` 身份，显示设备身份记录是否存在、状态、版本／平台、历史关联数、今日／昨日控制端日活记录及活动／恢复中会话数。查询和导出都不返回密码、盐值、哈希或其他设备的标识。JSON 导出是当前数据库的设备摘要；会话仅含该设备的角色和开始时间，关联仅含数量，不是完整的连接历史或数据库备份。
-
-导出及清理均要求再次输入**管理员密码**，并确认已核验申请人的权限及请求范围。这里的勾选是管理员对已完成人工核验的确认，系统不会自动证明设备归属；不能仅凭公开设备 ID 或共享的远控准入密码认定申请权限。请求编号只能使用字母、数字、连字符和下划线，最长 64 字符，不要填入姓名、邮箱、密码或核验材料。
-
-清理前先查询预览，再选择范围、再次输入设备 ID 并确认：
-
-- **仅历史数据**：删除设备及其控制端身份的在线状态、版本／平台，以及以这些身份为任一端的历史关联和该设备的日活记录；对应日活汇总随之扣减。保留设备 ID 和密码摘要，原准入凭据继续有效。
-- **历史数据及设备身份**：同时删除设备登记及密码盐值、哈希。原身份失效；现有客户端再次连接时仍按原登记逻辑处理，可能分配新设备 ID。继续使用服务会产生新数据。
-
-清理要求设备和控制端身份离线，且没有活动或恢复中的远控会话。后台的“断开会话”不会让设备离线，需要先退出该设备上的客户端或断开其信令连接；不满足条件时接口返回 `409 device_busy`。操作与信令写入在同一个工作队列串行执行，并在数据库事务内复核状态与预览版本；预览后数据变化返回 `409 stale_preview`，需重新查询。清理同时移除相关内存订阅、网络信息及改密结果缓存，不影响其他设备的身份和统计。
-
-新接口为 `GET /api/admin/data-session`（获取当前管理会话的 CSRF 令牌）及 `POST /api/admin/device-data/query|export|cleanup`。所有接口要求有效管理会话；POST 还要求 JSON、`X-CrossDesk-CSRF` 请求头，导出／清理需要管理员密码复核。密码复核累计失败五次后暂停一分钟，限制在所有管理会话之间共享。清理采用参数化 SQL、原子事务和预览版本核对；相关关联或会话超过 10,000 条时拒绝处理，不会静默截断导出或执行部分删除。数据库操作设置一秒 SQL 执行预算，超时失败回滚，应重新查询确认状态后再试。
-
-成功查询、导出及清理与 `admin_data_audit` 审计记录在同一事务提交；无法写审计时不返回数据、不提交清理。审计保存时间、管理员名称、请求编号、操作、范围和删除数量，不保存目标设备 ID、IP、密码或数据快照。审计按 `CROSSDESK_LOG_RETENTION_DAYS`（默认 185 天）逐条到期清理。请求编号对应的人工核验材料由运营者另行安全管理并设置必要的保留期限。
-
-**范围限制**：导出不包含旧地域字段、运行时订阅、日志和备份；清理会删除对应数据库行中可能残留的旧地域字段，但不会扫描或删除日志、备份、快照、外部日志平台副本和客户端本地记录。界面与接口会明确告知这一点。处理用户完整的数据请求时，运营者还需按实际情况单独处理这些数据，不能将本工具执行成功视为所有副本均已删除。导出的文件只下载到管理员浏览器，服务端不额外保存导出文件；交付前应核对接收人并妥善保管。
+统计口径、恢复逻辑、登录限制和数据操作范围见 [后台管理指南](docs/ADMIN.md)。断开远控会话不会让设备本身离线。
 
 <a id="stats"></a>
 
-## 服务状态接口
+## 检查服务状态
 
-`GET /stats` 和 `GET /api/stats` 与 WSS 共用 HTTPS 端口，**无需管理登录**，返回汇总统计并允许跨域读取。可在服务器上使用以下命令检查；替换示例 IP，若调整了数据目录也需修改根证书路径：
+替换示例 IP，并使用本次部署的根证书；自定义数据目录时同步调整路径：
 
-```bash
+```sh
 curl --fail --cacert /var/lib/crossdesk/certs/api.crossdesk.cn_root.crt \
   https://203.0.113.10:9099/stats
 ```
 
-使用受信任 CA 的域名证书时：
-
-```bash
-curl --fail https://your-domain.example.com:9099/stats
-```
-
-| 字段 | 含义 |
-| --- | --- |
-| `online_device_count` | 当前在线原生设备总数（电脑 + 移动端），排除 `web-*` 与 `C-*` |
-| `online_pc_client_count` | 当前在线电脑客户端数，未上报平台的原生设备也计入此项 |
-| `online_mobile_client_count` | 当前在线 iOS / Android 客户端数，按已上报平台识别，排除 `web-*` 与 `C-*` |
-| `online_web_client_count` | 当前在线 `web-*` 客户端数 |
-| `active_connection_count` | 活动远控连接数，按 host 与各 guest 的连接分别计数 |
-| `online_duration_seconds` | 当前在线设备的本次在线时长合计 |
-
-服务端不再统计或返回累计在线、累计控制、累计被控时长。旧数据库中的对应列保留但停止读写，新数据库不创建这些列；本次在线与远控时长继续提供。
-
-时长单位为秒。管理后台的明细接口使用 `/api/admin/*`，需要管理登录；公共状态接口不会返回设备明细。
+`/stats` 与 `/api/stats` 无需管理登录，提供汇总数据，不返回设备明细；[字段说明](docs/DEPLOYMENT.md#stats)。还需实际连接客户端，验证媒体与中继链路。
 
 <a id="operations"></a>
 
-## 维护与排查
+## 日常维护
 
-### 查看日志与更新
+- 持久化数据与日志目录，默认 `/var/lib/crossdesk` 和 `/var/log/crossdesk`。应用日志写入文件，Compose 容器日志已关闭。
+- 升级前备份 `.env`、`compose.yaml`、证书与数据库。密码验证成功后会升级旧摘要，旧服务端无法验证升级后的记录，回滚需使用升级前备份。
+- 按部署规模核对留存与容量。默认日志保留 185 天、离线设备 180 天后清理、信令连接上限 8,192；这些是配置默认值，不是吞吐保证。
 
-在配置目录执行：
-
-```bash
-sudo docker compose ps
-# 默认日志目录；自定义 CROSSDESK_LOG_DIR 时替换路径。
-sudo sh -c 'tail -n 100 /var/log/crossdesk/crossdesk-server_$(date +%F).log'
-sudo sh -c 'tail -n 100 /var/log/crossdesk/coturn/turn_$(date +%F).log'
-```
-
-更新时先备份，再修改 `.env` 中的固定镜像 tag，并使用与该版本匹配的部署文件：
-
-```bash
-sudo docker compose config -q
-sudo docker compose pull
-sudo docker compose up -d --no-build
-```
-
-`docker compose restart` 用于重启现有容器，不会应用修改后的环境变量或镜像。信令日志按服务进程的本地日期追加到 `${CROSSDESK_LOG_DIR}/crossdesk-server_YYYY-MM-DD.log`；Coturn 日志写入同目录下的 `coturn/turn_YYYY-MM-DD.log`，默认容器时区为 UTC，查看时请选择实际存在的日期文件。新版 Compose 关闭 Docker 日志副本，避免只按容量轮转的副本绕过保存期限；`docker compose logs` 不再提供这两个服务的日志。启动失败时，可用 `sudo docker compose run --rm --service-ports crossdesk-server` 在前台查看启动输出，运行前先停止原信令容器以避免端口冲突。
-
-信令服务的连接诊断日志可用于排查“进程仍在运行，但客户端无法连接”：
-
-| 日志 | 关键字段 |
-| --- | --- |
-| `Connection capacity` | 启动时配置/实际连接上限、`fd_soft_limit`、预留 FD；因 nofile 降低容量时另有告警 |
-| `Connection admission paused / resumed` | `blocked_by_*` 区分连接总量、未打开连接额度、FD 额度或 FD 采样失败；记录暂停时长和重试检查次数 |
-| `Connection diagnostics` | 启动约 5 秒后首次输出，随后约每 60 秒及停服时汇总连接、FD、积压和累计错误 |
-| `Signal event loop delayed` | 事件循环定时检查延迟至少 5 秒时记录延迟量 |
-
-接入暂停、accept/资源错误、握手前失败及事件循环延迟的同类告警最多每 30 秒输出一次；恢复日志只与已输出的暂停告警配对。`*_total` 是进程启动以来的累计计数，限频不影响计数；`*_limit_checks_total` 统计触发限制的检查次数，并非被拒客户端数。`unopened` 包括尚未打开的 WebSocket、普通 HTTPS 请求及其清理阶段。`fd_open` 是日志生成时实测值，`fd_estimated` 是接入检查使用的估计值，`fd_sample_age_ms` 表示其采样年龄；`-1` 表示不可用或无限制。`expired_handles` 和 `oldest_unopened_ms` 可帮助发现残留或长时间未完成的连接。
-
-### 设备密码验证保护
-
-设备密码保持 **6 位大小写字母与数字**，改用 OpenSSL `RAND_priv_bytes()` 和拒绝采样生成；盐使用 `RAND_bytes()` 生成独立的 16 字节随机值。随机源或 Argon2id 不可用时拒绝启动／操作，不回退到伪随机数或 SHA-256。
-
-新注册与改密使用 **Argon2id v19，19 MiB 内存、2 次迭代、并行度 1、32 字节摘要**。现有 `password_hash` 列保存 `argon2id$v=19$m=19456,t=2,p=1$` 前缀和十六进制摘要，`password_salt` 保存十六进制盐。旧版加盐 SHA-256 记录在密码验证成功后原子升级，设备 ID 和六位密码不变；长期未验证的旧记录继续按设备保留期限清理。哈希升级不能使旧密码或已泄漏备份失效，需要时应通过客户端更换密码。旧版服务端无法验证升级后的记录，回滚必须使用升级前备份。
-
-密码计算默认由两个独立工作线程执行，使用按来源 IP 轮转的有界等待队列。默认最多接纳 4096 个请求（包含执行中和等待提交的结果），同一 IP 最多占用 256 个；等待请求不占用计算线程。不会在计算时持有数据库或失败限流锁。每个连接保持消息顺序，完成后复查连接身份及凭据快照，过期结果不能覆盖并发改密或恢复已删除身份。未知设备、旧格式错误密码和损坏的记录也执行一次 Argon2id，减少耗时差异。启动时验证本机 OpenSSL provider 支持上述算法和参数。
-
-注册、登录、查询、加入会话及新改密计算共用来源额度：默认每个来源 IP 每分钟最多启动 60 次，成功操作同样计数；不再设置整个进程每分钟 300 次的配额。仅在获得空闲计算线程后扣除额度，排队、断线取消和队列满拒绝都不提前扣费。密码计算来源额度用尽时在服务器内等待下一窗口，不阻塞其他来源。队列满或排队到期仍返回原协议的 `Credential service busy` 和 `retry_after`，失败冷却规则保持不变。
-
-已接纳的认证请求默认最多等待／执行 600 秒，排队期间不触发原来的 15 秒未登录断开；从未提交有效认证请求的连接仍按 15 秒规则清理。旧客户端无需识别新协议或实现 `retry_after` 重试，即可收到排队后的原登录响应。600 秒是最长保留期限，并非固定等待时间；断线会取消尚未执行的请求。重启时恢复中的远控记录保留窗口随认证期限延长，避免客户端还在排队时记录就被清理。
-
-六位密码的强度仍有限，来源计算额度与下述失败冷却共同限制在线猜测；慢哈希主要提高数据库泄漏后的离线猜测成本。
-
-同一 WebSocket 连接只允许一次成功登录。后续 `login` 请求返回 `Already authenticated`，不会再注册设备、验证密码或更新在线状态；如需重新登录，请建立新连接。首次登录失败后仍可在原连接重试。
-
-`query_user_id_list` 和 `join_transmission` 要求连接先完成登录，加入会话时还校验请求者身份与连接绑定。设备密码错误和设备 ID 不存在使用相同回复，不会返回设备列表或连接凭据。登录和查询保留 `Authentication failed`；Join 为兼容已发布桌面端，统一使用 `reason: "Incorrect password"` 和 `error_code: "AUTHENTICATION_FAILED"`，不恢复可区分 ID 是否存在的报错。
-
-旧桌面端的空密码 Join（`ID@`）返回 `Incorrect password` / `PASSWORD_REQUIRED` 以打开密码框；不查询设备是否存在、不进行密码验证，也不消耗密码计算或失败额度。此提示不授予任何会话权限，不清除或延长已有冷却。新客户端应先收集密码再 Join。
-
-Join 的其他拒绝（冷却、认证服务繁忙、未登录、远端不可用）统一保留旧客户端可识别的 `reason: "Remote unavailable"`，使其结束等待；旧版界面会显示设备离线。新客户端优先读取 `error_code`：`AUTHENTICATION_THROTTLED`、`CREDENTIAL_SERVICE_BUSY`、`CREDENTIAL_RATE_LIMITED`、`NOT_AUTHENTICATED` 或 `REMOTE_UNAVAILABLE`，并在存在 `retry_after` 时显示剩余秒数、禁止提前重试。认证诊断按错误码计数，空密码提示不计为鉴权失败。
-
-设备登录、查询和加入会话共用失败计数：15 分钟内，同一来源 IP 失败 20 次，或同一目标设备失败 5 次，将从达到阈值时起冷却 15 分钟。冷却期间跳过密码验证（包括正确密码），返回 `Too many authentication attempts`（Join 使用上述兼容文案）及 `error_code: "AUTHENTICATION_THROTTLED"` 和以秒计的 `retry_after`。重连、更换控制端 ID、切换接口或成功验证其他设备都不会清除失败计数；被限流的请求不延长冷却时间。已有远控会话不受影响。
-
-来源使用 TCP 对端 IP（不含端口），不信任请求字段或 `X-Forwarded-For`。同一 NAT 或反向代理后的连接共用来源额度。计数保存在单个服务进程内，重启后清空；多实例部署需要在可信网关或共享存储中补充统一限流。来源和目标各最多保留 16,384 条记录，容量耗尽时拒绝新增验证键，直到过期记录释放空间。
-
-注册需显式使用空设备 ID（原生客户端）或 `web`（Web 客户端）。携带不存在或已过期的 ID 登录会返回统一认证失败，不再自动分配新 ID；客户端需通过重置本地身份重新发起注册。
-
-### 专用重连凭据
-
-原生客户端在注册或密码登录时携带 `reconnect_version: 1`，成功响应将返回 `reconnect_token`（32 字节安全随机数的 64 位小写十六进制编码）和 `reconnect_expires_at`（Unix 秒）。每个设备最多保存一个有效凭据，绝对有效期为 30 天；数据库只保存 SHA-256 摘要，服务端重启后仍可验证。旧客户端不携带此字段时保持原有协议。
-
-后续断线重连发送以下请求，`user_id` 只包含设备 ID，不包含密码；已有的会话恢复与 ICE 能力字段仍可同时携带：
-
-```json
-{"type":"login","user_id":"123456789","reconnect_version":1,"reconnect_token":"<64 位小写十六进制凭据>","session_resume_version":1,"ice_config_version":1}
-```
-
-验证成功返回 `status: "success"`、`reconnected: true`、`reconnect_version: 1` 和原到期时间，并正常更新在线状态、恢复会话及重新开始心跳计时。该路径不进入 Argon2id 队列、不消耗密码计算的来源额度，也不读写密码失败计数；仍受连接总量和消息队列限制。重连不轮换凭据、不延长有效期，响应丢失后可以安全重试。
-
-凭据仅用于设备自身登录，不能代替访问其他设备所需的密码或远控会话票据。空身份、`web`、`web-*` 和 `C-*` 临时身份不签发凭据。再次执行支持新协议的密码登录会替换旧凭据；修改设备密码、删除设备或到期后旧凭据失效。已登录设备还可发送 `{"type":"revoke_reconnect_credential"}` 撤销自己的凭据，成功响应同名 `type` 和 `status: "success"`，不关闭现有连接。
-
-无效凭据统一返回 `Authentication failed` 和 `reconnect_rejected: true`，服务端不会自动转入昂贵的密码计算。MiniRTC 客户端收到失败后清除凭据，在同一连接回退一次密码登录；再次失败进入原有错误流程。凭据按客户端连接实例保存在内存中，断网或服务端重启时复用；退出应用、重建实例、切换服务器或更换身份后重新进行密码认证，不新增本地明文凭据文件。新客户端连接旧服务端时继续使用密码协议。
-
-`Connection diagnostics` 新增 `reconnect_success_total` 和 `reconnect_failed_total`；成功重连同时计入 `login_success_total`，不会增加 `Credential diagnostics` 的密码计算次数。
-
-### 在线容量与重启恢复调优
-
-在 `.env` 配置下列选项，并重新创建信令容器：
-
-| 配置 | 默认值 | 作用与范围 |
-| --- | --- | --- |
-| `CROSSDESK_MAX_CONNECTIONS` | `8192` | 信令连接总上限，1–65536；设备、`C-*` 控制端及未完成连接都占用名额 |
-| `CROSSDESK_NOFILE` | `32768` | Compose 容器文件描述符上限；实际连接容量还会扣除已用与预留 FD |
-| `CROSSDESK_AUTH_WORKERS` | `2` | 同时执行密码计算的线程数，1–32；影响 CPU、内存和认证吞吐量 |
-| `CROSSDESK_AUTH_QUEUE_CAPACITY` | `4096` | 总未完成认证请求数，1–16384；扩大它能接住突发，不提高计算速度 |
-| `CROSSDESK_AUTH_SOURCE_CAPACITY` | `256` | 同一来源 IP 的未完成请求数，1–4096；防止单一来源占满队列 |
-| `CROSSDESK_AUTH_SOURCE_PER_MINUTE` | `60` | 单 IP 每分钟启动认证数，1–6000；同一 NAT／反向代理后的客户端共享 |
-| `CROSSDESK_AUTH_TIMEOUT_SECONDS` | `600` | 接纳后的最大认证期限，15–900 秒 |
-
-2000 台设备保持在线不需要 2000 个认证线程；只有登录、加入会话等需要校验密码的操作使用线程。先保留 2 个线程，在目标机器测量认证吞吐量再增加，避免挤占 TLS、心跳和数据库的 CPU。每个正在计算的 Argon2id 任务需要约 19 MiB 算法内存，等待队列没有这项开销。使用密码集中恢复时，耗时约为请求数除以实测完成速率，另受单 IP 配额约束；队列期限要覆盖预计恢复时间。大量设备共用出口时，应同时评估来源队列、来源额度和恢复期限。
-
-现有 `.env` 的值会覆盖新默认值，例如保留 `CROSSDESK_MAX_CONNECTIONS=2048` 不会自动变成 8192。服务端请求的 TCP listen backlog 为 4096，实际值受操作系统上限约束；同时处理的未打开连接仍限制为 128。上述参数用于信令与重启恢复，不能代替目标机器上的持续在线、并发远控及 TURN 带宽压测。
-
-`Credential capacity` 记录实际生效的认证配置；`Credential diagnostics` 每分钟记录 `active`、`waiting`、`queue_full_total`、`source_full_total`、`expired_total`、`source_rate_waits_total` 及计算耗时。`Connection diagnostics` 同时记录登录成功、认证失败、繁忙响应、失败冷却响应和认证超时的累计次数。队列持续增长表示处理速度跟不上请求；`source_rate_waits_total` 增长表示来源额度等待，单独增加线程无法解除它。
-
-### 数据保存与自动清理
-
-| 数据 | 默认规则 |
-| --- | --- |
-| 信令与 Coturn 的运行／连接日志 | 已关闭文件最后写入满 **185 天**后删除；按日切分，不按容量提前覆盖 |
-| 设备在线状态、版本／平台 | 设备及其控制端分身均离线超过 **180 天**后一起清理；任一身份在线、最近 180 天内使用过或仍被活动／恢复中会话引用时跳过 |
-| 服务端历史设备关联 | 随过期设备清理；无有效设备状态的旧关联按更新时间满 **180 天**后清理；旧库无时间戳的关联从首次升级开始计时 |
-| 设备 ID、密码盐和密码摘要 | 随过期设备在同一事务中删除；旧版本只留下身份、缺少离线时间的记录从首次升级开始计时 |
-| 控制端日活去重记录 | 按北京时间仅保留今日、昨日；设备历史／身份清理时同步删除，普通断开连接不删除 |
-| 管理员数据操作审计 | 按 `CROSSDESK_LOG_RETENTION_DAYS`（默认 **185 天**）从记录生成时间计算，分批删除到期记录 |
-| 订阅关系、管理员会话 | 按原有登出／连接断开／会话过期规则清理；设备到期删除时也移除其内存订阅 |
-
-通过 `.env` 的 `CROSSDESK_LOG_RETENTION_DAYS=185`、`CROSSDESK_OFFLINE_RETENTION_DAYS=180`、`CROSSDESK_RETENTION_INTERVAL_SECONDS=3600` 调整。天数范围为 1–3650，间隔范围为 60–86400 秒；空值使用默认值，非法值阻止启动，不会被解释为立即删除或永久保留。混合日志包含网络安全信息，缩短期限前须核对适用的法定留存要求；默认值不是对完整法律合规的保证。
-
-服务开始运行后约 5 秒执行第一轮，此后默认每小时执行。数据库每批最多选取 200 个过期设备（含对应控制端分身）和 200 条其他过期关联，有积压时约 5 秒后继续，事务失败回滚并重试。离线期限从最后离线时间计算，恰好达到期限时不删除；没有状态记录的新登记身份从登记时计时，管理员仅清理历史并保留身份时从该操作重新计时。实际完成时间受积压和运行状态影响。按整份日志文件清理，因此文件首条记录可能比配置期限多保留约一天，再加一次检查间隔。服务停止期间不执行清理，重新启动后继续。
-
-日志清理只处理指定日志目录中的已知日志文件，包括旧版 `crossdesk-server-YYYYMMDD-HHMMSS[.N].log`，以及 `coturn/turn_YYYY-MM-DD.log`；不递归扫描其他目录、不跟随符号链接，也不删除当前信令日志。确保该目录仅供这一组实例使用，并监控磁盘空间和 `Retention cleanup`／清理失败日志。文件日志无法初始化时服务启动失败。设备到期删除后，原设备 ID 和密码不再有效；再次上线需重置本地身份，以空设备 ID 发起新设备登记。
-
-SQLite 启用 `secure_delete`，删除后尝试非阻塞 WAL 检查点；这不等于对文件系统快照、备份或底层介质的安全擦除。备份、外部日志平台、旧容器及其日志副本由部署方单独设置到期删除；本程序不会扫描或删除它们。升级时应重新创建容器应用日志配置，并按实际留存义务处置旧副本。隐私政策中的期限需在生产环境部署生效后同步更新。
-
-### 备份与迁移
-
-备份 `.env`、`compose.yaml` 及 `${CROSSDESK_DATA_DIR}` 下的 `certs/` 和 `db/`；备份包含密钥与设备数据库。以下示例使用默认数据目录，在停止服务后打包，期间远程连接会中断：
-
-```bash
-sudo docker compose stop
-backup_file="crossdesk-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-sudo tar -czf "$backup_file" .env compose.yaml -C /var/lib/crossdesk certs db
-sudo docker compose up -d --no-build
-```
-
-迁移时在目标服务器恢复配套文件，核对挂载目录和权限，再启动。公网 IP / 域名改变时，还需更新证书与客户端地址。旧部署使用自定义数据目录时，把 `.env` 的 `CROSSDESK_DATA_DIR` 和 `CROSSDESK_LOG_DIR` 指向原有目录。
-
-### 常见问题
-
-| 现象 | 检查方向 |
-| --- | --- |
-| 配置校验失败 | 必填 IP 和两个密钥是否为空，配置文件是否来自同一 Release |
-| 证书生成 / 数据库写入失败 | 查看信令日志，确认挂载路径可写；默认镜像以 root 启动，只有修改容器用户等情况下才按实际 UID/GID 调整权限 |
-| Coturn 无法绑定地址 | `INTERNAL_IP` 是否属于宿主机网卡，端口是否被其他进程占用 |
-| 客户端 TLS 错误 | 系统根证书信任、证书有效期及 IP / 域名匹配；修改 IP 不会更新已有证书 |
-| 已连服务器但对端离线 | 两端是否使用同一服务，被控端是否运行，是否复制了当前 ID |
-| P2P 失败且无法中继 | 客户端中继选项、客户端版本、共享密钥一致性、TURN 与媒体端口是否放通 |
-| 后台未启用 / 登录失败 | 两个管理环境变量是否均已传入，是否重新创建容器，是否使用 HTTPS |
+[日志与升级](docs/OPERATIONS.md) · [认证、恢复、容量、留存与备份](docs/OPERATIONS.md#operations)
 
 <a id="build"></a>
 
 ## 从源码构建
 
-CI 在 **Ubuntu 22.04、amd64 / arm64** 上构建。安装 Git、C++17 编译工具链和 [Xmake](https://xmake.io/guide/quick-start.html)；第三方 C++ 依赖由 Xmake 下载。下面的 Linux 依赖命令与 CI 基线一致：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates git curl unzip build-essential
-
-git clone https://github.com/kunkundi/crossdesk-server.git
-cd crossdesk-server
-xmake f -c -m release -y
-xmake b -vy crossdesk_server
-```
-
-首次构建前需确保 `xmake --version` 可用。其他系统的源码配置见 [xmake.lua](xmake.lua)，当前发布流程只提供 Linux 二进制与容器镜像。切换 Debug 使用 `xmake f -m debug`；`xmake r -d crossdesk_server` 表示使用调试器运行。
-
-认证队列回归与旧协议 WSS 集成测试（需要 Python 3、`websockets>=15` 和 `openssl` 命令）：
-
-```bash
-xmake b credential_queue_test credential_server_fixture
-xmake r credential_queue_test
-# 按当前平台、架构和构建模式替换 fixture 路径。
-python3 tests/credential_server_integration.py \
-  --fixture build/linux/x86_64/release/credential_server_fixture --clients 2100
-```
-
-测试在临时目录创建独立证书与数据库，验证来源等待超过 15 秒、断线释放名额、队列到期，以及集中登录、停服和重启后的再次登录。所有登录都执行真实 Argon2id 校验，模拟客户端不重试登录；TCP/TLS 握手并发限制为 64，避免本机 listen 队列先溢出。集中登录用例提高回环 IP 的来源额度，来源限额另有独立用例；结果不代表默认配置允许同一 IP 下 2100 台设备同时接纳，也不代表生产机器性能。
-
-### 构建自己的运行镜像
-
-Dockerfile **只打包已编译的 Linux 二进制**。先在与目标镜像架构相同的 Ubuntu 22.04 环境完成 Release 编译，再在仓库根目录执行：
-
-```bash
-# amd64；arm64 将 x86_64 替换为 arm64
-install -Dm755 build/linux/x86_64/release/crossdesk_server dist/crossdesk_server
-sudo docker build -f docker/dockerfile -t crossdesk-server:local .
-```
-
-在仓库根目录将 `.env.example` 复制为 `.env`，按部署章节填写配置，并将 `CROSSDESK_IMAGE` 设为 `crossdesk-server:local`。然后执行：
-
-```bash
-sudo docker compose config -q
-sudo docker compose pull coturn
-sudo docker compose up -d --no-build
-```
-
-直接运行二进制时，需要先准备 [main.cpp](src/main.cpp) 规定的 `/var/lib/crossdesk/certs`、数据库和日志路径；`CROSSDESK_DATA_DIR` / `CROSSDESK_LOG_DIR` 是 Compose 的宿主机挂载设置，不是二进制的路径覆盖参数。二进制不会自动生成证书。
-
-### CI 测试镜像
-
-默认分支成功构建后发布多架构 `crossdesk/crossdesk-server:test`，该 tag 随后续构建变化。测试环境可在 `.env` 中设置 `CROSSDESK_IMAGE=crossdesk/crossdesk-server:test`，再执行部署章节的拉取与启动命令。正式部署使用固定发布 tag。发布产物与镜像流程见 [CI 工作流](.github/workflows/build.yml)。
+使用 Git、C++17 编译器与 Xmake；发布基线为 Ubuntu 22.04、amd64 / arm64。[构建指南](docs/DEPLOYMENT.md#build) 包含依赖安装、现有回归测试及镜像打包步骤；Dockerfile 用于打包已编译的二进制。
 
 ## 反馈与许可
 
