@@ -985,6 +985,17 @@
       }
     }
 
+    // Native selects can retain :focus-visible after pointer interaction.
+    // Track the input method without blurring controls or interrupting typing.
+    document.addEventListener('pointerdown', () => {
+      document.documentElement.dataset.focusInput = 'pointer';
+    }, {capture: true, passive: true});
+    document.addEventListener('keydown', event => {
+      if (!event.altKey && !event.ctrlKey && !event.metaKey) {
+        document.documentElement.dataset.focusInput = 'keyboard';
+      }
+    }, {capture: true});
+
     document.getElementById('language').addEventListener('change', event => setLanguage(event.target.value));
     document.getElementById('login-form').addEventListener('submit', login);
     document.getElementById('logout').addEventListener('click', logout);

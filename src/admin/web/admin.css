@@ -39,8 +39,9 @@ input { min-width: 0; padding: 9px 12px; }
 input::placeholder { color: #7c899b; }
 select { padding: 8px 30px 8px 12px; max-width: 100%; }
 a { color: inherit; text-decoration: none; }
-:focus-visible { outline: 3px solid #70bdb7; outline-offset: 3px; }
-input:focus, select:focus { border-color: var(--accent); }
+:focus-visible, :where([data-focus-input="keyboard"]) :focus { outline: 3px solid #70bdb7; outline-offset: 3px; }
+:root[data-focus-input="pointer"] :focus { outline: none; }
+input:focus, :root:not([data-focus-input="pointer"]) select:focus { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary:hover:not(:disabled) { background: #066963; border-color: #066963; }
 button.danger { background: #fff; border-color: #f1c5c2; color: #b42318; }
