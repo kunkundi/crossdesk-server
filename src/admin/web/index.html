@@ -119,7 +119,7 @@
               <summary data-i18n="Counting rules">Counting rules</summary>
               <div class="metrics-help-content">
                 <p data-i18n="Daily activity counts controllers that successfully joined a remote session, including connections continuing past midnight. Merely being online does not count.">Daily activity counts controllers that successfully joined a remote session, including connections continuing past midnight. Merely being online does not count.</p>
-                <p data-i18n="PC and mobile controllers count once per device per day. Web controllers count once per temporary ID; a new ID in the same browser can count again. These are client counts, not unique people.">PC and mobile controllers count once per device per day. Web controllers count once per temporary ID; a new ID in the same browser can count again. These are client counts, not unique people.</p>
+                <p data-i18n="PC and mobile controllers count once per device per day. Web and CLI controllers count once per temporary ID; obtaining a new ID can count again. These are client counts, not unique people.">PC and mobile controllers count once per device per day. Web and CLI controllers count once per temporary ID; obtaining a new ID can count again. These are client counts, not unique people.</p>
                 <p data-i18n="Disconnecting does not remove daily activity. Unavailable history is shown as —; collection-day totals are partial. Today and yesterday are retained.">Disconnecting does not remove daily activity. Unavailable history is shown as —; collection-day totals are partial. Today and yesterday are retained.</p>
               </div>
             </details>
@@ -147,6 +147,14 @@
                 <div class="metric-online"><dt data-i18n="Online now">Online now</dt><dd id="metric-web">—</dd></div>
                 <div><dt data-i18n="Active today">Active today</dt><dd id="metric-web-today">—</dd></div>
                 <div class="metric-yesterday"><dt data-i18n="Active yesterday">Active yesterday</dt><dd id="metric-web-yesterday">—</dd></div>
+              </dl>
+            </article>
+            <article class="metric">
+              <h3 data-i18n="CLI clients">CLI clients</h3>
+              <dl class="metric-values">
+                <div class="metric-online"><dt data-i18n="Online now">Online now</dt><dd id="metric-cli">—</dd></div>
+                <div><dt data-i18n="Active today">Active today</dt><dd id="metric-cli-today">—</dd></div>
+                <div class="metric-yesterday"><dt data-i18n="Active yesterday">Active yesterday</dt><dd id="metric-cli-yesterday">—</dd></div>
               </dl>
             </article>
             <article class="metric metric-session">
@@ -196,6 +204,7 @@
                     <option value="pc" data-i18n="PC">PC</option>
                     <option value="mobile" data-i18n="Mobile">Mobile</option>
                     <option value="web" data-i18n="Web">Web</option>
+                    <option value="cli" data-i18n="CLI">CLI</option>
                   </select>
                 </label>
                 <button id="device-filter-toggle" class="mobile-filter-toggle" type="button" aria-expanded="false" aria-controls="device-extra-filters" data-i18n="Filters">Filters</button>

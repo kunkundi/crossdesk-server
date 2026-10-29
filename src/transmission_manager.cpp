@@ -1,4 +1,5 @@
 #include "transmission_manager.h"
+#include "controller_identity.h"
 
 #include <algorithm>
 #include <chrono>
@@ -241,6 +242,8 @@ std::string TransmissionManager::GetHostIdOfTransmission(
 bool TransmissionManager::BindHostToTransmission(
     const std::string& host_id, const std::string& transmission_id) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  if (IsTemporaryControllerId(host_id) ||
+      IsTemporaryControllerId(transmission_id)) return false;
   if (!transmission_host_id_list_.count(transmission_id)) {
     transmission_host_id_list_[transmission_id] = host_id;
     LOG_INFO("Bind host [{}] to transmission [{}]", host_id, transmission_id);

@@ -540,7 +540,7 @@ void SignalServer::QueueSessionCleanup(
             const auto id = transmission_manager_->ReleaseUserSession(hdl);
             if (!id.empty()) {
               presence_manager_->OnLogout(id);
-              signal_negotiation_->OnWebClientDisconnect(id);
+              signal_negotiation_->OnTemporaryControllerDisconnect(id);
             }
             server_.get_io_service().post([this] { --pending_cleanup_; });
           },

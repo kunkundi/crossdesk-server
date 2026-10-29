@@ -5,6 +5,11 @@
 namespace {
 constexpr int64_t kDay = 86400;
 constexpr int64_t kBeijingOffset = 8 * 3600;
+constexpr const char* kCreateActivity =
+    "CREATE TABLE IF NOT EXISTS daily_controller_activity ("
+    "day_start INTEGER NOT NULL, device_id TEXT NOT NULL,"
+    "kind TEXT NOT NULL CHECK(kind IN ('pc','mobile','web','cli')),"
+    "PRIMARY KEY(day_start,device_id));";
 
 int64_t Now() {
   return std::chrono::duration_cast<std::chrono::seconds>(
@@ -54,11 +59,25 @@ void DeviceDBManager::InitDailyControllerActivity() {
   try {
     Exec(db_,
         "CREATE TABLE IF NOT EXISTS controller_activity_tracking ("
-        "id INTEGER PRIMARY KEY CHECK(id=1), started_at INTEGER NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS daily_controller_activity ("
-        "day_start INTEGER NOT NULL, device_id TEXT NOT NULL,"
-        "kind TEXT NOT NULL CHECK(kind IN ('pc','mobile','web')),"
-        "PRIMARY KEY(day_start,device_id));"
+        "id INTEGER PRIMARY KEY CHECK(id=1), started_at INTEGER NOT NULL);");
+    Exec(db_, kCreateActivity);
+    bool migrate = false;
+    {
+      Statement schema(db_, "SELECT sql FROM sqlite_master WHERE type='table' "
+                            "AND name='daily_controller_activity';");
+      migrate = schema.Row() && schema.Text(0).find("'cli'") == std::string::npos;
+    }
+    // SQLite cannot extend a CHECK constraint in place. Rebuild atomically,
+    // retaining the tracking start time and all existing daily counts.
+    if (migrate) {
+      Exec(db_, "ALTER TABLE daily_controller_activity "
+                "RENAME TO daily_controller_activity_legacy;");
+      Exec(db_, kCreateActivity);
+      Exec(db_, "INSERT INTO daily_controller_activity(day_start,device_id,kind) "
+                "SELECT day_start,device_id,kind FROM daily_controller_activity_legacy;"
+                "DROP TABLE daily_controller_activity_legacy;");
+    }
+    Exec(db_,
         "CREATE INDEX IF NOT EXISTS idx_daily_controller_device "
         "ON daily_controller_activity(device_id,day_start);"
         // A persisted row alone is not proof of activity after a restart.
@@ -80,6 +99,7 @@ void DeviceDBManager::RecordDailyControllerActivity(
       "INSERT INTO daily_controller_activity(day_start,device_id,kind) "
       "SELECT DISTINCT ?1,s.normalized_guest_id,"
       "CASE WHEN s.normalized_guest_id LIKE 'web-%' THEN 'web' "
+      "WHEN s.normalized_guest_id LIKE 'cli-%' THEN 'cli' "
       "WHEN lower(p.client_platform) IN ('ios','android') THEN 'mobile' "
       "WHEN coalesce(p.client_platform,'')<>'' THEN 'pc' "
       // Login clears metadata before the client reports its platform. Preserve
@@ -127,6 +147,7 @@ void DeviceDBManager::UpdateDailyControllerKind(const std::string& device_id,
   Statement update(db_,
       "UPDATE daily_controller_activity SET kind="
       "CASE WHEN device_id LIKE 'web-%' THEN 'web' "
+      "WHEN device_id LIKE 'cli-%' THEN 'cli' "
       "WHEN lower(?1) IN ('ios','android') THEN 'mobile' ELSE 'pc' END "
       "WHERE day_start=?2 AND device_id=?3;");
   update.Bind(1, platform);
@@ -155,7 +176,7 @@ nlohmann::json DeviceDBManager::GetDailyControllerStats() {
       for (const auto& period : {"today", "yesterday"}) {
         const auto day = today - (std::string(period) == "yesterday" ? kDay : 0);
         if (started < day + kDay)
-          result[period] = {{"pc", 0}, {"mobile", 0}, {"web", 0},
+          result[period] = {{"pc", 0}, {"mobile", 0}, {"web", 0}, {"cli", 0},
                             {"partial", started > day}};
       }
     }

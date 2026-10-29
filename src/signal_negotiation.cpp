@@ -1,4 +1,5 @@
 #include "signal_negotiation.h"
+#include "controller_identity.h"
 #include "session_recovery.h"
 
 #include <openssl/sha.h>
@@ -66,7 +67,7 @@ bool CopyOptionalIceUfrag(const json& source, json& destination) {
 }
 
 bool ShouldTrackClientInfo(const std::string& user_id) {
-  return !user_id.empty() && user_id.rfind("web-", 0) != 0 &&
+  return !user_id.empty() && !IsTemporaryControllerId(user_id) &&
          user_id.rfind("C-", 0) != 0;
 }
 
@@ -193,7 +194,8 @@ void SignalNegotiation::AuthenticateDevice(
     const std::string& device_id, const std::string& password, json failure,
     const CredentialDispatch& dispatch, std::function<void()> on_verified) {
   SetFailure(failure, "AUTHENTICATION_FAILED", "Authentication failed");
-  if (!ValidDeviceCredentials(device_id, password)) {
+  if (!ValidDeviceCredentials(device_id, password) ||
+      IsTemporaryControllerId(device_id)) {
     send_msg_(hdl, failure);
     return;
   }
@@ -302,7 +304,7 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     if (*completed && on_login) on_login();
   } else if (host_id.rfind("C-", 0) == 0) {
     finish({host_id, "", false}, false);
-  } else if (host_id.empty() || host_id == "web") {
+  } else if (host_id.empty() || IsTemporaryControllerRegistration(host_id)) {
     RunCredentialWork(
         hdl, source_address, failure,
         [this, hdl, host_id, failure, finish]() -> std::function<void()> {
@@ -362,7 +364,8 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
       send_msg_(hdl, failure);
       return false;
     }
-    transmission_manager_->BindHostToTransmission(ret_host_id, ret_host_id);
+    if (!IsTemporaryControllerId(ret_host_id))
+      transmission_manager_->BindHostToTransmission(ret_host_id, ret_host_id);
 
     bool update_success = ret_host_id != "" && update_password;
     bool login_success =
@@ -853,7 +856,7 @@ bool SignalNegotiation::change_password(websocketpp::connection_hdl hdl,
   std::string new_password;
   if (user_id.empty()) {
     message["reason"] = "Not authenticated";
-  } else if (user_id.rfind("C-", 0) == 0 || user_id.rfind("web-", 0) == 0) {
+  } else if (user_id.rfind("C-", 0) == 0 || IsTemporaryControllerId(user_id)) {
     message["reason"] = "Password changes are not allowed for this identity";
   } else if (!GetStringField(j, "new_password", new_password) ||
              new_password.size() != 6 ||
@@ -949,7 +952,8 @@ bool SignalNegotiation::turn_credentials(websocketpp::connection_hdl hdl,
   return true;
 }
 
-void SignalNegotiation::OnWebClientDisconnect(const std::string& user_id) {
+void SignalNegotiation::OnTemporaryControllerDisconnect(
+    const std::string& user_id) {
   // Extract pure user_id (remove password part if exists)
   std::string pure_user_id = user_id;
   size_t at_pos = user_id.find("@");
@@ -957,10 +961,10 @@ void SignalNegotiation::OnWebClientDisconnect(const std::string& user_id) {
     pure_user_id = user_id.substr(0, at_pos);
   }
 
-  // Check if this is a web client (starts with "web-")
-  if (pure_user_id.find("web-") == 0) {
+  // Temporary controller credentials expire with their WebSocket.
+  if (IsTemporaryControllerId(pure_user_id)) {
     if (!device_db_manager_->RemoveDevice(pure_user_id)) {
-      LOG_WARN("Failed to remove web client device [{}] from database",
+      LOG_WARN("Failed to remove temporary controller [{}] from database",
                pure_user_id);
     }
   }

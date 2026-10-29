@@ -46,6 +46,7 @@ class PresenceManager {
   void ForgetOfflineDeviceData(const std::string& device_id);
   size_t GetOnlineDeviceCount() const;
   size_t GetOnlineWebClientCount() const;
+  size_t GetOnlineCliClientCount() const;
   std::vector<std::pair<std::string, bool>> BatchQuery(
       const std::vector<std::string>& device_ids) const;
   void NotifyUserDevices(const std::string& user_id,
@@ -64,6 +65,7 @@ class PresenceManager {
   mutable std::mutex online_devices_mutex_;
   std::unordered_set<std::string> online_devices_;
   std::unordered_set<std::string> online_web_clients_;
+  std::unordered_set<std::string> online_cli_clients_;
 };
 
 #endif

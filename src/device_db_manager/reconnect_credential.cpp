@@ -1,4 +1,5 @@
 #include "device_db_manager.h"
+#include "controller_identity.h"
 
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
@@ -13,9 +14,9 @@ constexpr int64_t kLifetimeSeconds = 30 * 24 * 60 * 60;
 using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 
 bool PersistentDevice(const std::string& id) {
-  return !id.empty() && id != "web" && id.size() <= 128 &&
+  return !id.empty() && !IsTemporaryControllerRegistration(id) && id.size() <= 128 &&
          id.find('\0') == std::string::npos && id.find('@') == std::string::npos &&
-         id.rfind("web-", 0) != 0 && id.rfind("C-", 0) != 0;
+         !IsTemporaryControllerId(id) && id.rfind("C-", 0) != 0;
 }
 
 int64_t Now() {

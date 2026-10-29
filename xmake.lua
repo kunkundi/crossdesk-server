@@ -36,13 +36,13 @@ target("common")
 
 target("device_db_manager")
     set_kind("object")
-    add_deps("log")
+    add_deps("log", "common")
     add_files("src/device_db_manager/*.cpp")
     add_includedirs("src/device_db_manager", {public = true})
 
 target("transmission")
     set_kind("object")
-    add_deps("log")
+    add_deps("log", "common")
     add_files("src/transmission_manager.cpp")
     add_includedirs("src", {public = true})
 

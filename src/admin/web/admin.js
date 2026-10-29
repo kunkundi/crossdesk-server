@@ -81,6 +81,9 @@
       'PC clients': '电脑客户端',
       'Mobile clients': '移动客户端',
       'Web clients': '网页客户端',
+      'CLI clients': 'CLI 客户端',
+      'CLI client': 'CLI 客户端',
+      'CLI': '命令行端',
       'Active sessions': '活动会话',
       'Client overview': '客户端概览',
       'Beijing time · resets at 00:00': '北京时间 · 每日 00:00 划分',
@@ -90,7 +93,7 @@
       'Active yesterday': '昨日日活',
       'Current connections': '当前远控连接',
       'Daily activity counts controllers that successfully joined a remote session, including connections continuing past midnight. Merely being online does not count.': '日活统计成功加入远控会话的控制端，跨天持续中的连接计入新一天，仅在线不计入。',
-      'PC and mobile controllers count once per device per day. Web controllers count once per temporary ID; a new ID in the same browser can count again. These are client counts, not unique people.': '电脑和移动控制端按设备每天去重；网页控制端按临时 ID 去重，同一浏览器取得新 ID 后可以再次计入。统计的是客户端数量，不等同于实际人数。',
+      'PC and mobile controllers count once per device per day. Web and CLI controllers count once per temporary ID; obtaining a new ID can count again. These are client counts, not unique people.': '电脑和移动控制端按设备每天去重；网页和 CLI 控制端按临时 ID 去重，取得新 ID 后可以再次计入。统计的是客户端数量，不等同于实际人数。',
       'Disconnecting does not remove daily activity. Unavailable history is shown as —; collection-day totals are partial. Today and yesterday are retained.': '断开连接后保留当日日活。没有采集记录的日期显示 —，首次采集当天为部分数据。仅保留今日和昨日记录。',
       'Collection started at {time} today · partial data': '今日 {time} 开始采集 · 首日为部分数据',
       'Yesterday contains partial data from the first collection day.': '昨日为首次采集当天，数据不完整。',
@@ -555,10 +558,10 @@
         appendText(clientCell, 'div', device.id, 'device-id');
         const clientMeta = document.createElement('div');
         clientMeta.className = 'client-meta';
-        const platform = device.kind === 'web' ? 'web' : device.client_platform;
+        const platform = ['web', 'cli'].includes(device.kind) ? device.kind : device.client_platform;
         const normalizedPlatform = String(platform || '').toLowerCase();
-        const platformColor = ['windows', 'macos', 'linux', 'ios', 'android', 'web'].includes(normalizedPlatform) ? normalizedPlatform : 'unknown';
-        appendBadge(clientMeta, device.kind === 'web' ? t('Web client')
+        const platformColor = ['windows', 'macos', 'linux', 'ios', 'android', 'web', 'cli'].includes(normalizedPlatform) ? normalizedPlatform : 'unknown';
+        appendBadge(clientMeta, device.kind === 'cli' ? t('CLI client') : device.kind === 'web' ? t('Web client')
           : platformLabel(platform) || t(device.kind === 'mobile' ? 'Mobile client' : 'PC client'), `platform platform-${platformColor}`);
         if (device.client_version) {
           appendBadge(clientMeta, device.client_version, 'version');
@@ -770,7 +773,7 @@
       if (!kindSelect) return;
       if (counts) deviceKindCounts = counts;
       counts = deviceKindCounts;
-      const labels = {pc: t('PC'), mobile: t('Mobile'), web: t('Web')};
+      const labels = {pc: t('PC'), mobile: t('Mobile'), web: t('Web'), cli: t('CLI')};
       Array.from(kindSelect.options).forEach(option => {
         const value = option.value;
         const count = counts && Object.prototype.hasOwnProperty.call(counts, value)
@@ -831,9 +834,10 @@
       setMetric('metric-devices', stats.online_pc_client_count ?? stats.online_device_count);
       setMetric('metric-mobile', stats.online_mobile_client_count ?? 0);
       setMetric('metric-web', stats.online_web_client_count);
+      setMetric('metric-cli', stats.online_cli_client_count ?? 0);
       setMetric('metric-sessions', stats.active_connection_count);
       const daily = stats.daily_active_controllers;
-      for (const kind of ['pc', 'mobile', 'web']) {
+      for (const kind of ['pc', 'mobile', 'web', 'cli']) {
         for (const period of ['today', 'yesterday']) {
           setMetric(`metric-${kind}-${period}`, daily?.[period]?.[kind]);
         }
@@ -1015,7 +1019,7 @@
       });
     });
     document.getElementById('device-kind').addEventListener('change', (event) => {
-      state.devices.kind = ['pc', 'mobile', 'web'].includes(event.target.value) ? event.target.value : 'pc';
+      state.devices.kind = ['pc', 'mobile', 'web', 'cli'].includes(event.target.value) ? event.target.value : 'pc';
       state.devices.platform = '';
       state.devices.version = '';
       state.devices.offset = 0;

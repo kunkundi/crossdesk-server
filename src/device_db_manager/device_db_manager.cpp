@@ -1,4 +1,5 @@
 #include "device_db_manager.h"
+#include "controller_identity.h"
 
 #include <openssl/rand.h>
 
@@ -73,14 +74,14 @@ std::vector<std::string> SplitCommaSeparatedIds(const std::string& value) {
 
 std::string DevicePresenceKindClause(const std::string& kind) {
   std::string normalized = ToLower(kind);
-  if (normalized == "web") {
-    return "device_id LIKE 'web-%' ";
-  }
+  if (normalized == "web") return "device_id LIKE 'web-%' ";
+  if (normalized == "cli") return "device_id LIKE 'cli-%' ";
   if (normalized == "all") {
     return "device_id NOT LIKE 'C-%' ";
   }
   const std::string native_clause =
-      "device_id NOT LIKE 'web-%' AND device_id NOT LIKE 'C-%' ";
+      "device_id NOT LIKE 'web-%' AND device_id NOT LIKE 'cli-%' "
+      "AND device_id NOT LIKE 'C-%' ";
   const std::string mobile_platforms =
       "AND LOWER(COALESCE(client_platform, '')) ";
   if (normalized == "mobile") {
@@ -92,9 +93,8 @@ std::string DevicePresenceKindClause(const std::string& kind) {
 std::string DevicePresenceFilterClause(const std::string& filter,
                                        const std::string& kind) {
   std::string normalized = ToLower(filter);
-  if (normalized == "web") {
-    return "device_id LIKE 'web-%' ";
-  }
+  if (normalized == "web") return "device_id LIKE 'web-%' ";
+  if (normalized == "cli") return "device_id LIKE 'cli-%' ";
 
   std::string clause = DevicePresenceKindClause(kind);
   if (normalized == "online") {
@@ -642,7 +642,8 @@ std::string DeviceDBManager::GenerateDeviceId() {
 
 DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
                                             const std::string& password) {
-  if (!device_id.empty() && device_id != "web" && ReadPassword(device_id)) {
+  if (!device_id.empty() && !IsTemporaryControllerRegistration(device_id) &&
+      ReadPassword(device_id)) {
     return VerifyDevice(device_id, password) == 0
                ? DeviceCredential{device_id, "", false}
                : DeviceCredential{};
@@ -650,16 +651,17 @@ DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
   const auto generated = DevicePassword::Generate();
   if (generated.empty()) return {};
   const auto record = DevicePassword::Hash(generated);
-  return record ? RegisterDevice(device_id == "web" ? "web" : "", generated,
-                                 *record)
-                : DeviceCredential{};
+  if (!record) return {};
+  return RegisterDevice(
+      IsTemporaryControllerRegistration(device_id) ? device_id : "", generated,
+      *record);
 }
 
 DeviceCredential DeviceDBManager::RegisterDevice(
     const std::string& device_id, const std::string& password,
     const DevicePasswordRecord& record) {
-  if ((!device_id.empty() && device_id != "web") || password.empty() ||
-      !DevicePassword::IsCurrent(record))
+  if ((!device_id.empty() && !IsTemporaryControllerRegistration(device_id)) ||
+      password.empty() || !DevicePassword::IsCurrent(record))
     return {};
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   if (!db_) return {};
@@ -667,10 +669,10 @@ DeviceCredential DeviceDBManager::RegisterDevice(
   const int MAX_RETRIES = 10;
   for (int i = 0; i < MAX_RETRIES; ++i) {
     std::string new_id;
-    if (device_id == "web") {
+    if (IsTemporaryControllerRegistration(device_id)) {
       std::string generated_id = GenerateDeviceId();
       if (generated_id.empty()) {
-        LOG_ERROR("Failed to generate device ID for web client.");
+        LOG_ERROR("Failed to generate temporary controller ID.");
         return {};
       }
       new_id = device_id + "-" + generated_id;
@@ -682,7 +684,7 @@ DeviceCredential DeviceDBManager::RegisterDevice(
       }
     }
 
-    // Check if the generated ID (including web- prefix) already exists
+    // Check uniqueness including the temporary controller prefix.
     if (DeviceIdExists(new_id)) {
       LOG_WARN("Generated ID {} already exists, retrying...", new_id);
       continue;
@@ -724,8 +726,8 @@ DeviceCredential DeviceDBManager::RegisterDevice(
         sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return {};
       }
-      // For web clients, return empty password
-      if (device_id == "web") {
+      // Temporary controllers never receive a local password
+      if (IsTemporaryControllerRegistration(device_id)) {
         return {new_id, "", false};
       }
       return {new_id, password, false};
@@ -1374,7 +1376,7 @@ int DeviceDBManager::CountOnlineDevices(const std::string& search) {
       "SELECT COUNT(*) FROM device_presence "
       "WHERE online = 1 "
       "AND device_id NOT LIKE 'web-%' "
-      "AND device_id NOT LIKE 'C-%' ";
+      "AND device_id NOT LIKE 'cli-%' AND device_id NOT LIKE 'C-%' ";
   if (!search.empty()) {
     sql += "AND device_id LIKE ? ESCAPE '\\' ";
   }
@@ -1466,6 +1468,8 @@ DevicePresenceCounts DeviceDBManager::CountDevicePresenceByFilters(
       "WHERE normalized_host_id = device_presence.device_id) "
       "THEN 1 ELSE 0 END), 0), "
       "COALESCE(SUM(CASE WHEN device_id LIKE 'web-%' "
+      "THEN 1 ELSE 0 END), 0), "
+      "COALESCE(SUM(CASE WHEN device_id LIKE 'cli-%' "
       "THEN 1 ELSE 0 END), 0) "
       "FROM device_presence WHERE 1 = 1 " +
       DeviceClientFilterClause(platform, version);
@@ -1492,6 +1496,7 @@ DevicePresenceCounts DeviceDBManager::CountDevicePresenceByFilters(
     counts.offline = sqlite3_column_int64(stmt, 2);
     counts.active = sqlite3_column_int64(stmt, 3);
     counts.web = sqlite3_column_int64(stmt, 4);
+    counts.cli = sqlite3_column_int64(stmt, 5);
   }
   sqlite3_finalize(stmt);
   return counts;
@@ -1540,7 +1545,7 @@ OnlineDurationStats DeviceDBManager::GetOnlineDurationStats() {
       "ELSE 0 END), 0) "
       "FROM device_presence "
       "WHERE device_id NOT LIKE 'web-%' "
-      "AND device_id NOT LIKE 'C-%';";
+      "AND device_id NOT LIKE 'cli-%' AND device_id NOT LIKE 'C-%';";
 
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
@@ -1578,7 +1583,7 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListOnlineDevices(
       "FROM device_presence "
       "WHERE online = 1 "
       "AND device_id NOT LIKE 'web-%' "
-      "AND device_id NOT LIKE 'C-%' ";
+      "AND device_id NOT LIKE 'cli-%' AND device_id NOT LIKE 'C-%' ";
   if (!search.empty()) {
     sql += "AND device_id LIKE ? ESCAPE '\\' ";
   }

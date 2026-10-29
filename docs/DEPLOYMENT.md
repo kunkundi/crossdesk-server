@@ -157,6 +157,7 @@ curl --fail https://your-domain.example.com:9099/stats
 | `online_pc_client_count` | 当前在线电脑客户端数，未上报平台的原生设备也计入此项 |
 | `online_mobile_client_count` | 当前在线 iOS / Android 客户端数，按已上报平台识别，排除 `web-*` 与 `C-*` |
 | `online_web_client_count` | 当前在线 `web-*` 客户端数 |
+| `online_cli_client_count` | 在线 `cli-*` 控制端数量 |
 | `active_connection_count` | 活动远控连接数，按 host 与各 guest 的连接分别计数 |
 | `online_duration_seconds` | 当前在线设备的本次在线时长合计 |
 

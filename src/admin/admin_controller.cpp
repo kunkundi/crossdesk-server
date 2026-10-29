@@ -161,13 +161,15 @@ std::string LowerAscii(std::string value) {
 
 std::string ClientKind(const OnlineDeviceInfo& device) {
   if (device.device_id.rfind("web-", 0) == 0) return "web";
+  if (device.device_id.rfind("cli-", 0) == 0) return "cli";
   const std::string platform = LowerAscii(device.client_platform);
   return platform == "ios" || platform == "android" ? "mobile" : "device";
 }
 
 std::string NormalizeDeviceKind(const std::string& kind) {
   std::string normalized = LowerAscii(kind);
-  if (normalized == "web" || normalized == "mobile" || normalized == "all") {
+  if (normalized == "web" || normalized == "cli" || normalized == "mobile" ||
+      normalized == "all") {
     return normalized;
   }
   return "pc";
@@ -192,6 +194,7 @@ int64_t CountForDeviceFilter(const DevicePresenceCounts& counts,
   if (normalized == "web") {
     return counts.web;
   }
+  if (normalized == "cli") return counts.cli;
   return counts.all;
 }
 
@@ -527,8 +530,10 @@ AdminHttpResponse AdminController::HandleOverview(
                                   {"online", 0},
                                   {"offline", 0},
                                   {"active", 0},
-                                  {"web", 0}};
-  nlohmann::json device_kind_counts = {{"pc", 0}, {"mobile", 0}, {"web", 0}};
+                                  {"web", 0},
+                                  {"cli", 0}};
+  nlohmann::json device_kind_counts = {
+      {"pc", 0}, {"mobile", 0}, {"web", 0}, {"cli", 0}};
   DeviceClientFilterOptions client_filter_options;
   if (db_) {
     DevicePresenceCounts counts =
@@ -549,15 +554,22 @@ AdminHttpResponse AdminController::HandleOverview(
             ? counts
             : db_->CountDevicePresenceByFilters(device_search, "mobile",
                                                 device_platform, device_version);
+    DevicePresenceCounts cli_counts =
+        device_kind == "cli"
+            ? counts
+            : db_->CountDevicePresenceByFilters(device_search, "cli",
+                                                device_platform, device_version);
     client_filter_options = db_->ListDeviceClientFilterOptions(device_kind);
     device_counts["all"] = counts.all;
     device_counts["online"] = counts.online;
     device_counts["offline"] = counts.offline;
     device_counts["active"] = counts.active;
     device_counts["web"] = web_counts.all;
+    device_counts["cli"] = cli_counts.all;
     device_kind_counts["pc"] = pc_counts.all;
     device_kind_counts["mobile"] = mobile_counts.all;
     device_kind_counts["web"] = web_counts.all;
+    device_kind_counts["cli"] = cli_counts.all;
     devices_total =
         static_cast<size_t>(CountForDeviceFilter(counts, device_filter));
     std::vector<OnlineDeviceInfo> device_rows = db_->ListDevicePresence(
@@ -771,6 +783,9 @@ nlohmann::json AdminController::BuildStats() const {
   const size_t online_web_client_count = presence_
       ? presence_->GetOnlineWebClientCount()
       : db_ ? static_cast<size_t>(db_->CountDevicePresence("", "online", "web")) : 0;
+  const size_t online_cli_client_count = presence_
+      ? presence_->GetOnlineCliClientCount()
+      : db_ ? static_cast<size_t>(db_->CountDevicePresence("", "online", "cli")) : 0;
   size_t active_connection_count =
       transmission_ ? transmission_->GetActiveConnectionCount() : 0;
   if (db_) {
@@ -787,6 +802,7 @@ nlohmann::json AdminController::BuildStats() const {
                ? online_device_count - online_mobile_client_count : 0},
           {"online_mobile_client_count", online_mobile_client_count},
           {"online_web_client_count", online_web_client_count},
+          {"online_cli_client_count", online_cli_client_count},
           {"active_connection_count", active_connection_count},
           {"online_duration_seconds",
            duration_stats.current_online_seconds}};

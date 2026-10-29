@@ -1,4 +1,5 @@
 #include "presence_manager.h"
+#include "controller_identity.h"
 
 #include <nlohmann/json.hpp>
 
@@ -15,7 +16,7 @@ bool IsCloneClient(const std::string& device_id) {
 }
 
 bool ShouldTrackOnlineDevice(const std::string& device_id) {
-  return !IsWebClient(device_id) && !IsCloneClient(device_id);
+  return !IsTemporaryControllerId(device_id) && !IsCloneClient(device_id);
 }
 
 }  // namespace
@@ -29,6 +30,8 @@ void PresenceManager::OnLogin(const std::string& user_id,
       online_devices_.insert(device_id);
     } else if (IsWebClient(device_id)) {
       online_web_clients_.insert(device_id);
+    } else if (device_id.rfind("cli-", 0) == 0) {
+      online_cli_clients_.insert(device_id);
     }
   }
   if (db_) {
@@ -49,6 +52,8 @@ void PresenceManager::OnLogout(const std::string& device_id) {
       online_devices_.erase(device_id);
     } else if (IsWebClient(device_id)) {
       online_web_clients_.erase(device_id);
+    } else if (device_id.rfind("cli-", 0) == 0) {
+      online_cli_clients_.erase(device_id);
     }
   }
   if (db_) {
@@ -84,6 +89,11 @@ size_t PresenceManager::GetOnlineDeviceCount() const {
 size_t PresenceManager::GetOnlineWebClientCount() const {
   std::lock_guard<std::mutex> lock(online_devices_mutex_);
   return online_web_clients_.size();
+}
+
+size_t PresenceManager::GetOnlineCliClientCount() const {
+  std::lock_guard<std::mutex> lock(online_devices_mutex_);
+  return online_cli_clients_.size();
 }
 
 std::vector<std::pair<std::string, bool>> PresenceManager::BatchQuery(

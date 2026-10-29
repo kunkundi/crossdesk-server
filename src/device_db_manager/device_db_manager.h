@@ -53,6 +53,7 @@ struct DevicePresenceCounts {
   int64_t offline = 0;
   int64_t active = 0;  // Distinct devices currently being controlled.
   int64_t web = 0;
+  int64_t cli = 0;
 };
 
 struct DeviceClientFilterOptions {

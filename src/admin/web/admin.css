@@ -92,7 +92,7 @@ main:focus { outline: none; }
 .metrics-help-content { position: absolute; right: 0; top: 100%; z-index: 5; width: min(360px, calc(100vw - 40px)); padding: 14px 16px; background: #fff; border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px #202d3d18; font-size: 12px; line-height: 1.65; }
 .metrics-help-content p { margin: 0; }
 .metrics-help-content p + p { margin-top: 8px; }
-.metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(136px, .62fr); gap: 12px; margin-bottom: 24px; }
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(136px, .62fr); gap: 12px; margin-bottom: 24px; }
 .metric { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 16px 17px 18px; min-width: 0; }
 .metric h3 { margin: 0 0 17px; font-size: 13px; font-weight: 600; line-height: 1.5; }
 .metric-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; align-items: end; }
@@ -161,6 +161,7 @@ tbody tr:last-child > td { border-bottom: 0; }
 .badge.platform-ios { background: #f0edfc; color: #6948a8; }
 .badge.platform-android { background: #edf8ef; color: #287d44; }
 .badge.platform-web { background: #e8f5fa; color: #176981; }
+.badge.platform-cli { background: #e8edf3; color: #475569; }
 .badge.version { background: #e4f5ef; color: #087563; }
 .presence-table td:nth-child(2) .badge { margin: 2px 4px 2px 0; }
 .details-row td { background: #f7fafb; padding: 16px 18px; border-top: 1px solid #e4eeed; }

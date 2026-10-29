@@ -153,10 +153,11 @@ curl --fail https://your-domain.example.com:9099/stats
 
 | Field | Meaning |
 | --- | --- |
-| `online_device_count` | Total online native devices (PC + mobile), excluding `web-*` and `C-*` |
+| `online_device_count` | Total online native devices (PC + mobile), excluding `web-*`, `cli-*` and `C-*` |
 | `online_pc_client_count` | Online PC clients, including native devices that have not reported a platform |
-| `online_mobile_client_count` | Online iOS / Android clients, identified by their reported platform and excluding `web-*` and `C-*` |
+| `online_mobile_client_count` | Online iOS / Android clients, identified by their reported platform and excluding `web-*`, `cli-*` and `C-*` |
 | `online_web_client_count` | Online `web-*` clients |
+| `online_cli_client_count` | Online `cli-*` controllers |
 | `active_connection_count` | Active remote-control connections, counted separately for each host–guest pair |
 | `online_duration_seconds` | Sum of the current online periods of online devices |
 

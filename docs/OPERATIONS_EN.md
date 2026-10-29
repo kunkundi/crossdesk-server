@@ -66,7 +66,11 @@ Other Join rejections retain the legacy `Remote unavailable` reason so old clien
 
 The source is the TCP peer IP without its port; request fields and `X-Forwarded-For` are not trusted. Connections behind one NAT or reverse proxy share a source quota. Counters are local to one server process and reset on restart; multiple instances need coordinated limits in a trusted gateway or shared store. Each dimension holds at most 16,384 records and rejects new verification keys at capacity until expired records free space.
 
-Registration must explicitly use an empty device ID (native clients) or `web` (Web clients). Logging in with an unknown or expired ID returns the generic authentication failure instead of assigning a replacement ID. Clients must reset their local identity to register again.
+Registration must explicitly use an empty device ID (native clients), `web` (Web clients), or `cli` (CLI controllers). Logging in with an unknown or expired ID returns the generic authentication failure instead of assigning a replacement ID. Clients must reset their local identity to register again.
+
+Each CLI startup/new connection sends `{"type":"login","user_id":"cli"}`. A successful reply is `{"type":"login","status":"success","user_id":"cli-xxxxxxxxx"}`, with nine random digits and no local password or persistent reconnect credential. Join uses that ID on the same connection. Web and CLI temporary identities can only control other devices: they cannot host transmissions, change a local password, or log in again using an assigned ID. WebSocket disconnect removes their temporary registration; presence, subscriptions and control sessions follow the Web cleanup path. Offline statistics retain the existing retention policy.
+
+Upgrade the server before using the new CLI. The CLI does not fall back to registering a native device on older servers.
 
 ### Dedicated reconnect credentials
 
@@ -80,7 +84,7 @@ Subsequent reconnects send only the device ID, without its password. Existing se
 
 Success returns `status: "success"`, `reconnected: true`, `reconnect_version: 1` and the original expiry, followed by normal presence updates, session recovery and a fresh heartbeat interval. This path bypasses the Argon2id queue and password source budget without reading or changing password failure counters. Connection and message queue limits still apply. Reconnects neither rotate the credential nor extend its lifetime, so a lost response can be retried.
 
-Credentials authenticate only the device itself; access to another device still requires the existing password/session authorization. Empty, `web`, `web-*` and `C-*` temporary identities do not receive credentials. Another opted-in password login replaces the credential; changing the device password, deleting the device or reaching expiry invalidates it. An authenticated device can revoke its own credential with `{"type":"revoke_reconnect_credential"}`; success returns the same `type` and `status: "success"` without closing active connections.
+Credentials authenticate only the device itself; access to another device still requires the existing password/session authorization. Empty, `web`, `cli`, `web-*`, `cli-*` and `C-*` temporary identities do not receive credentials. Another opted-in password login replaces the credential; changing the device password, deleting the device or reaching expiry invalidates it. An authenticated device can revoke its own credential with `{"type":"revoke_reconnect_credential"}`; success returns the same `type` and `status: "success"` without closing active connections.
 
 Invalid credentials receive `Authentication failed` with `reconnect_rejected: true`, without implicit password work. MiniRTC clears the rejected credential and retries password login once on the same connection; a second failure follows existing error handling. Credentials stay in memory for the lifetime of the client connection instance and survive network outages/server restarts. Exiting the app, recreating the instance, switching servers or changing identity requires password authentication; no new plaintext credential file is written. New clients keep using password authentication with older servers.
 
