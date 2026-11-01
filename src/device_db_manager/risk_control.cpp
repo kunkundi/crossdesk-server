@@ -31,7 +31,7 @@ nlohmann::json DeviceDBManager::RiskRules() {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   auto stmt =
       Prepare(db_,
-              "SELECT scope,target,expires_at,reason FROM auth_risk_rules "
+              "SELECT scope,target,expires_at,reason FROM auth_source_rules "
               "WHERE expires_at>? ORDER BY scope,target LIMIT 4096;");
   if (!stmt) return nullptr;
   sqlite3_bind_int64(stmt.get(), 1, Now());
@@ -48,22 +48,22 @@ nlohmann::json DeviceDBManager::RiskRules() {
 bool DeviceDBManager::SetRiskRule(const std::string& scope,
                                   const std::string& target, int64_t expires_at,
                                   const std::string& reason) {
-  if ((scope != "device" && scope != "ip") || target.empty() ||
+  if ((scope != "controller" && scope != "ip") || target.empty() ||
       target.size() > 128 || target.find('\0') != std::string::npos ||
       reason.size() > 256 || expires_at <= Now() ||
       expires_at > Now() + 30 * 86400)
     return false;
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   if (!db_ || sqlite3_exec(db_,
-                           "DELETE FROM auth_risk_rules WHERE "
+                           "DELETE FROM auth_source_rules WHERE "
                            "expires_at<=CAST(strftime('%s','now') AS INTEGER);",
                            nullptr, nullptr, nullptr) != SQLITE_OK)
     return false;
   auto stmt = Prepare(
       db_,
-      "INSERT INTO auth_risk_rules(scope,target,expires_at,reason) "
-      "SELECT ?1,?2,?3,?4 WHERE (SELECT COUNT(*) FROM auth_risk_rules)<4096 "
-      "OR EXISTS(SELECT 1 FROM auth_risk_rules WHERE scope=?1 AND target=?2) "
+      "INSERT INTO auth_source_rules(scope,target,expires_at,reason) "
+      "SELECT ?1,?2,?3,?4 WHERE (SELECT COUNT(*) FROM auth_source_rules)<4096 "
+      "OR EXISTS(SELECT 1 FROM auth_source_rules WHERE scope=?1 AND target=?2) "
       "ON CONFLICT(scope,target) DO UPDATE SET "
       "expires_at=excluded.expires_at,reason=excluded.reason;");
   if (!stmt) return false;
@@ -78,7 +78,7 @@ bool DeviceDBManager::DeleteRiskRule(const std::string& scope,
                                      const std::string& target) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   auto stmt =
-      Prepare(db_, "DELETE FROM auth_risk_rules WHERE scope=? AND target=?;");
+      Prepare(db_, "DELETE FROM auth_source_rules WHERE scope=? AND target=?;");
   if (!stmt) return false;
   Bind(stmt.get(), 1, scope);
   Bind(stmt.get(), 2, target);
@@ -86,15 +86,15 @@ bool DeviceDBManager::DeleteRiskRule(const std::string& scope,
 }
 
 std::optional<int> DeviceDBManager::PasswordRiskDelay(
-    const std::string& source, const std::string& device_id) {
+    const std::string& source, const std::string& verified_controller) {
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   auto stmt = Prepare(
       db_,
-      "SELECT MAX(expires_at) FROM auth_risk_rules "
-      "WHERE (scope='ip' AND target=?1) OR (scope='device' AND target=?2);");
+      "SELECT MAX(expires_at) FROM auth_source_rules "
+      "WHERE (scope='ip' AND target=?1) OR (scope='controller' AND target=?2);");
   if (!stmt) return std::nullopt;
   Bind(stmt.get(), 1, source);
-  Bind(stmt.get(), 2, device_id);
+  Bind(stmt.get(), 2, verified_controller);
   if (sqlite3_step(stmt.get()) != SQLITE_ROW) return std::nullopt;
   const auto delay = sqlite3_column_int64(stmt.get(), 0) - Now();
   return static_cast<int>(std::clamp<int64_t>(delay, 0, 30 * 86400));

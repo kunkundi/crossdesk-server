@@ -151,7 +151,7 @@ class DeviceDBManager {
                    int64_t expires_at, const std::string& reason);
   bool DeleteRiskRule(const std::string& scope, const std::string& target);
   std::optional<int> PasswordRiskDelay(const std::string& source,
-                                      const std::string& device_id);
+                                      const std::string& verified_controller);
   bool StartRemoteControlSession(const std::string& transmission_id,
                                  const std::string& host_id,
                                  const std::string& guest_id);

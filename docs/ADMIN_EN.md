@@ -22,23 +22,24 @@ The top navigation includes **Overview** (`/admin/overview`) for metrics, client
 
 ### Device risk controls
 
-Open **Risk controls** (`/admin/risk`) to inspect device-ID and source-IP password failure counts, thresholds, remaining waits and manual reasons. The page refreshes every 5 seconds and supports search, type/source filters and pagination; summary counts follow the filters.
+Open **Risk controls** (`/admin/risk`) to inspect controller/source-IP totals and source → destination failure counts, thresholds and remaining waits. **No destination-wide failure total or cooldown is retained.** The page refreshes every 5 seconds and supports search, filters and pagination.
 
-- **Add restriction**: choose a device ID or source IP, duration and optional reason. Adding the same target updates its expiry and reason. Durations range from 1 minute to 30 days, with at most 4,096 active manual rules. IPv4 and IPv6 addresses are supported; network ranges are not.
-- **Clear restriction / record**: remove that target's manual rule and reset its automatic failures, cooldown and backoff. In-flight checks retain their concurrency reservations, but checks already running at clear time cannot restore old failure counts. Device and IP state are independent: clearing a device does not clear restrictions on its source IP.
-- **Scope**: password authentication only, including legacy password login, initial key binding for an existing ID, and remote-control queries/joins. A device rule targets the device whose password is being checked, not a claimed controller identity; use the original ID without `C-`. IP rules use the TCP peer address, not a client-supplied address.
+- **Add restriction**: choose a controller ID or source IP, duration and optional reason. Adding the same source updates its rule. Durations range from 1 minute to 30 days, with at most 4,096 active rules. Individual IPv4/IPv6 addresses are supported.
+- **Controller ID**: enter B's key-verified device ID without `C-`. This restricts B's password queries/joins, not other devices connecting to B. A legacy client's claimed `C-B` is not a verified identity and uses its source IP instead.
+- **Source IP**: an explicit administrator rule restricts all password authentication from that TCP peer, including legacy login, initial key binding and signed controllers' remote-password checks. Signature login remains available. Client-supplied addresses are not trusted.
+- **Clear**: clearing a controller/IP removes its manual rule, aggregate failures and all source → destination records. Clearing one pair does not clear the source total. In-flight reservations remain, but failures already computing at clear time cannot restore old counts. Controller and IP manual rules must be cleared independently.
 
-Bound-device signature login, valid legacy reconnect credentials, existing sessions and administrator login remain unaffected. Manual rules persist in SQLite across restarts and stop applying at expiry. Automatic counts and backoff are process-local, reset on restart, and are not shared across instances.
+Signature login, valid legacy reconnect credentials, existing sessions and administrator login remain unaffected. Manual rules persist; automatic counts are process-local and reset on restart. Upgrade preserves old IP rules and **removes old destination-device rules**, rather than silently converting them into controller bans.
 
-The authenticated API exposes `GET /api/admin/risk` with `search`, `scope=all|device|ip`, `kind=all|manual|auto` and `offset` (50 rows per page). Manual and automatic state for the same target are merged and classified as manual when a manual rule exists. `POST /api/admin/risk` requires JSON and `X-CrossDesk-CSRF` from `/api/admin/data-session`:
+`GET /api/admin/risk` accepts `search`, `scope=all|controller|ip|pair`, `kind=all|manual|auto` and `offset` (50 rows per page). Manual and automatic records for the same source are merged and classified as manual. `POST /api/admin/risk` requires authentication, JSON and `X-CrossDesk-CSRF` from `/api/admin/data-session`:
 
 ```json
-{"action":"restrict","scope":"device","target":"123456789","duration_seconds":3600,"reason":"Repeated password attempts"}
+{"action":"restrict","scope":"controller","target":"123456789","duration_seconds":3600,"reason":"Repeated password attempts"}
 ```
 
-Clear with `{"action":"clear","scope":"device","target":"123456789"}`; use `scope: "ip"` for an IP rule. Successful actions log the administrator, action, scope and target, without passwords or reason text. Rules are checked before queue admission, before password computation and before authentication completes, so previously queued requests cannot bypass newly added restrictions.
+Clear with `{"action":"clear","scope":"controller","target":"123456789"}`; use `scope: "ip"` for IP rules. Pair records support only `clear`: submit the exact `scope: "pair"` and raw `target` returned by GET. Old `scope: "device"` requests are rejected. Successful actions log the administrator, action, scope and target. Rules are rechecked before enqueueing, hashing and authentication completion.
 
-This page supports incident response and recovery. New failures can trigger limits again after a clear; it does not automatically stop sustained attacks against legacy IDs. IP restrictions can affect other devices behind the same NAT. Use it alongside public-key device login and source-level response.
+Legacy clients still share source-IP limits and can affect each other behind one NAT. Verified controllers have independent failure budgets and credential queue source quotas; explicit IP rules and global resource bounds still apply. With destination totals removed, distributed guessing through many identities needs registration limits and source-level response.
 
 ### Daily active controllers
 

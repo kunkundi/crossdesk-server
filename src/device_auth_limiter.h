@@ -18,8 +18,9 @@
 #include <utility>
 #include <vector>
 
-// Failure budgets keyed by transport peer IP and credential target, never a
-// connection handle. Use separate instances for independent auth domains.
+// Two independent budgets with caller-supplied keys, never connection handles.
+// Password signaling uses an authenticated initiator (or legacy source IP) and
+// an initiator/credential pair. Admin authentication uses its separate instance.
 class DeviceAuthLimiter {
  public:
   using Clock = std::chrono::steady_clock;
@@ -46,12 +47,14 @@ class DeviceAuthLimiter {
   // must still recheck after queueing, immediately before password computation.
   int CooldownRemaining(const std::string& source, const std::string& target);
   struct Entry {
-    std::string scope, target;
+    bool source;
+    std::string target;
     size_t failures, threshold, pending;
     int retry_after, reset_after;
   };
   std::vector<Entry> Snapshot();
   void Clear(bool source, const std::string& target);
+  void ClearMatching(const std::function<bool(bool, const std::string&)>& matches);
   Result Verify(const std::string& source, const std::string& target,
                 const std::function<bool()>& verify);
 

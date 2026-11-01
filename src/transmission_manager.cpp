@@ -279,7 +279,8 @@ bool TransmissionManager::BindGuestToTransmission(
 }
 
 bool TransmissionManager::BindUserToWsHandle(const std::string& user_id,
-                                             websocketpp::connection_hdl hdl) {
+                                             websocketpp::connection_hdl hdl,
+                                             const std::string& verified_device_id) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
   if (user_id.empty() || hdl.expired()) {
     return false;
@@ -295,6 +296,7 @@ bool TransmissionManager::BindUserToWsHandle(const std::string& user_id,
     user_id_ws_hdl_list_[user_id] = hdl;
   }
   ws_hdl_user_id_list_[hdl] = user_id;
+  if (!verified_device_id.empty()) ws_hdl_verified_device_ids_[hdl] = verified_device_id;
   UpdateWsHandleLastActiveTime(hdl);
   return true;
 }
@@ -471,6 +473,7 @@ std::string TransmissionManager::ReleaseUserFromWsHandle(
     websocketpp::connection_hdl hdl) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
   ws_hdl_last_active_time_map_.erase(hdl);
+  ws_hdl_verified_device_ids_.erase(hdl);
   auto hdl_it = ws_hdl_user_id_list_.find(hdl);
   if (hdl_it == ws_hdl_user_id_list_.end()) {
     return "";
@@ -521,6 +524,12 @@ std::string TransmissionManager::GetUserId(websocketpp::connection_hdl hdl) {
     return it->second;
   }
   return "";
+}
+
+std::string TransmissionManager::GetVerifiedDeviceId(websocketpp::connection_hdl hdl) {
+  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  const auto it = ws_hdl_verified_device_ids_.find(hdl);
+  return it == ws_hdl_verified_device_ids_.end() ? "" : it->second;
 }
 
 websocketpp::connection_hdl TransmissionManager::GetWsHandle(

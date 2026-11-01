@@ -73,32 +73,42 @@ std::vector<DeviceAuthLimiter::Entry> DeviceAuthLimiter::Snapshot() {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto now = now_();
   std::vector<Entry> entries;
-  auto append = [&](const Buckets& buckets, const char* scope, size_t threshold) {
+  auto append = [&](const Buckets& buckets, bool source, size_t threshold) {
     for (const auto& [target, bucket] : buckets) {
       if (!bucket.count || bucket.expires <= now) continue;
-      entries.push_back({scope, target, bucket.count, threshold, bucket.pending,
+      entries.push_back({source, target, bucket.count, threshold, bucket.pending,
           RemainingSeconds(bucket.blocked_until, now), RemainingSeconds(bucket.expires, now)});
     }
   };
-  append(targets_, "device", target_failure_limit_);
-  append(sources_, "ip", source_failure_limit_);
+  append(targets_, false, target_failure_limit_);
+  append(sources_, true, source_failure_limit_);
   return entries;
 }
 
 void DeviceAuthLimiter::Clear(bool source, const std::string& target) {
+  ClearMatching([&](bool is_source, const std::string& key) {
+    return is_source == source && key == target;
+  });
+}
+
+void DeviceAuthLimiter::ClearMatching(
+    const std::function<bool(bool, const std::string&)>& matches) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto& buckets = source ? sources_ : targets_;
-  const auto it = buckets.find(target);
-  if (it == buckets.end()) return;
-  if (!it->second.pending) {
-    buckets.erase(it);
-  } else {
-    // Preserve outstanding reservations; their pre-clear failures must not
-    // restore the administrator-cleared cooldown when hashing finishes.
-    auto& bucket = it->second;
-    ++bucket.generation;
-    bucket.expires = now_();
-    ResetExpired(bucket, bucket.expires);
+  for (auto* buckets : {&sources_, &targets_}) {
+    for (auto it = buckets->begin(); it != buckets->end();) {
+      if (!matches(buckets == &sources_, it->first)) { ++it; continue; }
+      if (!it->second.pending) {
+        it = buckets->erase(it);
+      } else {
+        // Include pending-only buckets: pre-clear computations must not
+        // restore cleared failures, while reservations stay in place.
+        auto& bucket = it->second;
+        ++bucket.generation;
+        bucket.expires = now_();
+        ResetExpired(bucket, bucket.expires);
+        ++it;
+      }
+    }
   }
 }
 

@@ -426,12 +426,17 @@ AdminHttpResponse AdminController::HandleRiskControl(const AdminHttpRequest& req
     auto entry = [&](const std::string& scope, const std::string& target) -> json& {
       auto& item = entries[{scope, target}];
       if (item.is_null()) item = {{"scope", scope}, {"target", target}, {"failures", 0},
-          {"threshold", scope == "ip" ? DeviceAuthLimiter::kSourceFailures : DeviceAuthLimiter::kTargetFailures},
+          {"threshold", scope == "pair" ? DeviceAuthLimiter::kTargetFailures : DeviceAuthLimiter::kSourceFailures},
           {"retry_after", 0}, {"reset_after", 0}, {"manual", false}, {"reason", ""}, {"expires_at", 0}};
       return item;
     };
     for (const auto& state : auth_limiter_->Snapshot()) {
-      auto& item = entry(state.scope, state.target);
+      const auto key = json::parse(state.target, nullptr, false);
+      if (!key.is_array() || key.size() != (state.source ? 2 : 3)) continue;
+      auto& item = entry(state.source ? key[0].get<std::string>() : "pair",
+                         state.source ? key[1].get<std::string>() : state.target);
+      item["source_scope"] = key[0]; item["source"] = key[1];
+      if (!state.source) item["destination"] = key[2];
       item["failures"] = state.failures; item["threshold"] = state.threshold;
       item["retry_after"] = state.retry_after; item["reset_after"] = state.reset_after;
     }
@@ -447,7 +452,7 @@ AdminHttpResponse AdminController::HandleRiskControl(const AdminHttpRequest& req
     const auto search = QueryStringParam(params, "search");
     const auto scope = QueryStringParam(params, "scope", "all");
     const auto kind = QueryStringParam(params, "kind", "all");
-    if (search.size() > 128 || (scope != "all" && scope != "device" && scope != "ip") ||
+    if (search.size() > 128 || (scope != "all" && scope != "controller" && scope != "ip" && scope != "pair") ||
         (kind != "all" && kind != "manual" && kind != "auto"))
       return ErrorResponse(400, "invalid_request");
     std::vector<json> rows;
@@ -485,8 +490,10 @@ AdminHttpResponse AdminController::HandleRiskControl(const AdminHttpRequest& req
     if (!body.contains(field) || !body[field].is_string()) return ErrorResponse(400, "invalid_request");
   const auto action = body["action"].get<std::string>(), scope = body["scope"].get<std::string>();
   auto target = body["target"].get<std::string>();
-  if ((action != "restrict" && action != "clear") || (scope != "device" && scope != "ip") ||
-      target.empty() || target.size() > 128 || target.find('\0') != std::string::npos)
+  if ((action != "restrict" && action != "clear") ||
+      (scope != "controller" && scope != "ip" && !(scope == "pair" && action == "clear")) ||
+      target.empty() || target.size() > (scope == "pair" ? 2048 : 128) ||
+      target.find('\0') != std::string::npos)
     return ErrorResponse(400, "invalid_risk_target");
   if (scope == "ip" && !(action == "clear" && target == "unknown")) {
     asio::error_code error;
@@ -495,14 +502,32 @@ AdminHttpResponse AdminController::HandleRiskControl(const AdminHttpRequest& req
     if (address.is_v6() && address.to_v6().is_v4_mapped())
       address = asio::ip::make_address_v4(asio::ip::v4_mapped, address.to_v6());
     target = address.to_string();
-  } else if (action == "restrict" && scope == "device" && (target.rfind("C-", 0) == 0 ||
+  } else if (action == "restrict" && scope == "controller" && (target.rfind("C-", 0) == 0 ||
       !std::all_of(target.begin(), target.end(), [](unsigned char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
                (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
       }))) return ErrorResponse(400, "invalid_risk_target");
   if (action == "clear") {
-    if (!db_->DeleteRiskRule(scope, target)) return ErrorResponse(503, "risk_unavailable");
-    auth_limiter_->Clear(scope == "ip", target);
+    if (scope == "pair") {
+      const auto pair = json::parse(target, nullptr, false);
+      if (!pair.is_array() || pair.size() != 3 ||
+          !std::all_of(pair.begin(), pair.end(), [](const json& v) { return v.is_string(); }) ||
+          (pair[0] != "controller" && pair[0] != "ip"))
+        return ErrorResponse(400, "invalid_risk_target");
+      target = pair.dump();
+      auth_limiter_->Clear(false, target);
+    } else {
+      if (!db_->DeleteRiskRule(scope, target)) return ErrorResponse(503, "risk_unavailable");
+      const auto source = json::array({scope, target});
+      // Clearing a source also clears its per-destination records. Preserve
+      // in-flight reservations through the limiter's generation checks.
+      const auto source_key = source.dump();
+      auth_limiter_->ClearMatching([&](bool is_source, const std::string& key) {
+        if (is_source) return key == source_key;
+        const auto pair = json::parse(key, nullptr, false);
+        return pair.is_array() && pair.size() == 3 && pair[0] == source[0] && pair[1] == source[1];
+      });
+    }
   } else {
     if (!body.contains("duration_seconds") || !body["duration_seconds"].is_number_integer() ||
         body["duration_seconds"] < 60 || body["duration_seconds"] > 30 * 86400 ||

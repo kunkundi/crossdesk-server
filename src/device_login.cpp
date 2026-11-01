@@ -58,11 +58,14 @@ bool SignalNegotiation::LoginWithKey(websocketpp::connection_hdl hdl,
     const auto identity = request.at("user_id").get<std::string>();
     const auto at = identity.find('@');
     const auto id = identity.substr(0, at);
+    const bool controller = id.rfind("C-", 0) == 0;
+    const auto device_id = controller ? id.substr(2) : id;
     const auto password = at == std::string::npos ? "" : identity.substr(at + 1);
     const auto& proof = request.at("device_key");
     if (id.size() > 128 || password.size() > 256 || identity.find('\0') != std::string::npos ||
-        id.rfind("C-", 0) == 0 || IsTemporaryControllerId(id) ||
-        IsTemporaryControllerRegistration(id) || !proof.is_object() || proof.size() > 4 ||
+        (controller && (device_id.empty() || device_id.rfind("C-", 0) == 0)) ||
+        IsTemporaryControllerId(device_id) || IsTemporaryControllerRegistration(device_id) ||
+        !proof.is_object() || proof.size() > 4 ||
         !proof.at("version").is_number_integer() || proof.at("version") != 1)
       return reject();
     const auto public_key = proof.at("public_key").get<std::string>();
@@ -89,10 +92,10 @@ bool SignalNegotiation::LoginWithKey(websocketpp::connection_hdl hdl,
       auto nonce = Nonce();
       if (nonce.empty()) return reject();
       login_challenges_[hdl] = {id, public_key, nonce, now + std::chrono::seconds(10)};
-      const auto key = device_db_manager_->ReadLoginPublicKey(id);
+      const auto key = device_db_manager_->ReadLoginPublicKey(device_id);
       send_msg_(hdl, {{"type", "login_challenge"}, {"user_id", id},
           {"device_key_version", 1}, {"nonce", nonce},
-          {"password_required", !id.empty() && (!key || key->empty())}});
+          {"password_required", !controller && !id.empty() && (!key || key->empty())}});
       return false;
     }
 
@@ -116,13 +119,16 @@ bool SignalNegotiation::LoginWithKey(websocketpp::connection_hdl hdl,
       if (!password.empty()) return reject();
       RegisterDevice(hdl, source, id, failure, dispatch, finish, public_key);
     } else {
-      const auto bound = device_db_manager_->ReadLoginPublicKey(id);
+      const auto bound = device_db_manager_->ReadLoginPublicKey(device_id);
       if (!bound) return reject();
       if (!bound->empty()) {
         if (*bound != public_key || !password.empty()) return reject();
         // No password hash, password failure counter or password worker queue.
         finish({id, "", false}, false);
       } else {
+        // Controller connections may only reuse an already-bound identity.
+        // Migration is performed by the owning device's normal login.
+        if (controller) return reject();
         // Only the first binding uses legacy credentials. Never replace a key.
         AuthenticateDevice(hdl, source, id, password, failure, dispatch,
             [id, finish] {

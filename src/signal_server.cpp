@@ -1124,8 +1124,11 @@ bool SignalServer::SubmitCredentialWork(
   if (stopping_ || !state->alive || state->credential_pending) return false;
   const auto deadline = Clock::now() +
                         std::chrono::seconds(credential_timeout_seconds_);
+  const auto controller = transmission_manager_->GetVerifiedDeviceId(hdl);
+  const auto source = json::array({controller.empty() ? "ip" : "controller",
+      controller.empty() ? (state->source_address.empty() ? "unknown" : state->source_address) : controller}).dump();
   CredentialQueue::Job job{
-      state->id, state->source_address, deadline,
+      state->id, source, deadline,
       [this, state] { return !stopping_ && state->alive.load(); },
       std::move(admit),
       [this, hdl, state, work = std::move(work)](size_t worker) mutable {

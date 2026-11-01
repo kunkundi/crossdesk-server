@@ -368,11 +368,21 @@ void DeviceDBManager::InitDB() {
 
   EnsureTextColumn(db_, "devices", "login_public_key");
   ExecuteSchemaStatement(db_,
+      "BEGIN IMMEDIATE;"
+      // Old device rules refer to password targets, not authenticated sources.
+      // Carry forward only IP rules; never reinterpret an old target ban.
       "CREATE TABLE IF NOT EXISTS auth_risk_rules ("
       "scope TEXT NOT NULL CHECK(scope IN ('device','ip')), target TEXT NOT NULL,"
       "expires_at INTEGER NOT NULL, reason TEXT NOT NULL,"
       "PRIMARY KEY(scope,target));"
-      "DELETE FROM auth_risk_rules WHERE expires_at<=CAST(strftime('%s','now') AS INTEGER);",
+      "CREATE TABLE IF NOT EXISTS auth_source_rules ("
+      "scope TEXT NOT NULL CHECK(scope IN ('controller','ip')), target TEXT NOT NULL,"
+      "expires_at INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(scope,target));"
+      "INSERT OR IGNORE INTO auth_source_rules SELECT * FROM auth_risk_rules "
+      "WHERE scope='ip' AND expires_at>CAST(strftime('%s','now') AS INTEGER);"
+      "DROP TABLE auth_risk_rules;"
+      "DELETE FROM auth_source_rules WHERE expires_at<=CAST(strftime('%s','now') AS INTEGER);"
+      "COMMIT;",
       "initialize password risk rules");
   ExecuteSchemaStatement(db_,
       "CREATE TABLE IF NOT EXISTS device_reconnect_credentials ("

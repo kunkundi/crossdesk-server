@@ -1,6 +1,8 @@
     const chinese = {
       "Risk controls": "风控管理",
-      "Manage password restrictions. Signature logins and existing sessions stay available.": "管理密码认证限制。签名登录与已有会话不受影响。",
+      "Restrict password attempts by source. Signature logins and existing sessions stay available.": "按来源限制密码尝试。签名登录与已有会话不受影响。",
+      "Controller ID": "控制端 ID",
+      "Source → destination": "来源 → 连接目标",
       "Matching records": "匹配记录",
       "Restricted now": "正在限制",
       "Manual rules": "手动规则",
@@ -9,7 +11,7 @@
       "Target": "对象",
       "Duration": "限制时长",
       "Reason (optional)": "备注（可选）",
-      "Device ID or IP": "设备 ID 或 IP 地址",
+      "Controller ID or IP": "控制端 ID 或 IP 地址",
       "1 minute": "1 分钟",
       "15 minutes": "15 分钟",
       "1 hour": "1 小时",
@@ -18,7 +20,7 @@
       "7 days": "7 天",
       "30 days": "30 天",
       "Risk records": "风控记录",
-      "Search device ID or IP": "搜索设备 ID 或 IP",
+      "Search controller, destination or IP": "搜索控制端、连接目标或 IP",
       "All types": "全部类型",
       "Rule source": "规则来源",
       "All records": "全部记录",
@@ -34,7 +36,7 @@
       "No matching risk records": "暂无匹配的风控记录",
       "Restriction saved.": "限制已保存。",
       "Restriction cleared. New failures can trigger limits again.": "已解除该对象的限制。新的失败仍可能触发限流。",
-      "Invalid device ID or IP address.": "请输入有效的设备 ID 或 IP 地址。",
+      "Invalid controller ID or IP address.": "请输入有效的设备 ID 或 IP 地址。",
       "Invalid restriction duration or reason.": "限制时长或备注不符合要求。",
       "Unable to save the rule. The rule limit may have been reached.": "规则保存失败，可能已达到规则数量上限。",
       "Unable to load or update risk controls. Refresh and retry.": "风控数据加载或更新失败，请刷新后重试。",
@@ -1495,8 +1497,8 @@
       for (const item of riskItems) {
         const row = document.createElement('tr');
         const target = document.createElement('td');
-        const name = document.createElement('span'); name.className = 'risk-target'; name.textContent = item.target;
-        const kind = document.createElement('span'); kind.className = 'risk-target-kind'; kind.textContent = t(item.scope === 'ip' ? 'Source IP' : 'Device ID');
+        const name = document.createElement('span'); name.className = 'risk-target'; name.textContent = item.scope === 'pair' ? `${item.source} → ${item.destination}` : item.target;
+        const kind = document.createElement('span'); kind.className = 'risk-target-kind'; kind.textContent = t((item.source_scope || item.scope) === 'ip' ? 'Source IP' : 'Controller ID');
         target.append(name, kind); row.append(target);
         const state = document.createElement('td'), badge = document.createElement('span');
         badge.className = `risk-state${item.retry_after > 0 ? ' restricted' : ''}`;
@@ -1525,7 +1527,7 @@
       riskElement('refresh').disabled = riskBusy;
     }
     function riskError(error) {
-      const messages = {invalid_risk_target: 'Invalid device ID or IP address.',
+      const messages = {invalid_risk_target: 'Invalid controller ID or IP address.',
         invalid_risk_rule: 'Invalid restriction duration or reason.',
         risk_rule_not_saved: 'Unable to save the rule. The rule limit may have been reached.'};
       setMessage('risk-error', messages[error.message] || 'Unable to load or update risk controls. Refresh and retry.');

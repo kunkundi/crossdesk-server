@@ -171,8 +171,11 @@ void SignalNegotiation::RunCredentialWork(websocketpp::connection_hdl hdl,
                                           const std::string& source_address,
                                           json failure, CredentialWork work,
                                           const CredentialDispatch& dispatch) {
-  auto admit = [this, source_address] {
-    return credential_work_limiter_.Admit(source_address);
+  const auto controller = transmission_manager_->GetVerifiedDeviceId(hdl);
+  const auto source_key = json::array({controller.empty() ? "ip" : "controller",
+      controller.empty() ? (source_address.empty() ? "unknown" : source_address) : controller}).dump();
+  auto admit = [this, source_key] {
+    return credential_work_limiter_.Admit(source_key);
   };
   if (dispatch) {
     auto expired = [this, hdl, failure]() mutable {
@@ -204,9 +207,19 @@ void SignalNegotiation::AuthenticateDevice(
     send_msg_(hdl, failure);
     return;
   }
-  const auto manual = device_db_manager_->PasswordRiskDelay(source_address, device_id);
+  // A claimed target ID (including a legacy login ID) never owns a failure
+  // bucket. Only a key-verified connection can use a device's source budget;
+  // all other clients share their transport IP, irrespective of C-/web/cli ID.
+  const auto controller = transmission_manager_->GetVerifiedDeviceId(hdl);
+  const auto principal = json::array({controller.empty() ? "ip" : "controller",
+      controller.empty() ? (source_address.empty() ? "unknown" : source_address) : controller});
+  const auto source_key = principal.dump();
+  auto pair = principal;
+  pair.push_back(device_id);
+  const auto pair_key = pair.dump();
+  const auto manual = device_db_manager_->PasswordRiskDelay(source_address, controller);
   const int retry_after = std::max(manual.value_or(1),
-      device_auth_limiter_->CooldownRemaining(source_address, device_id));
+      device_auth_limiter_->CooldownRemaining(source_key, pair_key));
   if (!manual || retry_after > 0) {
     SetFailure(failure, manual ? "AUTHENTICATION_THROTTLED" : "CREDENTIAL_SERVICE_BUSY",
                manual ? "Too many authentication attempts" : "Credential service busy");
@@ -219,17 +232,17 @@ void SignalNegotiation::AuthenticateDevice(
   RunCredentialWork(
       hdl, source_address, failure,
       [this, hdl, source_address, device_id, password, record, identity,
-       failure, bind_login_key,
+       controller, source_key, pair_key, failure, bind_login_key,
        on_verified = std::move(on_verified)]() -> std::function<void()> {
         std::optional<DevicePasswordRecord> verified;
-        const auto manual = device_db_manager_->PasswordRiskDelay(source_address, device_id);
+        const auto manual = device_db_manager_->PasswordRiskDelay(source_address, controller);
         DeviceAuthLimiter::Result result{false, manual.value_or(1)};
         if (manual && *manual == 0)
-          result = device_auth_limiter_->Verify(source_address, device_id, [&] {
+          result = device_auth_limiter_->Verify(source_key, pair_key, [&] {
               verified = DevicePassword::Verify(record, password);
               return verified.has_value();
             });
-        return [this, hdl, source_address, device_id, record, identity, verified, result,
+        return [this, hdl, source_address, device_id, controller, record, identity, verified, result,
                 unavailable = !manual,
                 failure = failure, on_verified, bind_login_key]() mutable {
           if (hdl.expired() ||
@@ -237,7 +250,7 @@ void SignalNegotiation::AuthenticateDevice(
             return;
           // The administrator may have added a rule while hashing was running.
           if (result.authenticated) {
-            const auto current = device_db_manager_->PasswordRiskDelay(source_address, device_id);
+            const auto current = device_db_manager_->PasswordRiskDelay(source_address, controller);
             if (!current || *current > 0) {
               result = {false, current.value_or(1)};
               unavailable = !current;
@@ -309,7 +322,8 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     return false;
   }
 
-  const auto login_key = device_db_manager_->ReadLoginPublicKey(host_id);
+  const auto login_key = device_db_manager_->ReadLoginPublicKey(
+      host_id.rfind("C-", 0) == 0 ? host_id.substr(2) : host_id);
   if (login_key && !login_key->empty()) {
     SetFailure(failure, "DEVICE_KEY_REQUIRED", "Device key authentication required");
     send_msg_(hdl, failure);
@@ -407,7 +421,8 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
       return false;
     }
 
-    if (!transmission_manager_->BindUserToWsHandle(ret_host_id, hdl)) {
+    if (!transmission_manager_->BindUserToWsHandle(ret_host_id, hdl,
+          verified_login_key.empty() ? "" : ret_host_id)) {
       // Only remove credentials created by this request; an existing device
       // must survive a failed connection binding.
       if (registration && !device_db_manager_->RemoveDevice(ret_host_id)) {
@@ -463,7 +478,16 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
     AddLoginIceConfig(message, j, ret_host_id);
     send_msg_(hdl, message);
   } else {
-    if (!transmission_manager_->BindUserToWsHandle(host_id, hdl)) {
+    const auto device_id = host_id.substr(2);
+    const auto key = device_db_manager_->ReadLoginPublicKey(device_id);
+    if ((!verified_login_key.empty() && (!key || *key != verified_login_key)) ||
+        (verified_login_key.empty() && key && !key->empty())) {
+      SetFailure(failure, "DEVICE_KEY_REQUIRED", "Device key authentication required");
+      send_msg_(hdl, failure);
+      return false;
+    }
+    if (!transmission_manager_->BindUserToWsHandle(host_id, hdl,
+          verified_login_key.empty() ? "" : device_id)) {
       send_msg_(hdl, failure);
       return false;
     }
@@ -472,6 +496,7 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
 
     json message = {
         {"type", "login"}, {"user_id", host_id}, {"status", "success"}};
+    if (!verified_login_key.empty()) message["device_key_version"] = 1;
     AddLoginIceConfig(message, j, host_id);
     send_msg_(hdl, message);
   }

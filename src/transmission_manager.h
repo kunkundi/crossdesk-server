@@ -59,7 +59,8 @@ class TransmissionManager {
                                const std::string& transmission_id,
                                websocketpp::connection_hdl hdl);
   bool BindUserToWsHandle(const std::string& user_id,
-                          websocketpp::connection_hdl hdl);
+                          websocketpp::connection_hdl hdl,
+                          const std::string& verified_device_id = "");
   void SetRemoteControlSessionCallback(
       std::function<void(const std::string&, const std::string&,
                          const std::string&, bool)>
@@ -82,6 +83,8 @@ class TransmissionManager {
   bool IsConnectionInTransmission(websocketpp::connection_hdl hdl,
                                   const std::string& transmission_id);
   std::string GetUserId(websocketpp::connection_hdl hdl);
+  // Set only after device-key verification, never from a claimed C- alias.
+  std::string GetVerifiedDeviceId(websocketpp::connection_hdl hdl);
 
   int UpdateWsHandleLastActiveTime(websocketpp::connection_hdl hdl);
   void ExpireInactiveSessions(std::chrono::steady_clock::time_point now =
@@ -115,6 +118,9 @@ class TransmissionManager {
   std::map<websocketpp::connection_hdl, std::string,
            std::owner_less<websocketpp::connection_hdl>>
       ws_hdl_user_id_list_;
+  std::map<websocketpp::connection_hdl, std::string,
+           std::owner_less<websocketpp::connection_hdl>>
+      ws_hdl_verified_device_ids_;
   std::map<websocketpp::connection_hdl, std::chrono::steady_clock::time_point,
            std::owner_less<websocketpp::connection_hdl>>
       ws_hdl_last_active_time_map_;
