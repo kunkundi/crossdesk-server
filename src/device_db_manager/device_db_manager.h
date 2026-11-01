@@ -146,6 +146,12 @@ class DeviceDBManager {
       const std::string& expected_revision, const std::string& actor,
       const std::string& request_ref);
   bool CleanupAdminDataAudit(int retention_days);
+  nlohmann::json RiskRules();
+  bool SetRiskRule(const std::string& scope, const std::string& target,
+                   int64_t expires_at, const std::string& reason);
+  bool DeleteRiskRule(const std::string& scope, const std::string& target);
+  std::optional<int> PasswordRiskDelay(const std::string& source,
+                                      const std::string& device_id);
   bool StartRemoteControlSession(const std::string& transmission_id,
                                  const std::string& host_id,
                                  const std::string& guest_id);

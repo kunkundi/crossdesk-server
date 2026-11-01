@@ -12,6 +12,28 @@
   --radius: 12px;
 }
 .announcement-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(300px, 2fr); gap: 20px; margin-top: 18px; }
+.risk-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
+.risk-summary .panel { padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); }
+.risk-summary strong { font-size: 25px; font-weight: 600; color: #202d3d; font-variant-numeric: tabular-nums; }
+.risk-add { padding: 20px; margin-bottom: 20px; }
+.risk-fields { display: grid; grid-template-columns: 130px minmax(150px, 1.2fr) 140px minmax(120px, 1fr) auto; align-items: end; gap: 12px; margin-top: 16px; }
+.risk-fields label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--muted); }
+.risk-fields input, .risk-fields select { width: 100%; color: #202d3d; }
+.risk-filters { display: flex; flex-wrap: wrap; gap: 10px; padding: 18px 20px; }
+.risk-filters input { flex: 1; min-width: 180px; }
+.risk-table { min-width: 780px; }
+.risk-table td { vertical-align: middle; padding-top: 13px; padding-bottom: 13px; }
+.risk-target { display: block; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; overflow-wrap: anywhere; max-width: 260px; }
+.risk-target-kind { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+.risk-state { display: inline-block; padding: 3px 8px; background: #f1f5f9; border-radius: 5px; font-size: 12px; white-space: nowrap; }
+.risk-state.restricted { color: #a94b16; background: #fff4e7; }
+.risk-reason { max-width: 260px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.risk-table button { min-height: 32px; font-size: 12px; padding: 5px 10px; white-space: nowrap; }
+.risk-pager { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 20px; border-top: 1px solid var(--border); }
+.risk-pager div { display: flex; gap: 8px; }
+#risk-status:not(:empty) { color: #087f78; margin-top: 12px; font-size: 13px; }
+@media (max-width: 1050px) { .risk-fields { grid-template-columns: 1fr 2fr 1fr; } .risk-fields label:nth-child(4) { grid-column: span 2; } }
+@media (max-width: 600px) { .risk-summary { gap: 8px; } .risk-summary .panel { padding: 12px; flex-direction: column; align-items: flex-start; font-size: 11px; } .risk-fields { grid-template-columns: 1fr; } .risk-fields label:nth-child(4) { grid-column: auto; } .risk-add { padding: 16px; } }
 .announcement-list-panel, .announcement-editor { padding: 20px; }
 .announcement-editor { display: flex; flex-direction: column; gap: 10px; }
 .announcement-editor textarea { width: 100%; resize: vertical; font: inherit; border: 1px solid #cbd5e1; border-radius: 7px; padding: 12px; }

@@ -204,10 +204,12 @@ void SignalNegotiation::AuthenticateDevice(
     send_msg_(hdl, failure);
     return;
   }
-  const int retry_after =
-      device_auth_limiter_->CooldownRemaining(source_address, device_id);
-  if (retry_after > 0) {
-    SetFailure(failure, "AUTHENTICATION_THROTTLED", "Too many authentication attempts");
+  const auto manual = device_db_manager_->PasswordRiskDelay(source_address, device_id);
+  const int retry_after = std::max(manual.value_or(1),
+      device_auth_limiter_->CooldownRemaining(source_address, device_id));
+  if (!manual || retry_after > 0) {
+    SetFailure(failure, manual ? "AUTHENTICATION_THROTTLED" : "CREDENTIAL_SERVICE_BUSY",
+               manual ? "Too many authentication attempts" : "Credential service busy");
     failure["retry_after"] = retry_after;
     send_msg_(hdl, failure);
     return;
@@ -220,16 +222,27 @@ void SignalNegotiation::AuthenticateDevice(
        failure, bind_login_key,
        on_verified = std::move(on_verified)]() -> std::function<void()> {
         std::optional<DevicePasswordRecord> verified;
-        auto result =
-            device_auth_limiter_->Verify(source_address, device_id, [&] {
+        const auto manual = device_db_manager_->PasswordRiskDelay(source_address, device_id);
+        DeviceAuthLimiter::Result result{false, manual.value_or(1)};
+        if (manual && *manual == 0)
+          result = device_auth_limiter_->Verify(source_address, device_id, [&] {
               verified = DevicePassword::Verify(record, password);
               return verified.has_value();
             });
-        return [this, hdl, device_id, record, identity, verified, result,
+        return [this, hdl, source_address, device_id, record, identity, verified, result,
+                unavailable = !manual,
                 failure = failure, on_verified, bind_login_key]() mutable {
           if (hdl.expired() ||
               transmission_manager_->GetUserId(hdl) != identity)
             return;
+          // The administrator may have added a rule while hashing was running.
+          if (result.authenticated) {
+            const auto current = device_db_manager_->PasswordRiskDelay(source_address, device_id);
+            if (!current || *current > 0) {
+              result = {false, current.value_or(1)};
+              unavailable = !current;
+            }
+          }
           if (result.authenticated && record && verified &&
               device_db_manager_->CommitPassword(device_id, *record,
                                                  *verified) &&
@@ -238,8 +251,8 @@ void SignalNegotiation::AuthenticateDevice(
             on_verified();
           } else {
             if (result.retry_after > 0) {
-              SetFailure(failure, "AUTHENTICATION_THROTTLED",
-                         "Too many authentication attempts");
+              SetFailure(failure, unavailable ? "CREDENTIAL_SERVICE_BUSY" : "AUTHENTICATION_THROTTLED",
+                         unavailable ? "Credential service busy" : "Too many authentication attempts");
               failure["retry_after"] = result.retry_after;
             }
             send_msg_(hdl, failure);

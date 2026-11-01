@@ -69,6 +69,39 @@ int DeviceAuthLimiter::CooldownRemaining(const std::string& source,
                   remaining(targets_, target));
 }
 
+std::vector<DeviceAuthLimiter::Entry> DeviceAuthLimiter::Snapshot() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto now = now_();
+  std::vector<Entry> entries;
+  auto append = [&](const Buckets& buckets, const char* scope, size_t threshold) {
+    for (const auto& [target, bucket] : buckets) {
+      if (!bucket.count || bucket.expires <= now) continue;
+      entries.push_back({scope, target, bucket.count, threshold, bucket.pending,
+          RemainingSeconds(bucket.blocked_until, now), RemainingSeconds(bucket.expires, now)});
+    }
+  };
+  append(targets_, "device", target_failure_limit_);
+  append(sources_, "ip", source_failure_limit_);
+  return entries;
+}
+
+void DeviceAuthLimiter::Clear(bool source, const std::string& target) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto& buckets = source ? sources_ : targets_;
+  const auto it = buckets.find(target);
+  if (it == buckets.end()) return;
+  if (!it->second.pending) {
+    buckets.erase(it);
+  } else {
+    // Preserve outstanding reservations; their pre-clear failures must not
+    // restore the administrator-cleared cooldown when hashing finishes.
+    auto& bucket = it->second;
+    ++bucket.generation;
+    bucket.expires = now_();
+    ResetExpired(bucket, bucket.expires);
+  }
+}
+
 DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
     const std::string& source, const std::string& target,
     const std::function<bool()>& verify) {
@@ -112,6 +145,8 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
             .first->second;
     ++bucket.pending;
   }
+  const auto source_generation = sources_.at(source_key).generation;
+  const auto target_generation = targets_.at(target).generation;
   lock.unlock();
   bool authenticated = false;
   std::exception_ptr error;
@@ -122,15 +157,15 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
   }
   lock.lock();
   const auto finished = now_();
-  auto finish = [&](Buckets& buckets, const std::string& key, size_t limit) {
+  auto finish = [&](Buckets& buckets, const std::string& key, size_t limit, uint64_t generation) {
     auto& bucket = buckets.at(key);
     --bucket.pending;
     ResetExpired(bucket, finished);
-    if (!authenticated) Record(bucket, limit, finished);
+    if (!authenticated && bucket.generation == generation) Record(bucket, limit, finished);
     if (bucket.count == 0 && bucket.pending == 0) buckets.erase(key);
   };
-  finish(sources_, source_key, source_failure_limit_);
-  finish(targets_, target, target_failure_limit_);
+  finish(sources_, source_key, source_failure_limit_, source_generation);
+  finish(targets_, target, target_failure_limit_, target_generation);
   lock.unlock();
   if (error) std::rethrow_exception(error);
   return {authenticated, 0};

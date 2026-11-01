@@ -224,6 +224,7 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   admin_read_db_ = std::make_unique<DeviceDBManager>(
       db_path, DeviceDBManager::OpenMode::ReadOnly);
   admin_controller_->SetNotificationService(notification_service_.get());
+  admin_controller_->SetAuthLimiter(signal_negotiation_->AuthLimiter());
   admin_controller_->SetDeviceDataCleanupCallback([this](const std::string& id) {
     signal_negotiation_->ForgetPasswordChangeResults(id);
   });
@@ -232,6 +233,7 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       admin_read_db_.get(), nullptr, std::chrono::milliseconds(1000));
   admin_read_controller_->SetNotificationService(
       notification_read_service_.get());
+  admin_read_controller_->SetAuthLimiter(signal_negotiation_->AuthLimiter());
   admin_controller_->SetSessionRecovery(session_recovery_.get());
   admin_read_controller_->SetSessionRecovery(session_recovery_.get());
   max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 8192, 1, 65536);

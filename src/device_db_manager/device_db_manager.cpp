@@ -368,6 +368,13 @@ void DeviceDBManager::InitDB() {
 
   EnsureTextColumn(db_, "devices", "login_public_key");
   ExecuteSchemaStatement(db_,
+      "CREATE TABLE IF NOT EXISTS auth_risk_rules ("
+      "scope TEXT NOT NULL CHECK(scope IN ('device','ip')), target TEXT NOT NULL,"
+      "expires_at INTEGER NOT NULL, reason TEXT NOT NULL,"
+      "PRIMARY KEY(scope,target));"
+      "DELETE FROM auth_risk_rules WHERE expires_at<=CAST(strftime('%s','now') AS INTEGER);",
+      "initialize password risk rules");
+  ExecuteSchemaStatement(db_,
       "CREATE TABLE IF NOT EXISTS device_reconnect_credentials ("
       "device_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL,"
       "expires_at INTEGER NOT NULL);"

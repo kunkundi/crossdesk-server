@@ -56,6 +56,7 @@ class AdminController {
   }
   nlohmann::json GetPublicStats() const { return BuildStats(); }
   void SetSessionRecovery(SessionRecovery* recovery) { recovery_ = recovery; }
+  void SetAuthLimiter(std::shared_ptr<DeviceAuthLimiter> limiter) { auth_limiter_ = std::move(limiter); }
 
  private:
   AdminHttpResponse HandleAdminPage();
@@ -66,6 +67,7 @@ class AdminController {
   AdminHttpResponse HandleAdminAsset(const AdminHttpRequest& request);
   AdminHttpResponse HandleDisconnect(const AdminHttpRequest& request);
   AdminHttpResponse HandleDeviceData(const AdminHttpRequest& request);
+  AdminHttpResponse HandleRiskControl(const AdminHttpRequest& request);
 
   bool IsAuthorized(const AdminHttpRequest& request);
   nlohmann::json BuildStats() const;
@@ -86,6 +88,7 @@ class AdminController {
   std::function<void(const std::string&)> device_data_cleanup_;
   NotificationService* notifications_ = nullptr;
   SessionRecovery* recovery_ = nullptr;
+  std::shared_ptr<DeviceAuthLimiter> auth_limiter_;
 };
 
 #endif  // _ADMIN_CONTROLLER_H_

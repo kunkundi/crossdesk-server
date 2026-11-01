@@ -73,6 +73,7 @@ class SignalNegotiation {
   void OnTemporaryControllerDisconnect(const std::string& user_id);
   void ForgetPasswordChangeResults(const std::string& device_id);
   void SetSessionRecovery(SessionRecovery* recovery) { recovery_ = recovery; }
+  std::shared_ptr<DeviceAuthLimiter> AuthLimiter() const { return device_auth_limiter_; }
 
  private:
   struct PasswordChangeResult {

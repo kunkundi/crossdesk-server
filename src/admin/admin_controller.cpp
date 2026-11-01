@@ -1,8 +1,10 @@
 #include "admin_controller.h"
 #include "session_recovery.h"
 #include "notification_service.h"
+#include "log.h"
 
 #include <algorithm>
+#include <asio/ip/address.hpp>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -46,7 +48,7 @@ bool IsAdminPagePath(std::string path) {
   if (!path.empty() && path.back() == '/') path.pop_back();
   return path == "/admin" || path == "/admin/overview" ||
          path == "/admin/data" || path == "/admin/about" ||
-         path == "/admin/announcements";
+         path == "/admin/announcements" || path == "/admin/risk";
 }
 
 int HexValue(char ch) {
@@ -374,6 +376,8 @@ AdminHttpResponse AdminController::Handle(const AdminHttpRequest& request) {
     return ErrorResponse(401, "unauthorized");
   }
 
+  if (path == "/api/admin/risk") return HandleRiskControl(request);
+
   if (NotificationService::IsAdminRoute(path)) {
     if (!notifications_) return ErrorResponse(503, "notifications_unavailable");
     if (request.method == "POST") {
@@ -409,6 +413,109 @@ AdminHttpResponse AdminController::Handle(const AdminHttpRequest& request) {
   }
 
   return ErrorResponse(404, "not_found");
+}
+
+AdminHttpResponse AdminController::HandleRiskControl(const AdminHttpRequest& request) {
+  if (!db_ || !auth_limiter_) return ErrorResponse(503, "risk_unavailable");
+  const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  if (request.method == "GET") {
+    const auto rules = db_->RiskRules();
+    if (!rules.is_array()) return ErrorResponse(503, "risk_unavailable");
+    std::map<std::pair<std::string, std::string>, json> entries;
+    auto entry = [&](const std::string& scope, const std::string& target) -> json& {
+      auto& item = entries[{scope, target}];
+      if (item.is_null()) item = {{"scope", scope}, {"target", target}, {"failures", 0},
+          {"threshold", scope == "ip" ? DeviceAuthLimiter::kSourceFailures : DeviceAuthLimiter::kTargetFailures},
+          {"retry_after", 0}, {"reset_after", 0}, {"manual", false}, {"reason", ""}, {"expires_at", 0}};
+      return item;
+    };
+    for (const auto& state : auth_limiter_->Snapshot()) {
+      auto& item = entry(state.scope, state.target);
+      item["failures"] = state.failures; item["threshold"] = state.threshold;
+      item["retry_after"] = state.retry_after; item["reset_after"] = state.reset_after;
+    }
+    for (const auto& rule : rules) {
+      const int64_t remaining = rule.at("expires_at").get<int64_t>() - now;
+      if (remaining <= 0) continue;
+      auto& item = entry(rule.at("scope"), rule.at("target"));
+      item["manual"] = true; item["reason"] = rule.at("reason");
+      item["expires_at"] = rule.at("expires_at");
+      item["retry_after"] = std::max<int64_t>(item["retry_after"].get<int64_t>(), remaining);
+    }
+    const auto params = ParseQueryParams(ResourceQuery(request.resource));
+    const auto search = QueryStringParam(params, "search");
+    const auto scope = QueryStringParam(params, "scope", "all");
+    const auto kind = QueryStringParam(params, "kind", "all");
+    if (search.size() > 128 || (scope != "all" && scope != "device" && scope != "ip") ||
+        (kind != "all" && kind != "manual" && kind != "auto"))
+      return ErrorResponse(400, "invalid_request");
+    std::vector<json> rows;
+    size_t manual = 0, blocked = 0;
+    for (auto& [key, item] : entries) {
+      if ((scope != "all" && key.first != scope) || key.second.find(search) == std::string::npos ||
+          (kind == "manual" && !item["manual"].get<bool>()) ||
+          (kind == "auto" && item["manual"].get<bool>())) continue;
+      manual += item["manual"].get<bool>(); blocked += item["retry_after"].get<int64_t>() > 0;
+      rows.push_back(std::move(item));
+    }
+    std::sort(rows.begin(), rows.end(), [](const json& a, const json& b) {
+      if (a["retry_after"] != b["retry_after"]) return a["retry_after"] > b["retry_after"];
+      return std::make_pair(a["scope"].get<std::string>(), a["target"].get<std::string>()) <
+             std::make_pair(b["scope"].get<std::string>(), b["target"].get<std::string>());
+    });
+    constexpr size_t limit = 50;
+    const size_t offset = std::min(QuerySizeParam(params, "offset", 0, 40000),
+        rows.empty() ? size_t(0) : ((rows.size() - 1) / limit) * limit);
+    auto items = json::array();
+    for (size_t i = offset; i < std::min(rows.size(), offset + limit); ++i)
+      items.push_back(std::move(rows[i]));
+    return JsonResponse(200, {{"items", items}, {"total", rows.size()}, {"offset", offset},
+        {"limit", limit}, {"restricted", blocked}, {"manual", manual}});
+  }
+  if (request.method != "POST") return ErrorResponse(405, "method_not_allowed");
+  const auto token = AdminAuth::ExtractCookie(request.cookie, kSessionCookieName);
+  if (!auth_->ValidateCsrf(token, request.csrf_token)) return ErrorResponse(403, "invalid_csrf");
+  if (request.content_type != "application/json" && request.content_type != "application/json; charset=utf-8")
+    return ErrorResponse(415, "json_required");
+  if (request.body.size() > 2048) return ErrorResponse(413, "request_too_large");
+  const auto body = json::parse(request.body, nullptr, false);
+  if (!body.is_object()) return ErrorResponse(400, "invalid_json");
+  for (const auto* field : {"action", "scope", "target"})
+    if (!body.contains(field) || !body[field].is_string()) return ErrorResponse(400, "invalid_request");
+  const auto action = body["action"].get<std::string>(), scope = body["scope"].get<std::string>();
+  auto target = body["target"].get<std::string>();
+  if ((action != "restrict" && action != "clear") || (scope != "device" && scope != "ip") ||
+      target.empty() || target.size() > 128 || target.find('\0') != std::string::npos)
+    return ErrorResponse(400, "invalid_risk_target");
+  if (scope == "ip" && !(action == "clear" && target == "unknown")) {
+    asio::error_code error;
+    auto address = asio::ip::make_address(target, error);
+    if (error) return ErrorResponse(400, "invalid_risk_target");
+    if (address.is_v6() && address.to_v6().is_v4_mapped())
+      address = asio::ip::make_address_v4(asio::ip::v4_mapped, address.to_v6());
+    target = address.to_string();
+  } else if (action == "restrict" && scope == "device" && (target.rfind("C-", 0) == 0 ||
+      !std::all_of(target.begin(), target.end(), [](unsigned char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+               (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
+      }))) return ErrorResponse(400, "invalid_risk_target");
+  if (action == "clear") {
+    if (!db_->DeleteRiskRule(scope, target)) return ErrorResponse(503, "risk_unavailable");
+    auth_limiter_->Clear(scope == "ip", target);
+  } else {
+    if (!body.contains("duration_seconds") || !body["duration_seconds"].is_number_integer() ||
+        body["duration_seconds"] < 60 || body["duration_seconds"] > 30 * 86400 ||
+        !body.contains("reason") || !body["reason"].is_string())
+      return ErrorResponse(400, "invalid_risk_rule");
+    const auto reason = body["reason"].get<std::string>();
+    if (reason.size() > 256 || reason.find('\0') != std::string::npos)
+      return ErrorResponse(400, "invalid_risk_rule");
+    if (!db_->SetRiskRule(scope, target, now + body["duration_seconds"].get<int>(), reason))
+      return ErrorResponse(409, "risk_rule_not_saved");
+  }
+  LOG_INFO("Admin [{}] risk control [{}] scope [{}] target [{}]", auth_->Username(), action, scope, target);
+  return JsonResponse(200, {{"ok", true}, {"target", target}});
 }
 
 AdminHttpResponse AdminController::HandleAdminPage() {

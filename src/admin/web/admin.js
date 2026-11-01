@@ -1,4 +1,45 @@
     const chinese = {
+      "Risk controls": "风控管理",
+      "Manage password restrictions. Signature logins and existing sessions stay available.": "管理密码认证限制。签名登录与已有会话不受影响。",
+      "Matching records": "匹配记录",
+      "Restricted now": "正在限制",
+      "Manual rules": "手动规则",
+      "Add restriction": "添加限制",
+      "Source IP": "来源 IP",
+      "Target": "对象",
+      "Duration": "限制时长",
+      "Reason (optional)": "备注（可选）",
+      "Device ID or IP": "设备 ID 或 IP 地址",
+      "1 minute": "1 分钟",
+      "15 minutes": "15 分钟",
+      "1 hour": "1 小时",
+      "4 hours": "4 小时",
+      "24 hours": "24 小时",
+      "7 days": "7 天",
+      "30 days": "30 天",
+      "Risk records": "风控记录",
+      "Search device ID or IP": "搜索设备 ID 或 IP",
+      "All types": "全部类型",
+      "Rule source": "规则来源",
+      "All records": "全部记录",
+      "Automatic records": "自动记录",
+      "Failures / threshold": "失败计数 / 阈值",
+      "Remaining wait": "剩余等待",
+      "Reason": "备注",
+      "Manual restriction": "手动限制",
+      "Automatic cooldown": "自动冷却",
+      "Observing": "观察中",
+      "Clear restriction": "解除限制",
+      "Clear record": "清除记录",
+      "No matching risk records": "暂无匹配的风控记录",
+      "Restriction saved.": "限制已保存。",
+      "Restriction cleared. New failures can trigger limits again.": "已解除该对象的限制。新的失败仍可能触发限流。",
+      "Invalid device ID or IP address.": "请输入有效的设备 ID 或 IP 地址。",
+      "Invalid restriction duration or reason.": "限制时长或备注不符合要求。",
+      "Unable to save the rule. The rule limit may have been reached.": "规则保存失败，可能已达到规则数量上限。",
+      "Unable to load or update risk controls. Refresh and retry.": "风控数据加载或更新失败，请刷新后重试。",
+      "Ends at {time}": "到期时间：{time}",
+
       'Announcements': '公告管理',
       'New announcement': '新建公告', 'Edit announcement': '编辑公告',
       'Published announcements reach all clients. Editing or republishing makes them unread again.': '公告发布后下发到所有客户端。修改或重新发布后，客户端会重新显示为未读。',
@@ -225,6 +266,7 @@
       updateLiveDurations();
       renderDataPreview();
       renderAnnouncements();
+      renderRisk();
     }
 
     function updateRefreshTime() {
@@ -237,9 +279,9 @@
     const logoutButton = document.getElementById('logout');
     const dashboardNav = document.getElementById('dashboard-nav');
     const pagePath = window.location.pathname.replace(/\/$/, '');
-    const currentPage = pagePath === '/admin/announcements' ? 'announcements' : pagePath === '/admin/data' ? 'data'
+    const currentPage = pagePath === '/admin/risk' ? 'risk' : pagePath === '/admin/announcements' ? 'announcements' : pagePath === '/admin/data' ? 'data'
       : pagePath === '/admin/about' ? 'about' : 'overview';
-    const pageLabels = {overview: 'Overview', data: 'Data management', about: 'About', announcements: 'Announcements'};
+    const pageLabels = {risk: 'Risk controls', overview: 'Overview', data: 'Data management', about: 'About', announcements: 'Announcements'};
 
     function updateDocumentTitle() {
       const title = loginView.classList.contains('hidden') ? pageLabels[currentPage] : 'Admin Login';
@@ -293,6 +335,7 @@
       setMessage('dashboard-error', '');
       updateDocumentTitle();
       if (currentPage === 'announcements') loadAnnouncements();
+      if (currentPage === 'risk') { loadRisk(); if (!listTimer) listTimer = setInterval(loadRisk, 5000); }
       if (currentPage === 'overview') {
         refreshLists();
         if (!listTimer) listTimer = setInterval(refreshLists, 5000);
@@ -303,6 +346,11 @@
     function showLogin(message, values = {}) {
       document.getElementById('auth-loading').classList.add('hidden');
       resetDeviceData();
+      ++riskSerial; riskItems = []; riskOffset = 0; riskTotal = 0; riskStale = true;
+      riskElement('form').reset();
+      for (const id of ['status', 'error']) setMessage(`risk-${id}`, '');
+      for (const id of ['total', 'restricted', 'manual']) riskElement(id).textContent = '—';
+      renderRisk();
       ++listRefreshSerial;
       listRefreshPending = false;
       dashboardView.classList.add('hidden');
@@ -1429,6 +1477,114 @@
     announcementElement('refresh').addEventListener('click', loadAnnouncements);
     announcementElement('prev').addEventListener('click', () => { announcementOffset = Math.max(0, announcementOffset - 20); loadAnnouncements(); });
     announcementElement('next').addEventListener('click', () => { announcementOffset += 20; loadAnnouncements(); });
+
+    const riskElement = id => document.getElementById(`risk-${id}`);
+    let riskItems = [], riskOffset = 0, riskTotal = 0, riskSerial = 0;
+    let riskBusy = false, riskStale = true, riskLoading = false, riskReloadPending = false, riskLoadError = false;
+    function riskWait(seconds) {
+      if (!seconds) return '—';
+      const units = language === 'zh' ? ['天', '小时', '分钟', '秒'] : ['d', 'h', 'm', 's'];
+      const sizes = [86400, 3600, 60, 1];
+      const index = sizes.findIndex(size => seconds >= size);
+      return `${Math.ceil(seconds / sizes[index])} ${units[index]}`;
+    }
+    function renderRisk() {
+      const rows = riskElement('rows');
+      const focused = document.activeElement?.dataset.riskKey;
+      rows.replaceChildren();
+      for (const item of riskItems) {
+        const row = document.createElement('tr');
+        const target = document.createElement('td');
+        const name = document.createElement('span'); name.className = 'risk-target'; name.textContent = item.target;
+        const kind = document.createElement('span'); kind.className = 'risk-target-kind'; kind.textContent = t(item.scope === 'ip' ? 'Source IP' : 'Device ID');
+        target.append(name, kind); row.append(target);
+        const state = document.createElement('td'), badge = document.createElement('span');
+        badge.className = `risk-state${item.retry_after > 0 ? ' restricted' : ''}`;
+        badge.textContent = t(item.manual ? 'Manual restriction' : item.retry_after > 0 ? 'Automatic cooldown' : 'Observing');
+        state.append(badge); row.append(state);
+        const failures = document.createElement('td'); failures.textContent = `${item.failures} / ${item.threshold}`; row.append(failures);
+        const remaining = document.createElement('td'); remaining.textContent = riskWait(item.retry_after);
+        if (item.expires_at) remaining.title = t('Ends at {time}', {time: new Date(item.expires_at * 1000).toLocaleString(locale())});
+        row.append(remaining);
+        const reason = document.createElement('td'); reason.className = 'risk-reason'; reason.textContent = item.reason || '—'; row.append(reason);
+        const actions = document.createElement('td'), clear = document.createElement('button');
+        clear.type = 'button'; clear.className = 'danger'; clear.dataset.riskKey = `${item.scope}:${item.target}`;
+        clear.disabled = riskBusy || riskStale;
+        clear.textContent = t(item.manual || item.retry_after > 0 ? 'Clear restriction' : 'Clear record');
+        clear.addEventListener('click', () => mutateRisk({action: 'clear', scope: item.scope, target: item.target}));
+        actions.append(clear); row.append(actions); rows.append(row);
+      }
+      if (!riskItems.length) {
+        const row = document.createElement('tr'), cell = document.createElement('td');
+        cell.colSpan = 6; cell.className = 'muted'; cell.textContent = t('No matching risk records'); row.append(cell); rows.append(row);
+      }
+      if (focused) Array.from(rows.querySelectorAll('button')).find(button => button.dataset.riskKey === focused)?.focus({preventScroll: true});
+      riskElement('page-info').textContent = `${riskTotal ? riskOffset + 1 : 0}–${Math.min(riskOffset + 50, riskTotal)} / ${riskTotal}`;
+      riskElement('prev').disabled = riskBusy || riskOffset === 0;
+      riskElement('next').disabled = riskBusy || riskOffset + 50 >= riskTotal;
+      riskElement('refresh').disabled = riskBusy;
+    }
+    function riskError(error) {
+      const messages = {invalid_risk_target: 'Invalid device ID or IP address.',
+        invalid_risk_rule: 'Invalid restriction duration or reason.',
+        risk_rule_not_saved: 'Unable to save the rule. The rule limit may have been reached.'};
+      setMessage('risk-error', messages[error.message] || 'Unable to load or update risk controls. Refresh and retry.');
+    }
+    async function riskRequest(url, options = {}) {
+      const response = await fetch(url, {...options, credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000)});
+      if (response.status === 401) { showLogin(''); throw new Error('unauthorized'); }
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'risk_unavailable');
+      return result;
+    }
+    async function loadRisk() {
+      if (currentPage !== 'risk' || document.hidden || !loginView.classList.contains('hidden') || riskBusy) return;
+      if (riskLoading) { riskReloadPending = true; return; }
+      const serial = ++riskSerial; riskLoading = true;
+      try {
+        const params = new URLSearchParams({offset: riskOffset, search: riskElement('search').value.trim(),
+          scope: riskElement('filter-scope').value, kind: riskElement('filter-kind').value});
+        const data = await riskRequest(`/api/admin/risk?${params}`);
+        if (serial !== riskSerial || !loginView.classList.contains('hidden')) return;
+        riskItems = data.items; riskTotal = data.total; riskOffset = data.offset; riskStale = false;
+        for (const field of ['total', 'restricted', 'manual']) riskElement(field).textContent = data[field];
+        if (riskLoadError) { setMessage('risk-error', ''); riskLoadError = false; }
+        renderRisk();
+      } catch (error) { if (serial === riskSerial) { riskLoadError = true; riskStale = true; riskError(error); renderRisk(); } }
+      finally { riskLoading = false; if (riskReloadPending) { riskReloadPending = false; loadRisk(); } }
+    }
+    async function mutateRisk(body) {
+      if (riskBusy) return;
+      riskBusy = true; riskLoadError = false; ++riskSerial;
+      riskElement('form').querySelectorAll('button,input,select').forEach(element => element.disabled = true);
+      renderRisk(); setMessage('risk-error', ''); setMessage('risk-status', '');
+      try {
+        const session = await riskRequest('/api/admin/data-session');
+        await riskRequest('/api/admin/risk', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CrossDesk-CSRF': session.csrf_token}, body: JSON.stringify(body)});
+        if (!loginView.classList.contains('hidden')) return;
+        if (body.action === 'restrict') { riskElement('target').value = ''; riskElement('reason').value = ''; riskOffset = 0; }
+        setMessage('risk-status', body.action === 'restrict' ? 'Restriction saved.' : 'Restriction cleared. New failures can trigger limits again.');
+      } catch (error) { if (loginView.classList.contains('hidden')) riskError(error); }
+      finally {
+        riskBusy = false; riskStale = true;
+        riskElement('form').querySelectorAll('button,input,select').forEach(element => element.disabled = false);
+        renderRisk(); loadRisk();
+      }
+    }
+    riskElement('form').addEventListener('submit', event => {
+      event.preventDefault();
+      mutateRisk({action: 'restrict', scope: riskElement('scope').value, target: riskElement('target').value.trim(),
+        duration_seconds: Number(riskElement('duration').value), reason: riskElement('reason').value.trim()});
+    });
+    riskElement('refresh').addEventListener('click', loadRisk);
+    riskElement('prev').addEventListener('click', () => { ++riskSerial; riskOffset = Math.max(0, riskOffset - 50); loadRisk(); });
+    riskElement('next').addEventListener('click', () => { ++riskSerial; riskOffset += 50; loadRisk(); });
+    let riskSearchTimer;
+    riskElement('search').addEventListener('input', () => {
+      ++riskSerial; clearTimeout(riskSearchTimer);
+      riskSearchTimer = setTimeout(() => { riskOffset = 0; loadRisk(); }, 250);
+    });
+    for (const id of ['filter-scope', 'filter-kind']) riskElement(id).addEventListener('change', () => { ++riskSerial; riskOffset = 0; loadRisk(); });
 
     dataElement('query-form').addEventListener('submit', queryDeviceData);
     for (const id of ['device-id', 'request-ref']) dataElement(id).addEventListener('input', () => resetDeviceData(false));

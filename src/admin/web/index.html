@@ -23,6 +23,7 @@
         <nav id="dashboard-nav" class="header-nav hidden" aria-label="Main navigation" data-i18n-aria-label="Main navigation">
           <a href="/admin/overview" data-page-link="overview" data-i18n="Overview">Overview</a>
           <a href="/admin/data" data-page-link="data" data-i18n="Data management">Data management</a>
+          <a href="/admin/risk" data-page-link="risk" data-i18n="Risk controls">Risk controls</a>
           <a href="/admin/announcements" data-page-link="announcements" data-i18n="Announcements">Announcements</a>
           <a href="/admin/about" data-page-link="about" data-i18n="About">About</a>
         </nav>
@@ -305,6 +306,38 @@
               </div>
             </section>
           </div>
+        </section>
+        <section id="risk-page" class="hidden" data-page="risk" aria-labelledby="risk-title">
+          <div class="page-heading">
+            <div><h1 id="risk-title" data-i18n="Risk controls">Risk controls</h1>
+              <p class="section-description" data-i18n="Manage password restrictions. Signature logins and existing sessions stay available.">Manage password restrictions. Signature logins and existing sessions stay available.</p></div>
+            <button id="risk-refresh" type="button" data-i18n="Refresh">Refresh</button>
+          </div>
+          <div class="risk-summary" aria-live="polite">
+            <div class="panel"><span data-i18n="Matching records">Matching records</span><strong id="risk-total">—</strong></div>
+            <div class="panel"><span data-i18n="Restricted now">Restricted now</span><strong id="risk-restricted">—</strong></div>
+            <div class="panel"><span data-i18n="Manual rules">Manual rules</span><strong id="risk-manual">—</strong></div>
+          </div>
+          <section class="panel risk-add" aria-labelledby="risk-add-title">
+            <h2 id="risk-add-title" data-i18n="Add restriction">Add restriction</h2>
+            <form id="risk-form" class="risk-fields">
+              <label><span data-i18n="Type">Type</span><select id="risk-scope"><option value="device" data-i18n="Device ID">Device ID</option><option value="ip" data-i18n="Source IP">Source IP</option></select></label>
+              <label><span data-i18n="Target">Target</span><input id="risk-target" maxlength="128" required autocomplete="off" placeholder="Device ID or IP" data-i18n-placeholder="Device ID or IP"></label>
+              <label><span data-i18n="Duration">Duration</span><select id="risk-duration"><option value="60" data-i18n="1 minute">1 minute</option><option value="900" data-i18n="15 minutes">15 minutes</option><option value="3600" selected data-i18n="1 hour">1 hour</option><option value="14400" data-i18n="4 hours">4 hours</option><option value="86400" data-i18n="24 hours">24 hours</option><option value="604800" data-i18n="7 days">7 days</option><option value="2592000" data-i18n="30 days">30 days</option></select></label>
+              <label><span data-i18n="Reason (optional)">Reason (optional)</span><input id="risk-reason" maxlength="64" autocomplete="off"></label>
+              <button id="risk-add" type="submit" class="primary" data-i18n="Add restriction">Add restriction</button>
+            </form>
+            <div id="risk-status" role="status"></div><div id="risk-error" class="error" role="alert"></div>
+          </section>
+          <section class="panel" aria-label="Risk records" data-i18n-aria-label="Risk records">
+            <div class="risk-filters">
+              <input id="risk-search" maxlength="128" placeholder="Search device ID or IP" data-i18n-placeholder="Search device ID or IP" aria-label="Search device ID or IP" data-i18n-aria-label="Search device ID or IP">
+              <select id="risk-filter-scope" aria-label="Type" data-i18n-aria-label="Type"><option value="all" data-i18n="All types">All types</option><option value="device" data-i18n="Device ID">Device ID</option><option value="ip" data-i18n="Source IP">Source IP</option></select>
+              <select id="risk-filter-kind" aria-label="Rule source" data-i18n-aria-label="Rule source"><option value="all" data-i18n="All records">All records</option><option value="manual" data-i18n="Manual rules">Manual rules</option><option value="auto" data-i18n="Automatic records">Automatic records</option></select>
+            </div>
+            <div class="table-wrap"><table class="risk-table"><thead><tr><th data-i18n="Target">Target</th><th data-i18n="Status">Status</th><th data-i18n="Failures / threshold">Failures / threshold</th><th data-i18n="Remaining wait">Remaining wait</th><th data-i18n="Reason">Reason</th><th data-i18n="Action">Action</th></tr></thead><tbody id="risk-rows"></tbody></table></div>
+            <div class="risk-pager"><span id="risk-page-info" class="muted"></span><div><button id="risk-prev" type="button" data-i18n="Previous">Previous</button><button id="risk-next" type="button" data-i18n="Next">Next</button></div></div>
+          </section>
         </section>
         <section id="data-page" class="hidden" data-page="data" aria-labelledby="data-title">
           <div class="page-heading">

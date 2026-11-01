@@ -9,12 +9,14 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 // Failure budgets keyed by transport peer IP and credential target, never a
 // connection handle. Use separate instances for independent auth domains.
@@ -43,6 +45,13 @@ class DeviceAuthLimiter {
   // Inspect existing cooldowns without reserving or changing budgets. Verify
   // must still recheck after queueing, immediately before password computation.
   int CooldownRemaining(const std::string& source, const std::string& target);
+  struct Entry {
+    std::string scope, target;
+    size_t failures, threshold, pending;
+    int retry_after, reset_after;
+  };
+  std::vector<Entry> Snapshot();
+  void Clear(bool source, const std::string& target);
   Result Verify(const std::string& source, const std::string& target,
                 const std::function<bool()>& verify);
 
@@ -53,6 +62,7 @@ class DeviceAuthLimiter {
     Clock::time_point expires;
     Clock::time_point blocked_until{};
     std::chrono::seconds backoff{0};
+    uint64_t generation = 0;
   };
   using Buckets = std::unordered_map<std::string, Failures>;
   void Prune(Buckets& buckets, Clock::time_point now);
