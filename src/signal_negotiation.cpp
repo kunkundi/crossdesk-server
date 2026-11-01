@@ -98,7 +98,11 @@ SignalNegotiation::SignalNegotiation(
       ice_config_issuer_(std::move(ice_config_issuer)),
       device_auth_limiter_(device_auth_limiter
                                ? std::move(device_auth_limiter)
-                               : std::make_shared<DeviceAuthLimiter>()),
+                               : std::make_shared<DeviceAuthLimiter>(
+                                     DeviceAuthLimiter::Clock::now,
+                                     DeviceAuthLimiter::kSourceFailures,
+                                     DeviceAuthLimiter::kTargetFailures,
+                                     DeviceAuthLimiter::Policy::Exponential)),
       credential_work_limiter_(DeviceAuthLimiter::Clock::now,
                                source_credential_limit) {}
 
@@ -197,6 +201,14 @@ void SignalNegotiation::AuthenticateDevice(
   SetFailure(failure, "AUTHENTICATION_FAILED", "Authentication failed");
   if (!ValidDeviceCredentials(device_id, password) ||
       IsTemporaryControllerId(device_id)) {
+    send_msg_(hdl, failure);
+    return;
+  }
+  const int retry_after =
+      device_auth_limiter_->CooldownRemaining(source_address, device_id);
+  if (retry_after > 0) {
+    SetFailure(failure, "AUTHENTICATION_THROTTLED", "Too many authentication attempts");
+    failure["retry_after"] = retry_after;
     send_msg_(hdl, failure);
     return;
   }

@@ -26,6 +26,10 @@ class DeviceAuthLimiter {
   static constexpr size_t kTargetFailures = 5;
   static constexpr size_t kMaxEntries = 16384;  // Per dimension.
   static constexpr std::chrono::seconds kWindow{900};
+  static constexpr std::chrono::seconds kInitialBackoff{60};
+  static constexpr std::chrono::seconds kMaxBackoff{4 * 60 * 60};
+  static constexpr std::chrono::seconds kBackoffRecovery{30 * 60};
+  enum class Policy { Fixed, Exponential };
 
   struct Result {
     bool authenticated = false;
@@ -34,7 +38,11 @@ class DeviceAuthLimiter {
 
   explicit DeviceAuthLimiter(Now now = Clock::now,
                              size_t source_failure_limit = kSourceFailures,
-                             size_t target_failure_limit = kTargetFailures);
+                             size_t target_failure_limit = kTargetFailures,
+                             Policy policy = Policy::Fixed);
+  // Inspect existing cooldowns without reserving or changing budgets. Verify
+  // must still recheck after queueing, immediately before password computation.
+  int CooldownRemaining(const std::string& source, const std::string& target);
   Result Verify(const std::string& source, const std::string& target,
                 const std::function<bool()>& verify);
 
@@ -43,14 +51,17 @@ class DeviceAuthLimiter {
     size_t count = 0;
     size_t pending = 0;
     Clock::time_point expires;
+    Clock::time_point blocked_until{};
+    std::chrono::seconds backoff{0};
   };
   using Buckets = std::unordered_map<std::string, Failures>;
   void Prune(Buckets& buckets, Clock::time_point now);
-  static void Record(Buckets& buckets, const std::string& key, size_t limit,
-                     Clock::time_point now);
+  static void ResetExpired(Failures& failures, Clock::time_point now);
+  void Record(Failures& failures, size_t limit, Clock::time_point now);
 
   Now now_;
   const size_t source_failure_limit_, target_failure_limit_;
+  const Policy policy_;
   std::mutex mutex_;
   Buckets sources_, targets_;
   Clock::time_point next_cleanup_{};

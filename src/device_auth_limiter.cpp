@@ -5,11 +5,21 @@
 #include <stdexcept>
 #include <utility>
 
+namespace {
+int RemainingSeconds(DeviceAuthLimiter::Clock::time_point deadline,
+                     DeviceAuthLimiter::Clock::time_point now) {
+  return deadline > now
+      ? static_cast<int>(std::chrono::ceil<std::chrono::seconds>(deadline - now).count())
+      : 0;
+}
+}  // namespace
+
 DeviceAuthLimiter::DeviceAuthLimiter(Now now, size_t source_failure_limit,
-                                     size_t target_failure_limit)
+                                     size_t target_failure_limit, Policy policy)
     : now_(std::move(now)),
       source_failure_limit_(source_failure_limit),
-      target_failure_limit_(target_failure_limit) {
+      target_failure_limit_(target_failure_limit),
+      policy_(policy) {
   if (source_failure_limit == 0 || target_failure_limit == 0)
     throw std::invalid_argument("Authentication failure limits must be positive");
 }
@@ -23,12 +33,40 @@ void DeviceAuthLimiter::Prune(Buckets& buckets, Clock::time_point now) {
   }
 }
 
-void DeviceAuthLimiter::Record(Buckets& buckets, const std::string& key,
-                               size_t limit, Clock::time_point now) {
-  auto result = buckets.try_emplace(key, Failures{0, 0, now + kWindow});
-  auto& failures = result.first->second;
-  // A full cooldown starts at the threshold; blocked requests do not extend it.
-  if (++failures.count == limit) failures.expires = now + kWindow;
+void DeviceAuthLimiter::ResetExpired(Failures& failures, Clock::time_point now) {
+  if (failures.expires > now) return;
+  failures.count = 0;
+  failures.expires = now + kWindow;
+  failures.blocked_until = {};
+  failures.backoff = std::chrono::seconds::zero();
+}
+
+void DeviceAuthLimiter::Record(Failures& failures, size_t limit,
+                               Clock::time_point now) {
+  if (failures.count < limit) ++failures.count;
+  if (failures.count < limit) return;
+  const bool exponential = policy_ == Policy::Exponential;
+  failures.backoff = exponential
+      ? (failures.backoff.count() == 0 ? kInitialBackoff
+                                       : std::min(failures.backoff * 2, kMaxBackoff))
+      : kWindow;
+  failures.blocked_until = now + failures.backoff;
+  // Keep escalation beyond the cooldown so waiting does not grant a fresh
+  // batch of guesses. Only an actual failed verification advances this state.
+  failures.expires = failures.blocked_until +
+      (exponential ? kBackoffRecovery : std::chrono::seconds::zero());
+}
+
+int DeviceAuthLimiter::CooldownRemaining(const std::string& source,
+                                         const std::string& target) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto now = now_();
+  auto remaining = [now](const Buckets& buckets, const std::string& key) {
+    const auto it = buckets.find(key);
+    return it == buckets.end() ? 0 : RemainingSeconds(it->second.blocked_until, now);
+  };
+  return std::max(remaining(sources_, source.empty() ? "unknown" : source),
+                  remaining(targets_, target));
 }
 
 DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
@@ -47,15 +85,14 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
   auto retry = [now](Buckets& buckets, const std::string& key, size_t limit) {
     const auto it = buckets.find(key);
     if (it == buckets.end()) return 0;
-    if (it->second.expires <= now) {
-      it->second.count = 0;
-      it->second.expires = now + kWindow;
-    }
-    if (it->second.count < limit)
-      return it->second.count + it->second.pending >= limit ? 1 : 0;
-    return static_cast<int>(
-        std::chrono::ceil<std::chrono::seconds>(it->second.expires - now)
-            .count());
+    auto& bucket = it->second;
+    ResetExpired(bucket, now);
+    if (const int delay = RemainingSeconds(bucket.blocked_until, now); delay > 0)
+      return delay;
+    // After cooldown, allow only one in-flight check per dimension. Parallel
+    // requests must not turn the next probe into another batch of guesses.
+    const size_t available = bucket.count < limit ? limit - bucket.count : 1;
+    return bucket.pending >= available ? 1 : 0;
   };
   const int source_retry = retry(sources_, source_key, source_failure_limit_);
   const int target_retry = retry(targets_, target, target_failure_limit_);
@@ -88,11 +125,8 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
   auto finish = [&](Buckets& buckets, const std::string& key, size_t limit) {
     auto& bucket = buckets.at(key);
     --bucket.pending;
-    if (bucket.expires <= finished) {
-      bucket.count = 0;
-      bucket.expires = finished + kWindow;
-    }
-    if (!authenticated) Record(buckets, key, limit, finished);
+    ResetExpired(bucket, finished);
+    if (!authenticated) Record(bucket, limit, finished);
     if (bucket.count == 0 && bucket.pending == 0) buckets.erase(key);
   };
   finish(sources_, source_key, source_failure_limit_);
