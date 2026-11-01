@@ -8,6 +8,7 @@
 #define _SIGNAL_NEGOTIATION_H_
 
 #include <deque>
+#include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -92,11 +93,21 @@ class SignalNegotiation {
                           const std::string& device_id,
                           const std::string& password, json failure,
                           const CredentialDispatch& dispatch,
-                          std::function<void()> on_verified);
+                          std::function<void()> on_verified,
+                          const std::string& bind_login_key = "");
   bool CompleteLogin(websocketpp::connection_hdl hdl, const json& request,
                      const std::string& host_id,
                      const DeviceCredential& credential, bool registration,
-                     std::optional<int64_t> reconnect_expires = std::nullopt);
+                     std::optional<int64_t> reconnect_expires = std::nullopt,
+                     const std::string& verified_login_key = "");
+  void RegisterDevice(websocketpp::connection_hdl hdl,
+                       const std::string& source, const std::string& kind,
+                       json failure, const CredentialDispatch& dispatch,
+                       std::function<void(const DeviceCredential&, bool)> finish,
+                       const std::string& login_public_key = "");
+  bool LoginWithKey(websocketpp::connection_hdl hdl, const json& request,
+                    const std::string& source, const CredentialDispatch& dispatch,
+                    std::function<void()> on_login);
   void RunCredentialWork(websocketpp::connection_hdl hdl,
                          const std::string& source_address, json failure,
                          CredentialWork work,
@@ -108,6 +119,15 @@ class SignalNegotiation {
   std::shared_ptr<IceServerConfigIssuer> ice_config_issuer_;
   std::shared_ptr<DeviceAuthLimiter> device_auth_limiter_;
   CredentialWorkLimiter credential_work_limiter_;
+  struct LoginChallenge {
+    std::string id, public_key, nonce;
+    std::chrono::steady_clock::time_point expires;
+  };
+  // Application-worker owned; challenges belong to connections, never to an ID.
+  std::map<websocketpp::connection_hdl, LoginChallenge,
+           std::owner_less<websocketpp::connection_hdl>> login_challenges_;
+  std::chrono::steady_clock::time_point next_login_challenge_cleanup_{};
+  CredentialWorkLimiter key_login_limiter_{DeviceAuthLimiter::Clock::now, 120};
   std::function<void(websocketpp::connection_hdl, json)> send_msg_;
   std::mutex password_change_mutex_;
   std::unordered_map<std::string, PasswordChangeResult>

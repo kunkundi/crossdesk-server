@@ -192,7 +192,8 @@ void SignalNegotiation::RunCredentialWork(websocketpp::connection_hdl hdl,
 void SignalNegotiation::AuthenticateDevice(
     websocketpp::connection_hdl hdl, const std::string& source_address,
     const std::string& device_id, const std::string& password, json failure,
-    const CredentialDispatch& dispatch, std::function<void()> on_verified) {
+    const CredentialDispatch& dispatch, std::function<void()> on_verified,
+    const std::string& bind_login_key) {
   SetFailure(failure, "AUTHENTICATION_FAILED", "Authentication failed");
   if (!ValidDeviceCredentials(device_id, password) ||
       IsTemporaryControllerId(device_id)) {
@@ -204,7 +205,7 @@ void SignalNegotiation::AuthenticateDevice(
   RunCredentialWork(
       hdl, source_address, failure,
       [this, hdl, source_address, device_id, password, record, identity,
-       failure,
+       failure, bind_login_key,
        on_verified = std::move(on_verified)]() -> std::function<void()> {
         std::optional<DevicePasswordRecord> verified;
         auto result =
@@ -213,13 +214,15 @@ void SignalNegotiation::AuthenticateDevice(
               return verified.has_value();
             });
         return [this, hdl, device_id, record, identity, verified, result,
-                failure = failure, on_verified]() mutable {
+                failure = failure, on_verified, bind_login_key]() mutable {
           if (hdl.expired() ||
               transmission_manager_->GetUserId(hdl) != identity)
             return;
           if (result.authenticated && record && verified &&
               device_db_manager_->CommitPassword(device_id, *record,
-                                                 *verified)) {
+                                                 *verified) &&
+              (bind_login_key.empty() || device_db_manager_->BindLoginPublicKey(
+                  device_id, *verified, bind_login_key))) {
             on_verified();
           } else {
             if (result.retry_after > 0) {
@@ -252,6 +255,9 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     return false;
   }
 
+  if (j.contains("device_key"))
+    return LoginWithKey(hdl, j, source_address, dispatch, std::move(on_login));
+
   std::string host_id_with_pwd;
   if (!GetStringField(j, "user_id", host_id_with_pwd)) {
     LOG_ERROR("login_user missing or invalid field: user_id");
@@ -274,6 +280,13 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
                   {"status", "fail"},
                   {"reason", "Authentication failed"}};
   if (!ValidDeviceCredentials(host_id, password)) {
+    send_msg_(hdl, failure);
+    return false;
+  }
+
+  const auto login_key = device_db_manager_->ReadLoginPublicKey(host_id);
+  if (login_key && !login_key->empty()) {
+    SetFailure(failure, "DEVICE_KEY_REQUIRED", "Device key authentication required");
     send_msg_(hdl, failure);
     return false;
   }
@@ -305,25 +318,7 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
   } else if (host_id.rfind("C-", 0) == 0) {
     finish({host_id, "", false}, false);
   } else if (host_id.empty() || IsTemporaryControllerRegistration(host_id)) {
-    RunCredentialWork(
-        hdl, source_address, failure,
-        [this, hdl, host_id, failure, finish]() -> std::function<void()> {
-          const auto password = DevicePassword::Generate();
-          const auto record =
-              password.empty() ? std::nullopt : DevicePassword::Hash(password);
-          return [this, hdl, host_id, failure, finish, password, record] {
-            if (hdl.expired() || !transmission_manager_->GetUserId(hdl).empty())
-              return;
-            if (!record) {
-              send_msg_(hdl, failure);
-              return;
-            }
-            finish(
-                device_db_manager_->RegisterDevice(host_id, password, *record),
-                true);
-          };
-        },
-        dispatch);
+    RegisterDevice(hdl, source_address, host_id, failure, dispatch, finish);
   } else {
     AuthenticateDevice(
         hdl, source_address, host_id, password, failure, dispatch,
@@ -332,11 +327,33 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
   return *completed;
 }
 
+void SignalNegotiation::RegisterDevice(
+    websocketpp::connection_hdl hdl, const std::string& source,
+    const std::string& kind, json failure, const CredentialDispatch& dispatch,
+    std::function<void(const DeviceCredential&, bool)> finish,
+    const std::string& login_public_key) {
+  RunCredentialWork(hdl, source, failure,
+      [this, hdl, kind, login_public_key, failure, finish]() -> std::function<void()> {
+        const auto password = DevicePassword::Generate();
+        const auto record = password.empty() ? std::nullopt : DevicePassword::Hash(password);
+        return [this, hdl, kind, login_public_key, failure, finish, password, record] {
+          if (hdl.expired() || !transmission_manager_->GetUserId(hdl).empty()) return;
+          if (!record) {
+            send_msg_(hdl, failure);
+            return;
+          }
+          finish(device_db_manager_->RegisterDevice(kind, password, *record, login_public_key),
+                 true);
+        };
+      }, dispatch);
+}
+
 bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
                                       const json& j, const std::string& host_id,
                                       const DeviceCredential& dev_cred,
                                       bool registration,
-                                      std::optional<int64_t> reconnect_expires) {
+                                      std::optional<int64_t> reconnect_expires,
+                                      const std::string& verified_login_key) {
   const auto connection = hdl.lock();
   if (!connection || !transmission_manager_->GetUserId(hdl).empty())
     return false;
@@ -351,6 +368,16 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
     bool update_password = dev_cred.update;
 
     if (ret_host_id.empty()) {
+      send_msg_(hdl, failure);
+      return false;
+    }
+
+    // Recheck at the binding boundary: queued legacy logins cannot cross a key
+    // migration, and a deleted device or changed key cannot complete login.
+    const auto login_key = device_db_manager_->ReadLoginPublicKey(ret_host_id);
+    if (!login_key || *login_key != verified_login_key) {
+      if (login_key && !login_key->empty())
+        SetFailure(failure, "DEVICE_KEY_REQUIRED", "Device key authentication required");
       send_msg_(hdl, failure);
       return false;
     }
@@ -391,12 +418,13 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
     json message = {{"type", "login"},
                     {"user_id", return_host_id},
                     {"status", "success"}};
+    if (!login_key->empty()) message["device_key_version"] = 1;
     const auto version = j.find("reconnect_version");
     if (reconnect_expires) {
       message["reconnected"] = true;
       message["reconnect_version"] = 1;
       message["reconnect_expires_at"] = *reconnect_expires;
-    } else if (ShouldTrackClientInfo(ret_host_id) && version != j.end() &&
+    } else if (login_key->empty() && ShouldTrackClientInfo(ret_host_id) && version != j.end() &&
                version->is_number_integer() && *version == 1) {
       const auto credential = device_db_manager_->IssueReconnectCredential(ret_host_id);
       if (credential) {

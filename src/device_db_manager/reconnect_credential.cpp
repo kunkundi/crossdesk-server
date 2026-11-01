@@ -55,7 +55,7 @@ std::optional<ReconnectCredential> DeviceDBManager::IssueReconnectCredential(
   sqlite3_stmt* raw = nullptr;
   if (!db_ || sqlite3_prepare_v2(db_,
       "INSERT INTO device_reconnect_credentials(device_id,token_hash,expires_at) "
-      "SELECT device_id,?2,?3 FROM devices WHERE device_id=?1 "
+      "SELECT device_id,?2,?3 FROM devices WHERE device_id=?1 AND login_public_key='' "
       "ON CONFLICT(device_id) DO UPDATE SET token_hash=excluded.token_hash,"
       "expires_at=excluded.expires_at;", -1, &raw, nullptr) != SQLITE_OK)
     return std::nullopt;
@@ -79,7 +79,7 @@ std::optional<int64_t> DeviceDBManager::VerifyReconnectCredential(
   sqlite3_stmt* raw = nullptr;
   if (!db_ || sqlite3_prepare_v2(db_,
       "SELECT r.token_hash,r.expires_at FROM device_reconnect_credentials r "
-      "JOIN devices d ON d.device_id=r.device_id WHERE r.device_id=?;",
+      "JOIN devices d ON d.device_id=r.device_id WHERE r.device_id=? AND d.login_public_key='';",
       -1, &raw, nullptr) != SQLITE_OK) return std::nullopt;
   Statement stmt(raw, sqlite3_finalize);
   sqlite3_bind_text(raw, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);

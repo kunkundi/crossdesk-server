@@ -110,7 +110,14 @@ class DeviceDBManager {
                       const DevicePasswordRecord& replacement);
   DeviceCredential RegisterDevice(const std::string& kind,
                                   const std::string& password,
-                                  const DevicePasswordRecord& record);
+                                  const DevicePasswordRecord& record,
+                                  const std::string& login_public_key = "");
+  // nullopt means unavailable/missing; an empty key is a legacy identity.
+  std::optional<std::string> ReadLoginPublicKey(const std::string& device_id);
+  // Call only after password verification; never replaces an existing binding.
+  bool BindLoginPublicKey(const std::string& device_id,
+                         const DevicePasswordRecord& verified,
+                         const std::string& public_key);
   bool RemoveDevice(const std::string& device_id);
   // Only persistent device identities receive credentials. Store the digest,
   // never the bearer token; successful password login replaces the old token.

@@ -366,6 +366,7 @@ void DeviceDBManager::InitDB() {
     throw std::runtime_error("Failed to create devices table: " + error);
   }
 
+  EnsureTextColumn(db_, "devices", "login_public_key");
   ExecuteSchemaStatement(db_,
       "CREATE TABLE IF NOT EXISTS device_reconnect_credentials ("
       "device_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL,"
@@ -376,6 +377,10 @@ void DeviceDBManager::InitDB() {
       "CREATE TRIGGER IF NOT EXISTS reconnect_credential_password_change "
       "AFTER UPDATE OF password_salt,password_hash ON devices "
       "WHEN OLD.password_salt<>NEW.password_salt OR OLD.password_hash<>NEW.password_hash "
+      "BEGIN DELETE FROM device_reconnect_credentials WHERE device_id=OLD.device_id; END;"
+      "CREATE TRIGGER IF NOT EXISTS reconnect_credential_key_binding "
+      "AFTER UPDATE OF login_public_key ON devices "
+      "WHEN NEW.login_public_key<>'' "
       "BEGIN DELETE FROM device_reconnect_credentials WHERE device_id=OLD.device_id; END;"
       "DELETE FROM device_reconnect_credentials WHERE expires_at <= "
       "CAST(strftime('%s','now') AS INTEGER) OR NOT EXISTS "
@@ -659,9 +664,12 @@ DeviceCredential DeviceDBManager::AddDevice(const std::string& device_id,
 
 DeviceCredential DeviceDBManager::RegisterDevice(
     const std::string& device_id, const std::string& password,
-    const DevicePasswordRecord& record) {
+    const DevicePasswordRecord& record, const std::string& login_public_key) {
   if ((!device_id.empty() && !IsTemporaryControllerRegistration(device_id)) ||
-      password.empty() || !DevicePassword::IsCurrent(record))
+      password.empty() || !DevicePassword::IsCurrent(record) ||
+      (!login_public_key.empty() && (login_public_key.size() != 64 ||
+       !device_id.empty() || !std::all_of(login_public_key.begin(), login_public_key.end(),
+           [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))))
     return {};
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   if (!db_) return {};
@@ -704,8 +712,8 @@ DeviceCredential DeviceDBManager::RegisterDevice(
 
     const char* insert_sql =
         "INSERT INTO devices (device_id, password_hash, password_salt, "
-        "retention_started_at) VALUES "
-        "(?, ?, ?, CAST(strftime('%s','now') AS INTEGER));";
+        "retention_started_at, login_public_key) VALUES "
+        "(?, ?, ?, CAST(strftime('%s','now') AS INTEGER), ?);";
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -717,6 +725,7 @@ DeviceCredential DeviceDBManager::RegisterDevice(
     sqlite3_bind_text(stmt, 1, new_id.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, record.hash.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, record.salt.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, login_public_key.c_str(), -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
@@ -769,6 +778,41 @@ std::optional<DevicePasswordRecord> DeviceDBManager::ReadPassword(
     result = DevicePasswordRecord{ColumnText(stmt, 0), ColumnText(stmt, 1)};
   sqlite3_finalize(stmt);
   return result;
+}
+
+std::optional<std::string> DeviceDBManager::ReadLoginPublicKey(
+    const std::string& device_id) {
+  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+  sqlite3_stmt* stmt = nullptr;
+  if (!db_ || sqlite3_prepare_v2(db_,
+      "SELECT login_public_key FROM devices WHERE device_id=?;",
+      -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
+  sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+  std::optional<std::string> key;
+  if (sqlite3_step(stmt) == SQLITE_ROW) key = ColumnText(stmt, 0);
+  sqlite3_finalize(stmt);
+  return key;
+}
+
+bool DeviceDBManager::BindLoginPublicKey(const std::string& device_id,
+                                        const DevicePasswordRecord& verified,
+                                        const std::string& public_key) {
+  if (public_key.size() != 64 || !std::all_of(public_key.begin(), public_key.end(),
+      [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+    return false;
+  std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+  sqlite3_stmt* stmt = nullptr;
+  if (!db_ || sqlite3_prepare_v2(db_,
+      "UPDATE devices SET login_public_key=? WHERE device_id=? AND login_public_key='' "
+      "AND password_salt=? AND password_hash=?;",
+      -1, &stmt, nullptr) != SQLITE_OK) return false;
+  sqlite3_bind_text(stmt, 1, public_key.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, device_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 3, verified.salt.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 4, verified.hash.c_str(), -1, SQLITE_TRANSIENT);
+  const bool bound = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) == 1;
+  sqlite3_finalize(stmt);
+  return bound;
 }
 
 bool DeviceDBManager::CommitPassword(const std::string& device_id,
