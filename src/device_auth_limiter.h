@@ -33,6 +33,14 @@ class DeviceAuthLimiter {
   static constexpr std::chrono::seconds kMaxBackoff{4 * 60 * 60};
   static constexpr std::chrono::seconds kBackoffRecovery{30 * 60};
   enum class Policy { Fixed, Exponential };
+  // Flags retain every operation that failed within the same failure record.
+  enum class Operation : uint8_t {
+    Unspecified = 0,
+    DeviceLogin = 1,
+    RemoteConnection = 2,
+    MemberQuery = 4,
+    DeviceKeyBinding = 8,
+  };
 
   struct Result {
     bool authenticated = false;
@@ -51,12 +59,14 @@ class DeviceAuthLimiter {
     std::string target;
     size_t failures, threshold, pending;
     int retry_after, reset_after;
+    uint8_t operations = 0;
   };
   std::vector<Entry> Snapshot();
   void Clear(bool source, const std::string& target);
   void ClearMatching(const std::function<bool(bool, const std::string&)>& matches);
   Result Verify(const std::string& source, const std::string& target,
-                const std::function<bool()>& verify);
+                const std::function<bool()>& verify,
+                Operation operation = Operation::Unspecified);
 
  private:
   struct Failures {
@@ -66,11 +76,13 @@ class DeviceAuthLimiter {
     Clock::time_point blocked_until{};
     std::chrono::seconds backoff{0};
     uint64_t generation = 0;
+    uint8_t operations = 0;
   };
   using Buckets = std::unordered_map<std::string, Failures>;
   void Prune(Buckets& buckets, Clock::time_point now);
   static void ResetExpired(Failures& failures, Clock::time_point now);
-  void Record(Failures& failures, size_t limit, Clock::time_point now);
+  void Record(Failures& failures, size_t limit, Clock::time_point now,
+              Operation operation);
 
   Now now_;
   const size_t source_failure_limit_, target_failure_limit_;

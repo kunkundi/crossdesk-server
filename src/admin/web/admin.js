@@ -28,6 +28,13 @@
       "Failures / threshold": "失败计数 / 阈值",
       "Remaining wait": "剩余等待",
       "Reason": "备注",
+      "Device login": "设备登录",
+      "Remote connection": "远程连接",
+      "Member query": "成员查询",
+      "Initial device key binding": "首次设备密钥绑定",
+      "Unknown operation": "未知操作",
+      "Password verification failed": "密码验证失败",
+      "Password verification failed: {operations}": "密码验证失败：{operations}",
       "Manual restriction": "手动限制",
       "Automatic cooldown": "自动冷却",
       "Observing": "观察中",
@@ -1490,6 +1497,17 @@
       const index = sizes.findIndex(size => seconds >= size);
       return `${Math.ceil(seconds / sizes[index])} ${units[index]}`;
     }
+    function riskReason(item) {
+      const labels = {device_login: 'Device login', remote_connection: 'Remote connection',
+        member_query: 'Member query', device_key_binding: 'Initial device key binding'};
+      const operations = (item.operations || []).map(operation => t(labels[operation] || 'Unknown operation'));
+      const notes = [];
+      if (item.failures > 0) notes.push(operations.length
+        ? t('Password verification failed: {operations}', {operations: operations.join(language === 'zh' ? '、' : ', ')})
+        : t('Password verification failed'));
+      if (item.reason) notes.push(item.reason);
+      return notes.join('\n') || '—';
+    }
     function renderRisk() {
       const rows = riskElement('rows');
       const focused = document.activeElement?.dataset.riskKey;
@@ -1508,7 +1526,7 @@
         const remaining = document.createElement('td'); remaining.textContent = riskWait(item.retry_after);
         if (item.expires_at) remaining.title = t('Ends at {time}', {time: new Date(item.expires_at * 1000).toLocaleString(locale())});
         row.append(remaining);
-        const reason = document.createElement('td'); reason.className = 'risk-reason'; reason.textContent = item.reason || '—'; row.append(reason);
+        const reason = document.createElement('td'); reason.className = 'risk-reason'; reason.textContent = riskReason(item); row.append(reason);
         const actions = document.createElement('td'), clear = document.createElement('button');
         clear.type = 'button'; clear.className = 'danger'; clear.dataset.riskKey = `${item.scope}:${item.target}`;
         clear.disabled = riskBusy || riskStale;

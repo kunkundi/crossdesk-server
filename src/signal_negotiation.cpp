@@ -199,6 +199,7 @@ void SignalNegotiation::RunCredentialWork(websocketpp::connection_hdl hdl,
 void SignalNegotiation::AuthenticateDevice(
     websocketpp::connection_hdl hdl, const std::string& source_address,
     const std::string& device_id, const std::string& password, json failure,
+    DeviceAuthLimiter::Operation operation,
     const CredentialDispatch& dispatch, std::function<void()> on_verified,
     const std::string& bind_login_key) {
   SetFailure(failure, "AUTHENTICATION_FAILED", "Authentication failed");
@@ -232,7 +233,7 @@ void SignalNegotiation::AuthenticateDevice(
   RunCredentialWork(
       hdl, source_address, failure,
       [this, hdl, source_address, device_id, password, record, identity,
-       controller, source_key, pair_key, failure, bind_login_key,
+       controller, source_key, pair_key, failure, bind_login_key, operation,
        on_verified = std::move(on_verified)]() -> std::function<void()> {
         std::optional<DevicePasswordRecord> verified;
         const auto manual = device_db_manager_->PasswordRiskDelay(source_address, controller);
@@ -241,7 +242,7 @@ void SignalNegotiation::AuthenticateDevice(
           result = device_auth_limiter_->Verify(source_key, pair_key, [&] {
               verified = DevicePassword::Verify(record, password);
               return verified.has_value();
-            });
+            }, operation);
         return [this, hdl, source_address, device_id, controller, record, identity, verified, result,
                 unavailable = !manual,
                 failure = failure, on_verified, bind_login_key]() mutable {
@@ -360,7 +361,8 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     RegisterDevice(hdl, source_address, host_id, failure, dispatch, finish);
   } else {
     AuthenticateDevice(
-        hdl, source_address, host_id, password, failure, dispatch,
+        hdl, source_address, host_id, password, failure,
+        DeviceAuthLimiter::Operation::DeviceLogin, dispatch,
         [finish, host_id] { finish({host_id, "", false}, false); });
   }
   return *completed;
@@ -666,7 +668,8 @@ bool SignalNegotiation::query_user_id_list(websocketpp::connection_hdl hdl,
     return true;
   }
   AuthenticateDevice(
-      hdl, source_address, transmission_id, password, failure, dispatch,
+      hdl, source_address, transmission_id, password, failure,
+      DeviceAuthLimiter::Operation::MemberQuery, dispatch,
       [this, hdl, transmission_id] {
         std::vector<std::string> user_id_list =
             transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
@@ -727,7 +730,8 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
     return true;
   }
   AuthenticateDevice(
-      hdl, source_address, transmission_id, password, failure, dispatch,
+      hdl, source_address, transmission_id, password, failure,
+      DeviceAuthLimiter::Operation::RemoteConnection, dispatch,
       [this, hdl, transmission_id, user_id] {
         std::string host_id =
             transmission_manager_->GetHostIdOfTransmission(transmission_id);

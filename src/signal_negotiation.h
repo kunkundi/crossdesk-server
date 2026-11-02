@@ -93,6 +93,7 @@ class SignalNegotiation {
                           const std::string& source_address,
                           const std::string& device_id,
                           const std::string& password, json failure,
+                          DeviceAuthLimiter::Operation operation,
                           const CredentialDispatch& dispatch,
                           std::function<void()> on_verified,
                           const std::string& bind_login_key = "");

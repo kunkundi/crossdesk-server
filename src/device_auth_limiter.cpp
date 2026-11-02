@@ -39,10 +39,12 @@ void DeviceAuthLimiter::ResetExpired(Failures& failures, Clock::time_point now) 
   failures.expires = now + kWindow;
   failures.blocked_until = {};
   failures.backoff = std::chrono::seconds::zero();
+  failures.operations = 0;
 }
 
 void DeviceAuthLimiter::Record(Failures& failures, size_t limit,
-                               Clock::time_point now) {
+                               Clock::time_point now, Operation operation) {
+  failures.operations |= static_cast<uint8_t>(operation);
   if (failures.count < limit) ++failures.count;
   if (failures.count < limit) return;
   const bool exponential = policy_ == Policy::Exponential;
@@ -77,7 +79,8 @@ std::vector<DeviceAuthLimiter::Entry> DeviceAuthLimiter::Snapshot() {
     for (const auto& [target, bucket] : buckets) {
       if (!bucket.count || bucket.expires <= now) continue;
       entries.push_back({source, target, bucket.count, threshold, bucket.pending,
-          RemainingSeconds(bucket.blocked_until, now), RemainingSeconds(bucket.expires, now)});
+          RemainingSeconds(bucket.blocked_until, now), RemainingSeconds(bucket.expires, now),
+          bucket.operations});
     }
   };
   append(targets_, false, target_failure_limit_);
@@ -114,7 +117,7 @@ void DeviceAuthLimiter::ClearMatching(
 
 DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
     const std::string& source, const std::string& target,
-    const std::function<bool()>& verify) {
+    const std::function<bool()>& verify, Operation operation) {
   // Reserve both budgets atomically, then release the lock for slow hashing.
   std::unique_lock<std::mutex> lock(mutex_);
   const auto now = now_();
@@ -171,7 +174,8 @@ DeviceAuthLimiter::Result DeviceAuthLimiter::Verify(
     auto& bucket = buckets.at(key);
     --bucket.pending;
     ResetExpired(bucket, finished);
-    if (!authenticated && bucket.generation == generation) Record(bucket, limit, finished);
+    if (!authenticated && bucket.generation == generation)
+      Record(bucket, limit, finished, operation);
     if (bucket.count == 0 && bucket.pending == 0) buckets.erase(key);
   };
   finish(sources_, source_key, source_failure_limit_, source_generation);

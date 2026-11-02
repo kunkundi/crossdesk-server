@@ -130,7 +130,8 @@ bool SignalNegotiation::LoginWithKey(websocketpp::connection_hdl hdl,
         // Migration is performed by the owning device's normal login.
         if (controller) return reject();
         // Only the first binding uses legacy credentials. Never replace a key.
-        AuthenticateDevice(hdl, source, id, password, failure, dispatch,
+        AuthenticateDevice(hdl, source, id, password, failure,
+            DeviceAuthLimiter::Operation::DeviceKeyBinding, dispatch,
             [id, finish] {
               finish({id, "", false}, false);
             }, public_key);

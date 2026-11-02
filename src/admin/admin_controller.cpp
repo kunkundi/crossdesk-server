@@ -427,7 +427,8 @@ AdminHttpResponse AdminController::HandleRiskControl(const AdminHttpRequest& req
       auto& item = entries[{scope, target}];
       if (item.is_null()) item = {{"scope", scope}, {"target", target}, {"failures", 0},
           {"threshold", scope == "pair" ? DeviceAuthLimiter::kTargetFailures : DeviceAuthLimiter::kSourceFailures},
-          {"retry_after", 0}, {"reset_after", 0}, {"manual", false}, {"reason", ""}, {"expires_at", 0}};
+          {"retry_after", 0}, {"reset_after", 0}, {"manual", false}, {"reason", ""},
+          {"operations", json::array()}, {"expires_at", 0}};
       return item;
     };
     for (const auto& state : auth_limiter_->Snapshot()) {
@@ -439,6 +440,14 @@ AdminHttpResponse AdminController::HandleRiskControl(const AdminHttpRequest& req
       if (!state.source) item["destination"] = key[2];
       item["failures"] = state.failures; item["threshold"] = state.threshold;
       item["retry_after"] = state.retry_after; item["reset_after"] = state.reset_after;
+      for (const auto& [operation, name] : {
+          std::pair{DeviceAuthLimiter::Operation::DeviceLogin, "device_login"},
+          std::pair{DeviceAuthLimiter::Operation::RemoteConnection, "remote_connection"},
+          std::pair{DeviceAuthLimiter::Operation::MemberQuery, "member_query"},
+          std::pair{DeviceAuthLimiter::Operation::DeviceKeyBinding, "device_key_binding"}}) {
+        if (state.operations & static_cast<uint8_t>(operation))
+          item["operations"].push_back(name);
+      }
     }
     for (const auto& rule : rules) {
       const int64_t remaining = rule.at("expires_at").get<int64_t>() - now;
