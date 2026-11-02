@@ -1043,7 +1043,8 @@ void SignalNegotiation::OnTemporaryControllerDisconnect(
     pure_user_id = user_id.substr(0, at_pos);
   }
 
-  // Temporary controller credentials expire with their WebSocket.
+  // Remove the temporary identity, presence and associations together after
+  // session release/logout. Daily activity survives the WebSocket disconnect.
   if (IsTemporaryControllerId(pure_user_id)) {
     if (!device_db_manager_->RemoveDevice(pure_user_id)) {
       LOG_WARN("Failed to remove temporary controller [{}] from database",

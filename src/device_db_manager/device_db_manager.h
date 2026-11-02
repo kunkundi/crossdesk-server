@@ -139,6 +139,11 @@ class DeviceDBManager {
   // Batches share the writer's transaction ordering with login/logout.
   RetentionCleanupResult CleanupExpiredDevices(int retention_days,
                                               size_t batch_size = 200);
+  // Web/CLI identities last only for their connection. An optional exact ID
+  // supports disconnect cleanup; batches drain old offline records. Neither
+  // path removes daily activity or identities referenced by live sessions.
+  RetentionCleanupResult CleanupTemporaryControllers(
+      size_t batch_size = 200, const std::string& device_id = "");
   // Admin-only writer operation. All actions audit in the same transaction;
   // cleanup requires an unchanged preview and no online/recoverable sessions.
   nlohmann::json AdminDeviceData(const std::string& device_id,

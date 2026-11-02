@@ -733,6 +733,12 @@ void SignalServer::ScheduleRetentionCleanup() {
     metadata_cleanup_pending_ = application_worker_->Submit([this] {
       int retry_seconds = retention_policy_.interval_seconds;
       try {
+        const auto temporary = device_db_manager_->CleanupTemporaryControllers();
+        for (const auto& id : temporary.device_ids)
+          presence_manager_->ForgetOfflineDeviceData(id);
+        if (temporary.devices || temporary.associations || temporary.credentials)
+          LOG_INFO("Temporary controller cleanup: devices={} associations={} credentials={}",
+                   temporary.devices, temporary.associations, temporary.credentials);
         const auto result = device_db_manager_->CleanupExpiredDevices(
             retention_policy_.offline_days);
         for (const auto& id : result.device_ids) {
@@ -748,7 +754,7 @@ void SignalServer::ScheduleRetentionCleanup() {
                    retention_policy_.offline_days);
         // The network maintenance timer already spaces batches five seconds
         // apart; adding another delay can miss the next tick.
-        if (result.more || more_audit) retry_seconds = 0;
+        if (temporary.more || result.more || more_audit) retry_seconds = 0;
       } catch (const std::bad_alloc&) {
         throw;
       } catch (const std::exception& e) {

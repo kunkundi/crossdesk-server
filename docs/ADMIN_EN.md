@@ -49,6 +49,8 @@ Ending a session preserves that day's count. A maintenance task runs about every
 
 Collection starts when the feature is enabled: earlier dates display `—`, and the first day is marked partial. Only today and yesterday are retained. Admin `/api/admin/stats` and `/api/admin/overview` expose counts and coverage in `stats.daily_active_controllers`; the public stats API keeps its existing fields.
 
+Web and CLI temporary identities, presence and historical associations are removed on disconnect, so they leave no offline device entry. Today's and yesterday's activity contributions are preserved. Background batches clean legacy and interrupted offline temporary records.
+
 ### Refresh and authentication
 
 On wider screens, device and session lists appear side by side with search and pagination kept visible. Mobile layouts keep search and client-type selection available, group platform/version/sort controls under filters, and show compact records or cards with touch-friendly actions.

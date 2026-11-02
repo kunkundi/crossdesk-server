@@ -886,6 +886,15 @@ bool DeviceDBManager::RemoveDevice(const std::string& device_id) {
     return false;
   }
 
+  if (IsTemporaryControllerId(device_id)) {
+    try {
+      return !CleanupTemporaryControllers(1, device_id).device_ids.empty();
+    } catch (const std::exception& error) {
+      LOG_ERROR("Temporary controller cleanup failed: {}", error.what());
+      return false;
+    }
+  }
+
   const char* sql = "DELETE FROM devices WHERE device_id = ?;";
 
   sqlite3_stmt* stmt = nullptr;
@@ -1008,6 +1017,7 @@ RetentionCleanupResult DeviceDBManager::CleanupExpiredDevices(
       const auto clone = "C-" + id;
       for (const char* sql :
            {remove_associations, remove_presence, remove_credentials, remove_activity}) {
+        if (sql == remove_activity && IsTemporaryControllerId(id)) continue;
         if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
           throw std::runtime_error(sqlite3_errmsg(db_));
         sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_TRANSIENT);

@@ -62,6 +62,7 @@ void PresenceManager::OnLogout(const std::string& device_id) {
   if (!user_id.empty()) {
     NotifyUserDevices(user_id, device_id, false);
   }
+  if (IsTemporaryControllerId(device_id)) ForgetOfflineDeviceData(device_id);
 }
 
 bool PresenceManager::IsOnline(const std::string& device_id) const {
