@@ -39,6 +39,7 @@ using nlohmann::json;
 struct SignalServerConfig : websocketpp::config::asio_tls {
   struct transport_config : websocketpp::config::asio_tls::transport_config {
     static const long timeout_socket_shutdown = 1500;
+    static const long timeout_socket_post_init = 10000;
   };
   using transport_type =
       websocketpp::transport::asio::endpoint<transport_config>;
@@ -71,7 +72,7 @@ class SignalServer {
     std::string source_address;  // Set before publication; transport peer IP.
     std::string device_id;  // Accessed only on the network thread.
     Clock::time_point accepted = Clock::now(), last_heartbeat = accepted;
-    bool opened = false, authenticated = false;
+    bool opened = false, authenticated = false, handshake_pending = true;
     server::connection_ptr pending_http;  // Network thread; retains deferred HTTP.
     std::atomic<bool> alive{true};
     std::atomic<size_t> pending_messages{0};
@@ -83,6 +84,24 @@ class SignalServer {
   };
   void AcceptNext();
   void RetryAccept();
+  void WakeAccept();
+  bool AdmitSource(const std::string& address);
+  void CompleteHandshake(const std::shared_ptr<ConnectionState>& state,
+                         bool success);
+  void ScheduleLoopMonitor();
+  struct SourceActivity {
+    Clock::time_point window = Clock::now(), last_seen = window;
+    size_t active = 0, accepted = 0, succeeded = 0, failed = 0, rejected = 0;
+  };
+  std::map<std::string, SourceActivity> handshake_sources_;
+  std::deque<int64_t> handshake_times_ms_;
+  std::vector<int64_t> loop_delays_ms_;
+  std::map<std::string, uint64_t> handshake_failure_reasons_;
+  Clock::time_point heartbeat_grace_until_{};
+  size_t max_source_handshakes_ = 16, source_handshakes_per_minute_ = 120;
+  uint64_t source_rejections_ = 0, source_tracking_rejections_ = 0;
+  uint64_t received_heartbeats_ = 0;
+  bool accept_wake_pending_ = false;
   int64_t EstimateFileDescriptors() const;
   std::string DescribeConnectionResources();
   void LogConnectionDiagnostics();
@@ -130,7 +149,8 @@ class SignalServer {
   uint64_t next_connection_id_ = 1;
   size_t pending_cleanup_ = 0;
   size_t max_connections_ = 8192;
-  const size_t fd_reserve_ = 256, max_handshakes_ = 128;
+  const size_t fd_reserve_ = 256;
+  size_t max_handshakes_ = 128;
   static constexpr int kListenBacklog = 4096;
   const long heartbeat_timeout_ms_ = 30000, check_interval_ms_ = 5000;
   const long authentication_timeout_ms_ = 15000, http_timeout_ms_ = 10000;

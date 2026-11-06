@@ -237,6 +237,11 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   admin_controller_->SetSessionRecovery(session_recovery_.get());
   admin_read_controller_->SetSessionRecovery(session_recovery_.get());
   max_connections_ = EnvMillis("CROSSDESK_MAX_CONNECTIONS", 8192, 1, 65536);
+  max_handshakes_ = EnvMillis("CROSSDESK_MAX_HANDSHAKES", 128, 1, 4096);
+  max_source_handshakes_ =
+      EnvMillis("CROSSDESK_HANDSHAKE_SOURCE_CONCURRENCY", 16, 1, 4096);
+  source_handshakes_per_minute_ =
+      EnvMillis("CROSSDESK_HANDSHAKE_SOURCE_PER_MINUTE", 120, 20, 60000);
   auto on_error = [this](std::exception_ptr error) { WorkerFailed(error); };
   application_worker_ =
       std::make_unique<BoundedExecutor>(
@@ -312,6 +317,98 @@ void SignalServer::RetryAccept() {
   });
 }
 
+void SignalServer::WakeAccept() {
+  if (stopping_ || !admission_paused_ || accept_pending_ ||
+      accept_wake_pending_)
+    return;
+  accept_wake_pending_ = true;
+  server_.get_io_service().post([this] {
+    accept_wake_pending_ = false;
+    AcceptNext();
+  });
+}
+
+bool SignalServer::AdmitSource(const std::string& address) {
+  const auto now = Clock::now();
+  auto it = handshake_sources_.find(address);
+  if (it == handshake_sources_.end()) {
+    if (handshake_sources_.size() >= 4096) {
+      ++source_tracking_rejections_;
+      return false;
+    }
+    it = handshake_sources_.try_emplace(address).first;
+  }
+  auto& source = it->second;
+  source.last_seen = now;
+  if (now - source.window >= std::chrono::minutes(1)) {
+    const auto active = source.active;
+    source = SourceActivity{};
+    source.active = active;
+  }
+  // Shared NATs may reconnect many healthy clients together. Apply tighter
+  // admission only after at least 20 failures and an over-80% failure ratio.
+  const bool failing =
+      source.failed >= 20 && source.failed > source.succeeded * 4;
+  if (failing && (source.active >= max_source_handshakes_ ||
+                  source.accepted >= source_handshakes_per_minute_)) {
+    ++source.rejected;
+    ++source_rejections_;
+    return false;
+  }
+  ++source.accepted;
+  ++source.active;
+  return true;
+}
+
+void SignalServer::CompleteHandshake(
+    const std::shared_ptr<ConnectionState>& state, bool success) {
+  if (!state->handshake_pending) return;
+  state->handshake_pending = false;
+  auto it = handshake_sources_.find(state->source_address);
+  if (it != handshake_sources_.end()) {
+    auto& source = it->second;
+    if (source.active) --source.active;
+    source.last_seen = Clock::now();
+    if (success)
+      ++source.succeeded;
+    else
+      ++source.failed;
+  }
+  if (success) {
+    if (handshake_times_ms_.size() == 4096) handshake_times_ms_.pop_front();
+    handshake_times_ms_.push_back(
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                              state->accepted)
+            .count());
+  }
+  WakeAccept();
+}
+
+void SignalServer::ScheduleLoopMonitor() {
+  if (stopping_) return;
+  const auto due = Clock::now() + std::chrono::milliseconds(250);
+  server_.set_timer(250, [this, due](websocketpp::lib::error_code ec) {
+    if (ec || stopping_) return;
+    const auto now = Clock::now();
+    const auto delay = std::max<int64_t>(
+        0, std::chrono::duration_cast<std::chrono::milliseconds>(now - due)
+               .count());
+    loop_delays_ms_.push_back(delay);
+    if (delay >= 5000) {
+      ++diagnostics_.loop_stalls;
+      heartbeat_grace_until_ =
+          now + std::chrono::milliseconds(check_interval_ms_);
+    }
+    if (delay >= 250 && now >= next_loop_warning_) {
+      LOG_WARN(
+          "Signal event loop delayed: delay_ms={} event_loop_stalls_total={}",
+          delay, diagnostics_.loop_stalls);
+      next_loop_warning_ = now + kDiagnosticWarningInterval;
+    }
+    ScheduleLoopMonitor();
+  });
+}
+
 int64_t SignalServer::EstimateFileDescriptors() const {
   return fd_usage_.open < 0
              ? -1
@@ -321,7 +418,7 @@ int64_t SignalServer::EstimateFileDescriptors() const {
 
 std::string SignalServer::DescribeConnectionResources() {
   size_t opened = 0, authenticated = 0, pending_http = 0, inactive = 0;
-  size_t expired_handles = 0;
+  size_t expired_handles = 0, handshaking = 0, closing = 0;
   int64_t oldest_unopened_ms = 0;
   const auto now = Clock::now();
   for (const auto& entry : connections_) {
@@ -331,6 +428,15 @@ std::string SignalServer::DescribeConnectionResources() {
     pending_http += static_cast<bool>(state.pending_http);
     inactive += !state.alive.load();
     expired_handles += entry.first.expired();
+    websocketpp::lib::error_code ec;
+    auto con = server_.get_con_from_hdl(entry.first, ec);
+    if (!ec && con) {
+      handshaking +=
+          state.handshake_pending &&
+          con->get_state() == websocketpp::session::state::connecting;
+      closing += con->get_state() == websocketpp::session::state::closing ||
+                 con->get_state() == websocketpp::session::state::closed;
+    }
     if (!state.opened)
       oldest_unopened_ms = std::max<int64_t>(
           oldest_unopened_ms,
@@ -341,24 +447,74 @@ std::string SignalServer::DescribeConnectionResources() {
   const auto fds = ReadFileDescriptorUsage();
   return fmt::format(
       "connections={} connection_limit={} ws_opened={} authenticated={} "
-      "unopened={} unopened_limit={} pending_http={} inactive={} "
+      "unopened={} unopened_limit={} handshaking={} closing={} pending_http={} "
+      "inactive={} "
       "expired_handles={} oldest_unopened_ms={} pending_cleanup={} "
-      "pending_sends={} fd_open={} fd_estimated={} fd_sample_age_ms={} fd_soft_limit={} "
+      "pending_sends={} fd_open={} fd_estimated={} fd_sample_age_ms={} "
+      "fd_soft_limit={} "
       "fd_reserve={} admission_paused={} pause_ms={}",
       connections_.size(), max_connections_, opened, authenticated,
-      connections_.size() - opened, max_handshakes_, pending_http, inactive,
-      expired_handles, oldest_unopened_ms, pending_cleanup_,
-      pending_sends_.load(), fds.open, EstimateFileDescriptors(),
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          now - fd_sampled_at_).count(), fds.soft_limit,
-      fd_reserve_, admission_paused_,
-      admission_paused_
-          ? std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - admission_paused_since_).count()
-          : 0);
+      connections_.size() - opened, max_handshakes_, handshaking, closing,
+      pending_http, inactive, expired_handles, oldest_unopened_ms,
+      pending_cleanup_, pending_sends_.load(), fds.open,
+      EstimateFileDescriptors(),
+      std::chrono::duration_cast<std::chrono::milliseconds>(now -
+                                                            fd_sampled_at_)
+          .count(),
+      fds.soft_limit, fd_reserve_, admission_paused_,
+      admission_paused_ ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                              now - admission_paused_since_)
+                              .count()
+                        : 0);
 }
 
 void SignalServer::LogConnectionDiagnostics() {
+  const auto summary = [](auto values) {
+    std::sort(values.begin(), values.end());
+    const auto percentile = [&](size_t percent) -> int64_t {
+      if (values.empty()) return 0;
+      return values[(values.size() * percent + 99) / 100 - 1];
+    };
+    return fmt::format("samples={} p50_ms={} p95_ms={} p99_ms={} max_ms={}",
+                       values.size(), percentile(50), percentile(95),
+                       percentile(99), values.empty() ? 0 : values.back());
+  };
+  LOG_INFO(
+      "Signal latency: loop=[{}] handshake=[{}] heartbeat_frames_total={} "
+      "source_rejections_total={} source_tracking_rejections_total={}",
+      summary(loop_delays_ms_), summary(handshake_times_ms_),
+      received_heartbeats_, source_rejections_, source_tracking_rejections_);
+  loop_delays_ms_.clear();
+  handshake_times_ms_.clear();
+  for (const auto& [reason, count] : handshake_failure_reasons_)
+    LOG_INFO("Handshake failures: reason={} interval_count={}", reason, count);
+  handshake_failure_reasons_.clear();
+  std::vector<std::pair<std::string, SourceActivity>> sources;
+  for (const auto& item : handshake_sources_)
+    if (item.second.failed || item.second.rejected) sources.push_back(item);
+  std::sort(sources.begin(), sources.end(), [](const auto& a, const auto& b) {
+    return a.second.failed + a.second.rejected >
+           b.second.failed + b.second.rejected;
+  });
+  for (size_t i = 0; i < std::min<size_t>(5, sources.size()); ++i) {
+    const auto& [address, source] = sources[i];
+    LOG_INFO(
+        "Handshake source: address={} accepted={} succeeded={} failed={} "
+        "rejected={} active={} window_age_ms={}",
+        address, source.accepted, source.succeeded, source.failed,
+        source.rejected, source.active,
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                              source.window)
+            .count());
+  }
+  const auto now = Clock::now();
+  for (auto it = handshake_sources_.begin(); it != handshake_sources_.end();) {
+    if (!it->second.active &&
+        now - it->second.last_seen >= std::chrono::minutes(2))
+      it = handshake_sources_.erase(it);
+    else
+      ++it;
+  }
   LOG_INFO(
       "Connection diagnostics: {} accepted_total={} ws_opened_total={} "
       "preopen_failures_total={} "
@@ -390,8 +546,13 @@ void SignalServer::AcceptNext() {
   }
   const auto estimated_fds = EstimateFileDescriptors();
   size_t handshakes = 0;
-  for (const auto& entry : connections_)
-    if (!entry.second->opened) ++handshakes;
+  for (const auto& entry : connections_) {
+    websocketpp::lib::error_code ec;
+    auto con = server_.get_con_from_hdl(entry.first, ec);
+    if (entry.second->handshake_pending && !ec && con &&
+        con->get_state() == websocketpp::session::state::connecting)
+      ++handshakes;
+  }
   const bool connection_limit =
       connections_.size() + pending_cleanup_ >= max_connections_;
   const bool unopened_limit = handshakes >= max_handshakes_;
@@ -458,33 +619,37 @@ void SignalServer::AcceptNext() {
       return;
     }
     ++diagnostics_.accepted;
+    asio::error_code peer_error;
+    auto peer = socket->remote_endpoint(peer_error);
+    std::string source_address = "unknown";
+    if (!peer_error) {
+      auto address = peer.address();
+      if (address.is_v6() && address.to_v6().is_v4_mapped())
+        address =
+            asio::ip::make_address_v4(asio::ip::v4_mapped, address.to_v6());
+      source_address = address.to_string();
+    }
+    if (!AdmitSource(source_address)) {
+      socket->close(peer_error);
+      AcceptNext();
+      return;
+    }
+    auto state = std::make_shared<ConnectionState>();
+    state->source_address = source_address;
     server::connection_ptr con;
     try {
-      // Construct SSL only after TCP accept. A pending accept must not pin an
-      // obsolete TLS context across a certificate reload.
       con = server_.get_connection();
       if (!con) throw std::runtime_error("Connection initialization failed");
       con->get_raw_socket() = std::move(*socket);
-      auto state = std::make_shared<ConnectionState>();
       state->id = next_connection_id_++;
       state->handle = con->get_handle();
-      // Read transport metadata on the network thread. Never use forwarded
-      // headers or source ports as authentication rate-limit keys.
-      asio::error_code peer_error;
-      auto peer = con->get_raw_socket().remote_endpoint(peer_error);
-      if (!peer_error) {
-        auto address = peer.address();
-        if (address.is_v6() && address.to_v6().is_v4_mapped())
-          address = asio::ip::make_address_v4(asio::ip::v4_mapped,
-                                            address.to_v6());
-        state->source_address = address.to_string();
-      }
       connections_.emplace(con->get_handle(), state);
       con->set_termination_handler([this](server::connection_ptr finished) {
         FinishConnection(finished);
       });
       con->start();
     } catch (const std::system_error& e) {
+      CompleteHandshake(state, false);
       if (con)
         con->terminate(
             websocketpp::error::make_error_code(websocketpp::error::general));
@@ -513,6 +678,7 @@ bool SignalServer::OnOpen(websocketpp::connection_hdl hdl) {
   if (it == connections_.end()) return false;
   auto& state = *it->second;
   state.opened = true;
+  CompleteHandshake(it->second, true);
   ++diagnostics_.opened;
   state.last_heartbeat = Clock::now();
   LOG_INFO("Websocket connection [{}] opened", state.id);
@@ -533,7 +699,10 @@ void SignalServer::QueueSessionCleanup(
             // On process shutdown the durable session ledger is the checkpoint.
             // Releasing individual users here would erase it before restart.
             if (stopping_) {
-              server_.get_io_service().post([this] { --pending_cleanup_; });
+              server_.get_io_service().post([this] {
+                --pending_cleanup_;
+                WakeAccept();
+              });
               return;
             }
             // Login, release and presence changes are ordered on this one
@@ -544,7 +713,10 @@ void SignalServer::QueueSessionCleanup(
               presence_manager_->OnLogout(id);
               signal_negotiation_->OnTemporaryControllerDisconnect(id);
             }
-            server_.get_io_service().post([this] { --pending_cleanup_; });
+            server_.get_io_service().post([this] {
+              --pending_cleanup_;
+              WakeAccept();
+            });
           },
           true)) {
     throw std::runtime_error("Lifecycle queue reserve exhausted");
@@ -557,6 +729,9 @@ void SignalServer::FinishConnection(server::connection_ptr con) {
   auto it = connections_.find(hdl);
   if (it == connections_.end()) return;
   auto state = it->second;
+  CompleteHandshake(
+      state, !con->get_ec() ||
+                 con->get_ec() == websocketpp::error::http_connection_ended);
   QueueSessionCleanup(hdl, state);
   if (state->opened) {
     LOG_INFO(
@@ -565,6 +740,15 @@ void SignalServer::FinishConnection(server::connection_ptr con) {
         con->get_ec().message());
   } else if (con->get_ec() != websocketpp::error::http_connection_ended) {
     ++diagnostics_.preopen_failed;
+    const auto message = con->get_ec().message();
+    const std::string reason =
+        message.find("TLS handshake timed out") != std::string::npos
+            ? "tls_timeout"
+        : message.find("TLS") != std::string::npos ? "tls_error"
+        : message.find("handshake timed out") != std::string::npos
+            ? "websocket_timeout"
+            : "transport_error";
+    ++handshake_failure_reasons_[reason];
     // Bound warning volume for failed/unauthenticated connection floods.
     if (Clock::now() >= next_preopen_warning_) {
       LOG_WARN(
@@ -580,6 +764,7 @@ void SignalServer::FinishConnection(server::connection_ptr con) {
   }
   state->pending_http.reset();
   connections_.erase(it);
+  WakeAccept();
 }
 
 void SignalServer::CloseConnection(websocketpp::connection_hdl hdl,
@@ -603,6 +788,7 @@ bool SignalServer::OnHeartbeat(websocketpp::connection_hdl hdl, std::string) {
   auto it = connections_.find(hdl);
   if (it == connections_.end() || !it->second->alive) return false;
   it->second->last_heartbeat = Clock::now();
+  ++received_heartbeats_;
   return true;
 }
 
@@ -610,6 +796,7 @@ void SignalServer::OnHttp(websocketpp::connection_hdl hdl) {
   auto con = server_.get_con_from_hdl(hdl);
   auto it = connections_.find(hdl);
   if (it == connections_.end()) return;
+  CompleteHandshake(it->second, true);
   const auto resource = con->get_resource();
   const bool admin = AdminController::IsAdminRoute(resource);
   if (!admin && resource != "/stats" && resource != "/api/stats") {
@@ -796,22 +983,14 @@ void SignalServer::ScheduleMaintenance() {
                                          due](websocketpp::lib::error_code ec) {
     if (ec || stopping_) return;
     const auto now = Clock::now();
-    if (now - due >= std::chrono::milliseconds(check_interval_ms_)) {
-      ++diagnostics_.loop_stalls;
-      if (now >= next_loop_warning_) {
-        LOG_WARN("Signal event loop delayed: delay_ms={} event_loop_stalls_total={}",
-                 std::chrono::duration_cast<std::chrono::milliseconds>(
-                     now - due).count(), diagnostics_.loop_stalls);
-        next_loop_warning_ = now + kDiagnosticWarningInterval;
-      }
-    }
     if (now >= next_diagnostics_) {
       LogConnectionDiagnostics();
       next_diagnostics_ = now + kDiagnosticInterval;
     }
     // If the loop stalled, give queued ping frames one full check interval to
     // drain before considering expiry; never use a wall-clock timestamp.
-    if (now - due < std::chrono::milliseconds(check_interval_ms_)) {
+    if (now >= heartbeat_grace_until_ &&
+        now - due < std::chrono::milliseconds(check_interval_ms_)) {
       size_t expired = 0;
       for (const auto& entry : connections_) {
         const auto& state = entry.second;
@@ -835,8 +1014,10 @@ void SignalServer::ScheduleMaintenance() {
                             .count();
         if (state->opened && state->authenticated &&
             age > heartbeat_timeout_ms_) {
-          LOG_INFO("Device [{}] heartbeat timed out connection={}",
-                   state->device_id, state->id);
+          LOG_INFO(
+              "Device [{}] heartbeat timed out connection={} age_ms={} "
+              "source={}",
+              state->device_id, state->id, age, state->source_address);
           CloseConnection(entry.first, "Heartbeat timeout",
                           websocketpp::close::status::going_away);
         } else if (state->opened && !state->authenticated &&
@@ -950,6 +1131,7 @@ void SignalServer::Run() {
   });
   AcceptNext();
   ScheduleMaintenance();
+  ScheduleLoopMonitor();
   ScheduleCredentialPump();
   ScheduleRecoveredSessionCleanup();
   LOG_INFO("Signal server listening on port [{}], waiting for connections...",
