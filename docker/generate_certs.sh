@@ -62,13 +62,16 @@ OU = CrossDesk
 CN = $SERVER_IP
 
 [ req_ext ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
 subjectAltName = IP:$SERVER_IP
 EOL
 
 # 5. 用根证书签发服务器证书（包含 SAN）
 echo "Signing server certificate with root certificate..."
 openssl x509 -req -in "$SERVER_CSR" -CA "$ROOT_CERT" -CAkey "$ROOT_KEY" -CAcreateserial \
-  -out "$SERVER_CERT" -days 3650 -sha256 -extfile "$SAN_CONF" -extensions req_ext
+  -out "$SERVER_CERT" -days 825 -sha256 -extfile "$SAN_CONF" -extensions req_ext
 
 # 6. 生成完整链证书并更新 bundle.crt（包含服务器证书和根证书）
 cat "$SERVER_CERT" "$ROOT_CERT" > "$FULLCHAIN_CERT"

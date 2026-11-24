@@ -101,7 +101,7 @@ CROSSDESK_ICE_SERVERS='[{"urls":["stun:203.0.113.10:3478"]},{"urls":["turn:203.0
 
 这些是程序约定的**文件名**，不要求服务器使用 `api.crossdesk.cn` 域名。[自动生成脚本](../docker/generate_certs.sh) 只将 `EXTERNAL_IP` 写入证书的 IP 地址范围；客户端应使用该 IP。使用自定义域名时，需提供包含该域名的有效证书链和私钥，分别放到 `bundle.crt` 和 `.key` 对应的上述路径。
 
-[启动脚本](../docker/start.sh) 会复用已有证书，修改 `.env` 中的 IP 不会重新签发证书。重新生成自签证书会更换根证书，所有客户端都需重新信任。使用受系统信任的 CA 证书时通常无需额外导入根证书。
+[启动脚本](../docker/start.sh) 会复用已有证书。升级镜像或修改 `.env` 中的 IP 后，原证书仍会生效。使用受系统信任的 CA 证书时通常无需额外导入根证书。
 
 将自己部署的 `api.crossdesk.cn_root.crt` 复制到客户端后，按平台导入系统信任库：
 
@@ -121,6 +121,19 @@ sudo update-ca-certificates
 sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain /path/to/api.crossdesk.cn_root.crt
 ```
+
+在 iPhone 或 iPad 上手动安装根证书描述文件后，打开 **设置 → 通用 → 关于本机 → 证书信任设置**，为该根证书启用完全信任。
+
+<a id="certificate-rotation"></a>
+
+### 更换旧版自动生成的证书
+
+旧版脚本签发的服务器证书有效期为 3650 天，即使设备已信任根证书，iOS 仍会拒绝连接。可用 `openssl x509 -in api.crossdesk.cn_bundle.crt -noout -dates` 查看服务器证书的起止日期。新版脚本签发的服务器证书有效期为 825 天，请在到期前换证。
+
+1. 在服务器上用新版脚本运行 `bash docker/generate_certs.sh <EXTERNAL_IP> <新建空目录的绝对路径>`，将两个参数替换为实际值。脚本每次生成一套新证书。
+2. 将新目录中的 `api.crossdesk.cn_root.crt` 分发给所有客户端并启用信任，切换前保留对旧根证书的信任。
+3. 在部署目录运行 `sudo docker compose down`。将 `${CROSSDESK_DATA_DIR}/certs` 移到备份位置，把新目录放到原来的 `certs` 路径，然后运行 `sudo docker compose up -d --no-build`。
+4. 使用配置的 IP 重新连接。确认客户端均可连接后移除旧根证书的信任。如需回退，停止服务、恢复备份的证书目录，再启动服务。
 
 ### 配置控制端与被控端
 

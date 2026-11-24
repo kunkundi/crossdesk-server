@@ -101,7 +101,7 @@ Default files are stored under `${CROSSDESK_DATA_DIR}/certs/`:
 
 These are **filenames expected by the program**; your server does not need the `api.crossdesk.cn` domain. The [certificate generator](../docker/generate_certs.sh) includes only `EXTERNAL_IP` as an IP subject alternative name. Use that IP in clients. For a custom domain, supply a valid certificate chain covering that domain and its private key at the `bundle.crt` and `.key` paths listed above.
 
-The [startup script](../docker/start.sh) reuses existing certificates. Editing the IP in `.env` does not reissue them. Regenerating self-signed certificates replaces the root certificate, which must then be trusted again on every client. A certificate issued by a system-trusted CA usually needs no separate root import.
+The [startup script](../docker/start.sh) reuses existing certificates across image upgrades and IP changes in `.env`. A certificate issued by a system-trusted CA usually needs no separate root import.
 
 Copy your deployment's `api.crossdesk.cn_root.crt` to each client and import it into the system trust store:
 
@@ -121,6 +121,19 @@ sudo update-ca-certificates
 sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain /path/to/api.crossdesk.cn_root.crt
 ```
+
+After manually installing the root certificate profile on an iPhone or iPad, open **Settings → General → About → Certificate Trust Settings** and enable full trust for that root.
+
+<a id="certificate-rotation"></a>
+
+### Replace certificates issued by the old generator
+
+The old generator issued server certificates valid for 3650 days. iOS rejects them even when the device trusts the root. Run `openssl x509 -in api.crossdesk.cn_bundle.crt -noout -dates` to check the server certificate's validity dates. The updated generator issues server certificates valid for 825 days. Schedule replacement before expiry.
+
+1. On the server, run the updated script with `bash docker/generate_certs.sh <EXTERNAL_IP> <absolute-path-to-new-empty-directory>`. Substitute the actual IP and directory. Each run creates a new root and server certificate.
+2. Distribute the new directory's `api.crossdesk.cn_root.crt` to all clients and enable trust for it. Keep the old root trusted until the switch is complete.
+3. In the deployment directory, run `sudo docker compose down`. Move `${CROSSDESK_DATA_DIR}/certs` to a backup location, put the new directory at the original `certs` path, then run `sudo docker compose up -d --no-build`.
+4. Reconnect using the configured IP. Once all clients connect, remove trust for the old root. To roll back, stop the services, restore the saved certificate directory, and start the services again.
 
 ### Configure the controller and host
 
