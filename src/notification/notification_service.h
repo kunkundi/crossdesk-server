@@ -28,6 +28,7 @@ class NotificationService {
       NotificationStore::OpenMode mode = NotificationStore::OpenMode::ReadWrite)
       : store_(db_path, mode) {}
 
+  NotificationStore::Catalog PublicCatalog() { return store_.PublicCatalog(); }
   static bool IsAdminRoute(const std::string& resource);
   static bool IsClientMessage(const std::string& type);
   // Requires an authenticated administrator; POST also requires JSON + CSRF
@@ -39,8 +40,8 @@ class NotificationService {
   // Requires an authenticated client. Invalid protocol fields yield no reply.
   std::optional<nlohmann::json> HandleClientMessage(
       const nlohmann::json& message);
-  void SetBroadcastCallback(std::function<void(nlohmann::json)> callback) {
-    broadcast_ = std::move(callback);
+  void SetPublicChangeCallback(std::function<void()> callback) {
+    on_public_change_ = std::move(callback);
   }
   void SetReadDeadline(std::chrono::steady_clock::time_point deadline) {
     store_.SetReadDeadline(deadline);
@@ -49,7 +50,7 @@ class NotificationService {
 
  private:
   NotificationStore store_;
-  std::function<void(nlohmann::json)> broadcast_;
+  std::function<void()> on_public_change_;
 };
 
 

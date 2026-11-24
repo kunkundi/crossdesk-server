@@ -29,15 +29,22 @@ std::string Text(sqlite3_stmt* stmt, int column) {
   const auto* text = sqlite3_column_text(stmt, column);
   return text ? reinterpret_cast<const char*>(text) : "";
 }
-// All reads in a page must observe the same version even when the writer
-// publishes through its own connection while an admin reader is querying.
-class ReadSnapshot {
+class Transaction {
  public:
-  explicit ReadSnapshot(sqlite3* db) : db_(db) {
-    if (sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK)
-      throw std::runtime_error("Failed to begin notification snapshot");
+  enum Mode { Read, Write };
+  Transaction(sqlite3* db, Mode mode) : db_(db) {
+    if (sqlite3_exec(db_, mode == Write ? "BEGIN IMMEDIATE" : "BEGIN",
+                     nullptr, nullptr, nullptr) != SQLITE_OK)
+      throw std::runtime_error("Failed to begin notification transaction");
   }
-  ~ReadSnapshot() { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); }
+  ~Transaction() {
+    if (db_) sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+  }
+  void Commit() {
+    if (sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+      throw std::runtime_error("Failed to commit notification transaction");
+    db_ = nullptr;
+  }
 
  private:
   sqlite3* db_;
@@ -96,6 +103,7 @@ bool NotificationStore::ClearReadDeadline() {
 }
 
 void NotificationStore::InitializeSchema() {
+  Transaction transaction(db_, Transaction::Write);
   const char* sql =
       "CREATE TABLE IF NOT EXISTS announcements ("
       "id INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL DEFAULT "
@@ -110,38 +118,61 @@ void NotificationStore::InitializeSchema() {
       "id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL);"
       "INSERT OR IGNORE INTO announcement_catalog(id, revision) "
       "SELECT 1, COALESCE(SUM(revision), 0) FROM announcements;"
-      "CREATE TRIGGER IF NOT EXISTS announcements_catalog_insert "
-      "AFTER INSERT ON announcements BEGIN "
-      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1; END;"
-      "CREATE TRIGGER IF NOT EXISTS announcements_catalog_update "
-      "AFTER UPDATE ON announcements BEGIN "
-      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1; END;"
-      "CREATE TRIGGER IF NOT EXISTS announcements_catalog_delete "
-      "AFTER DELETE ON announcements BEGIN "
-      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1; END;"
+      // Start at the revision already held by installed clients on upgrade.
+      "CREATE TABLE IF NOT EXISTS announcement_public_catalog ("
+      "id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL);"
+      "INSERT OR IGNORE INTO announcement_public_catalog SELECT id, revision "
+      "FROM announcement_catalog WHERE id = 1;"
+      "CREATE TABLE IF NOT EXISTS announcement_catalog_identity ("
+      "id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL);"
+      "INSERT OR IGNORE INTO announcement_catalog_identity VALUES (1, lower(hex(randomblob(16))));"
+      // Share the old sequence so a revision seen before a rollback or upgrade
+      // always identifies the same public content.
+      "DROP TRIGGER IF EXISTS announcements_catalog_insert;"
+      "CREATE TRIGGER announcements_catalog_insert AFTER INSERT ON announcements BEGIN "
+      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1;"
+      "UPDATE announcement_public_catalog SET revision = "
+      "(SELECT revision FROM announcement_catalog WHERE id = 1) WHERE NEW.published = 1; END;"
+      "DROP TRIGGER IF EXISTS announcements_catalog_update;"
+      "CREATE TRIGGER announcements_catalog_update AFTER UPDATE ON announcements BEGIN "
+      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1;"
+      "UPDATE announcement_public_catalog SET revision = "
+      "(SELECT revision FROM announcement_catalog WHERE id = 1) "
+      "WHERE OLD.published = 1 OR NEW.published = 1; END;"
+      "DROP TRIGGER IF EXISTS announcements_catalog_delete;"
+      "CREATE TRIGGER announcements_catalog_delete AFTER DELETE ON announcements BEGIN "
+      "UPDATE announcement_catalog SET revision = revision + 1 WHERE id = 1;"
+      "UPDATE announcement_public_catalog SET revision = "
+      "(SELECT revision FROM announcement_catalog WHERE id = 1) WHERE OLD.published = 1; END;"
       // Remove obsolete device-reading data from the earlier implementation.
       "DROP TRIGGER IF EXISTS announcement_reads_identity_cleanup;"
       "DROP TRIGGER IF EXISTS announcement_reads_history_cleanup;"
       "DROP TABLE IF EXISTS announcement_reads;";
   if (sqlite3_exec(db_, sql, nullptr, nullptr, nullptr) != SQLITE_OK)
     throw std::runtime_error("Failed to initialize announcements");
+  transaction.Commit();
 }
 
 nlohmann::json NotificationStore::List(bool include_drafts, int offset,
                                        bool summary_only) {
   std::lock_guard<std::mutex> lock(mutex_);
-  ReadSnapshot snapshot(db_);
+  Transaction snapshot(db_, Transaction::Read);
+  auto generation = Prepare(
+      db_, include_drafts ? "SELECT revision FROM announcement_catalog WHERE id = 1"
+                          : "SELECT revision FROM announcement_public_catalog WHERE id = 1");
+  if (Step(generation.get()) != SQLITE_ROW)
+    throw std::runtime_error("Missing announcement catalog revision");
+  const auto catalog_revision = sqlite3_column_int64(generation.get(), 0);
+  // Only the two frequently requested public first pages are retained.
+  auto& cached = summary_only ? public_summary_page_ : public_content_page_;
+  if (!include_drafts && offset == 0 && !cached.is_null() &&
+      cached.at("catalog_revision") == catalog_revision)
+    return cached;
   auto count = Prepare(
       db_, "SELECT COUNT(*) FROM announcements WHERE (? OR published = 1)");
   sqlite3_bind_int(count.get(), 1, include_drafts);
   Step(count.get());
   const int total = sqlite3_column_int(count.get(), 0);
-  // Triggers advance this counter atomically with every insert, edit or delete,
-  // letting clients reject a catalog assembled across different versions.
-  auto generation =
-      Prepare(db_, "SELECT revision FROM announcement_catalog WHERE id = 1");
-  Step(generation.get());
-  const auto catalog_revision = sqlite3_column_int64(generation.get(), 0);
   const int limit = summary_only ? 200 : 20;
   offset = (std::max)(0, (std::min)(offset,
                                     total ? (total - 1) / limit * limit : 0));
@@ -167,19 +198,71 @@ nlohmann::json NotificationStore::List(bool include_drafts, int offset,
     }
     items.push_back(std::move(item));
   }
-  return {{"items", items},
-          {"total", total},
-          {"offset", offset},
-          {"limit", limit},
-          {"summary_only", summary_only},
-          {"catalog_revision", catalog_revision}};
+  nlohmann::json page = {{"items", std::move(items)}, {"total", total},
+                         {"offset", offset}, {"limit", limit},
+                         {"summary_only", summary_only},
+                         {"catalog_revision", catalog_revision}};
+  if (!include_drafts && offset == 0) cached = page;
+  return page;
 }
 
-nlohmann::json NotificationStore::Save(int64_t id, int64_t revision,
-                                       const std::string& title,
-                                       const std::string& body,
-                                       bool published) {
+NotificationStore::Catalog NotificationStore::PublicCatalog() {
   std::lock_guard<std::mutex> lock(mutex_);
+  Transaction snapshot(db_, Transaction::Read);
+  auto generation = Prepare(db_, "SELECT c.revision, i.token FROM announcement_public_catalog c "
+                                 "JOIN announcement_catalog_identity i ON i.id = c.id WHERE c.id = 1");
+  if (Step(generation.get()) != SQLITE_ROW)
+    throw std::runtime_error("Missing announcement catalog revision");
+  Catalog catalog{sqlite3_column_int64(generation.get(), 0), Text(generation.get(), 1), {}};
+  auto rows = Prepare(db_, "SELECT id, revision, title, updated_at FROM announcements "
+                           "WHERE published = 1 ORDER BY updated_at DESC, id DESC");
+  int status = Step(rows.get());
+  int offset = 0;
+  do {
+    auto items = nlohmann::json::array();
+    while (status == SQLITE_ROW && items.size() < 32) {
+      items.push_back({{"id", sqlite3_column_int64(rows.get(), 0)},
+                       {"revision", sqlite3_column_int64(rows.get(), 1)},
+                       {"title", Text(rows.get(), 2)},
+                       {"updated_at", sqlite3_column_int64(rows.get(), 3)}});
+      status = Step(rows.get());
+    }
+    catalog.pages.push_back(nlohmann::json{{"type", "announcement_catalog"},
+        {"catalog_revision", catalog.revision}, {"offset", offset},
+        {"last", status == SQLITE_DONE}, {"items", std::move(items)}}.dump());
+    offset += 32;
+  } while (status == SQLITE_ROW);
+  return catalog;
+}
+
+nlohmann::json NotificationStore::PublicBody(int64_t id, int64_t revision) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto row = Prepare(db_, "SELECT body FROM announcements WHERE id = ? "
+                          "AND revision = ? AND published = 1");
+  sqlite3_bind_int64(row.get(), 1, id);
+  sqlite3_bind_int64(row.get(), 2, revision);
+  if (Step(row.get()) != SQLITE_ROW) return {{"error", "announcement_unavailable"}};
+  return {{"body", Text(row.get(), 0)}};
+}
+
+NotificationStore::SaveResult NotificationStore::Save(
+    int64_t id, int64_t revision, const std::string& title,
+    const std::string& body, bool published) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Transaction transaction(db_, Transaction::Write);
+  bool was_published = false;
+  if (id != 0) {
+    auto previous = Prepare(db_, "SELECT published, title, body FROM announcements "
+                                 "WHERE id = ? AND revision = ?");
+    sqlite3_bind_int64(previous.get(), 1, id);
+    sqlite3_bind_int64(previous.get(), 2, revision);
+    if (Step(previous.get()) != SQLITE_ROW)
+      return {{{"ok", false}, {"error", "stale_announcement"}}, false};
+    was_published = sqlite3_column_int(previous.get(), 0) != 0;
+    if (was_published == published && Text(previous.get(), 1) == title &&
+        Text(previous.get(), 2) == body)
+      return {{{"ok", true}, {"id", id}, {"revision", revision}}, false};
+  }
   auto stmt = Prepare(
       db_,
       id == 0 ? "INSERT INTO announcements(title, body, published, updated_at) "
@@ -197,10 +280,10 @@ nlohmann::json NotificationStore::Save(int64_t id, int64_t revision,
   }
   Step(stmt.get());
   if (sqlite3_changes(db_) != 1)
-    return {{"ok", false}, {"error", "stale_announcement"}};
-  return {{"ok", true},
-          {"id", id ? id : sqlite3_last_insert_rowid(db_)},
-          {"revision", id ? revision + 1 : 1}};
+    return {{{"ok", false}, {"error", "stale_announcement"}}, false};
+  transaction.Commit();
+  return {{{"ok", true}, {"id", id ? id : sqlite3_last_insert_rowid(db_)},
+           {"revision", id ? revision + 1 : 1}}, was_published || published};
 }
 
 nlohmann::json NotificationStore::Delete(int64_t id, int64_t revision) {

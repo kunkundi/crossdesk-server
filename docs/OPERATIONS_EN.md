@@ -119,6 +119,9 @@ Configure these options in `.env` and recreate the signaling container:
 | `CROSSDESK_AUTH_SOURCE_CAPACITY` | `256` | Outstanding requests per verified controller ID or unverified IP, 1–4096; prevents one source from filling the queue |
 | `CROSSDESK_AUTH_SOURCE_PER_MINUTE` | `60` | Starts per verified controller ID or unverified IP per minute, 1–6000; unverified clients share NAT quotas |
 | `CROSSDESK_AUTH_TIMEOUT_SECONDS` | `600` | Maximum accepted authentication lifetime, 15–900 seconds |
+| `CROSSDESK_ANNOUNCEMENT_INTERVAL_MS` | `250` | Minimum interval between catalog pages or legacy notifications, 10–60000 ms. The default sends up to four per second. Each v2 page contains up to 32 metadata entries. Reconnects with a current catalog skip the queue. |
+
+Identity peers opt in at login with `announcement_sync_version=2`. Matching `catalog_id` and `catalog_revision` values skip announcement traffic on reconnect. Devices with missing or outdated catalogs share the publication queue. Each page carries titles, timestamps, IDs and item revisions. Opening a detail requests the published body by ID and revision. Older clients continue to use the paged list.
 
 Keeping 2000 devices online does not require 2000 authentication threads. Only operations that verify passwords use these workers. Start with two, measure throughput on the deployment machine, and increase only with CPU headroom for TLS, heartbeats and database work. Each active Argon2id calculation needs approximately 19 MiB of algorithm memory; waiting requests do not allocate it. Password-based burst recovery time is approximately the request count divided by measured completion throughput, also constrained by source quotas. Choose a deadline covering that recovery time. Shared-egress deployments need source capacity, source rate and deadlines considered together.
 

@@ -15,7 +15,7 @@ bool NotificationService::IsAdminRoute(const std::string& resource) {
 }
 
 bool NotificationService::IsClientMessage(const std::string& type) {
-  return type == "announcements_list";
+  return type == "announcements_list" || type == "announcement_body";
 }
 
 NotificationResult NotificationService::HandleAdminRequest(
@@ -59,7 +59,6 @@ NotificationResult NotificationService::HandleAdminRequest(
     const auto result = store_.Delete(body["id"], body["revision"]);
     if (!result.value("ok", false))
       return ErrorResponse(409, "stale_announcement");
-    if (broadcast_) broadcast_({{"type", "announcements_changed"}});
     return {200, result};
   }
   for (const auto* key : {"title", "body"}) {
@@ -75,12 +74,12 @@ NotificationResult NotificationService::HandleAdminRequest(
   if (!body.contains("published") || !body["published"].is_boolean() ||
       (body["id"] == 0 ? body["revision"] != 0 : body["revision"] == 0))
     return ErrorResponse(400, "invalid_request");
-  const auto result = store_.Save(body["id"], body["revision"], body["title"],
-                                  body["body"], body["published"]);
+  auto [result, public_changed] = store_.Save(
+      body["id"], body["revision"], body["title"], body["body"], body["published"]);
   if (!result.value("ok", false))
     return ErrorResponse(409, "stale_announcement");
-  if (broadcast_) broadcast_({{"type", "announcements_changed"}});
-  return {200, result};
+  if (public_changed && on_public_change_) on_public_change_();
+  return {200, std::move(result)};
 }
 
 std::optional<nlohmann::json> NotificationService::HandleClientMessage(
@@ -91,6 +90,20 @@ std::optional<nlohmann::json> NotificationService::HandleClientMessage(
   if (!message.contains("request_id") || !message["request_id"].is_string() ||
       message["request_id"].get_ref<const std::string&>().size() > 80)
     return std::nullopt;
+  if (message["type"] == "announcement_body") {
+    for (const auto* key : {"id", "revision"})
+      if (!message.contains(key) || !message[key].is_number_integer() ||
+          message[key] <= 0 || message[key] > INT64_MAX) return std::nullopt;
+    nlohmann::json response = {{"type", "announcement_body"},
+        {"request_id", message["request_id"]}, {"id", message["id"]},
+        {"revision", message["revision"]}};
+    try {
+      response.update(store_.PublicBody(message["id"], message["revision"]));
+    } catch (const std::runtime_error&) {
+      response["error"] = "announcement_operation_failed";
+    }
+    return response;
+  }
   if (!message.contains("offset") || !message["offset"].is_number_integer() ||
       message["offset"] < 0 || message["offset"] > 2147483647)
     return std::nullopt;

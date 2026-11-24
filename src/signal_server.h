@@ -73,6 +73,8 @@ class SignalServer {
     std::string device_id;  // Accessed only on the network thread.
     Clock::time_point accepted = Clock::now(), last_heartbeat = accepted;
     bool opened = false, authenticated = false, handshake_pending = true;
+    bool announcement_v2 = false;
+    size_t announcement_page = 0;
     server::connection_ptr pending_http;  // Network thread; retains deferred HTTP.
     std::atomic<bool> alive{true};
     std::atomic<size_t> pending_messages{0};
@@ -131,7 +133,8 @@ class SignalServer {
                     AdminHttpResponse response);
   void WorkerFailed(std::exception_ptr error);
   void RequestBackpressureClose(websocketpp::connection_hdl hdl);
-  void BroadcastToClients(json message);
+  void QueueAnnouncementNotifications();
+  void ScheduleAnnouncementNotification();
 
   void ScheduleRuntimeHeartbeat();
   void ScheduleRecoveredSessionCleanup();
@@ -144,6 +147,12 @@ class SignalServer {
   std::map<websocketpp::connection_hdl, std::shared_ptr<ConnectionState>,
            std::owner_less<websocketpp::connection_hdl>>
       connections_;
+  // Network thread only. Each connection occupies at most one delivery slot.
+  std::map<uint64_t, std::shared_ptr<ConnectionState>> pending_announcements_;
+  std::shared_ptr<const NotificationStore::Catalog> announcement_catalog_;
+  uint64_t last_announcement_connection_ = 0;
+  bool announcement_timer_pending_ = false;
+  int announcement_interval_ms_;
   Clock::time_point fd_sampled_at_{};
   size_t fd_connections_at_sample_ = 0;
   uint64_t next_connection_id_ = 1;

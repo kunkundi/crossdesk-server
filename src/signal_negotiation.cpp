@@ -477,6 +477,16 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
         LOG_WARN("Failed to issue reconnect credential for [{}]", ret_host_id);
       }
     }
+    if (j.contains("announcement_sync_version") && j["announcement_sync_version"] == 2) {
+      message["announcement_sync_version"] = 2;
+      // The transport replaces the client's revision with the current public one.
+      const auto id = j.find("catalog_id");
+      if (id != j.end() && id->is_string() && id->get_ref<const std::string&>().size() == 32)
+        message["catalog_id"] = *id;
+      const auto rev = j.find("catalog_revision");
+      message["catalog_revision"] = rev != j.end() && rev->is_number_integer() &&
+          *rev >= 0 && *rev <= INT64_MAX ? *rev : json(-1);
+    }
     AddLoginIceConfig(message, j, ret_host_id);
     send_msg_(hdl, message);
   } else {

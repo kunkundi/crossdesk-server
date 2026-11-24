@@ -125,7 +125,9 @@ SignalServer::SignalServer()
 
 SignalServer::SignalServer(uint16_t port, std::string certs_dir,
                            std::string db_path)
-    : port_(port), certs_dir_(std::move(certs_dir)) {
+    : port_(port), certs_dir_(std::move(certs_dir)),
+      announcement_interval_ms_(
+          EnvMillis("CROSSDESK_ANNOUNCEMENT_INTERVAL_MS", 250, 10, 60000)) {
   LOG_INFO(
       "Starting CrossDesk Signaling Server on port {}, certs_dir: {}, "
       "db_path: {}",
@@ -173,8 +175,10 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   notification_service_ = std::make_unique<NotificationService>(db_path);
   notification_read_service_ = std::make_unique<NotificationService>(
       db_path, NotificationStore::OpenMode::ReadOnly);
-  notification_service_->SetBroadcastCallback(
-      [this](json message) { BroadcastToClients(std::move(message)); });
+  announcement_catalog_ = std::make_shared<const NotificationStore::Catalog>(
+      notification_service_->PublicCatalog());
+  notification_service_->SetPublicChangeCallback(
+      [this] { QueueAnnouncementNotifications(); });
   session_recovery_ = std::make_unique<SessionRecovery>(db_path,
       device_db_manager_.get(), transmission_manager_,
       [this](websocketpp::connection_hdl hdl, json msg) { SendMsg(hdl, std::move(msg)); },
@@ -763,6 +767,7 @@ void SignalServer::FinishConnection(server::connection_ptr con) {
     }
   }
   state->pending_http.reset();
+  pending_announcements_.erase(state->id);
   connections_.erase(it);
   WakeAccept();
 }
@@ -1166,29 +1171,54 @@ void SignalServer::RequestBackpressureClose(websocketpp::connection_hdl hdl) {
   });
 }
 
-void SignalServer::BroadcastToClients(json message) {
+void SignalServer::QueueAnnouncementNotifications() {
   if (stopping_) return;
-  auto payload = message.dump();
-  server_.get_io_service().post([this, payload = std::move(payload)] {
+  auto catalog = std::make_shared<const NotificationStore::Catalog>(
+      notification_service_->PublicCatalog());
+  server_.get_io_service().post([this, catalog = std::move(catalog)] {
+    announcement_catalog_ = catalog;
     if (stopping_) return;
-    // Send on the network thread, without adding one queued task per client.
-    for (auto it = connections_.begin(); it != connections_.end();) {
-      const auto hdl = it->first;
-      const auto state = (it++)->second;
-      if (!state->alive || !state->authenticated ||
-          state->device_id.rfind("C-", 0) == 0)
-        continue;
-      websocketpp::lib::error_code ec;
-      auto con = server_.get_con_from_hdl(hdl, ec);
-      if (ec) continue;
-      if (con->get_buffered_amount() + payload.size() > 1024 * 1024) {
-        CloseConnection(hdl, "Send backlog limit",
-                        websocketpp::close::status::try_again_later);
-        continue;
+    for (const auto& entry : connections_) {
+      const auto& state = entry.second;
+      if (state->alive && state->authenticated &&
+          state->device_id.rfind("C-", 0) != 0) {
+        state->announcement_page = 0;
+        pending_announcements_.try_emplace(state->id, state);
       }
-      ec = con->send(payload, websocketpp::frame::opcode::text);
-      if (ec) LOG_ERROR("Failed to broadcast message: {}", ec.message());
     }
+    LOG_INFO("Announcement catalog changed: pending_devices={} interval_ms={}",
+             pending_announcements_.size(), announcement_interval_ms_);
+    ScheduleAnnouncementNotification();
+  });
+}
+
+void SignalServer::ScheduleAnnouncementNotification() {
+  if (announcement_timer_pending_ || pending_announcements_.empty() || stopping_)
+    return;
+  announcement_timer_pending_ = true;
+  server_.set_timer(announcement_interval_ms_, [this](websocketpp::lib::error_code ec) {
+    announcement_timer_pending_ = false;
+    if (ec || stopping_ || pending_announcements_.empty()) return;
+    // Keep our place across publications so repeated edits cannot starve later devices.
+    auto it = pending_announcements_.upper_bound(last_announcement_connection_);
+    if (it == pending_announcements_.end()) it = pending_announcements_.begin();
+    last_announcement_connection_ = it->first;
+    const auto& state = it->second;
+    auto con = server_.get_con_from_hdl(state->handle, ec);
+    if (ec || !state->alive || !state->authenticated ||
+        state->device_id.rfind("C-", 0) == 0 ||
+        con->get_state() != websocketpp::session::state::open) {
+      pending_announcements_.erase(it);
+    } else if (con->get_buffered_amount() < 64 * 1024) {
+      // Leave slow peers in the rotation and give signaling traffic priority.
+      static const std::string message = R"({"type":"announcements_changed"})";
+      const auto& pages = announcement_catalog_->pages;
+      const auto& payload = state->announcement_v2 ? pages.at(state->announcement_page) : message;
+      ec = con->send(payload, websocketpp::frame::opcode::text);
+      if (!ec && (!state->announcement_v2 || ++state->announcement_page == pages.size()))
+        pending_announcements_.erase(it);
+    }
+    ScheduleAnnouncementNotification();
   });
 }
 
@@ -1210,10 +1240,12 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
     login_id = message.value("user_id", "");
     login_id = login_id.substr(0, login_id.find('@'));
   }
-  auto payload = message.dump();
+  const bool v2 = !login_id.empty() && message.contains("announcement_sync_version");
+  json login = v2 ? std::move(message) : json();
+  auto payload = v2 ? std::string() : message.dump();
   server_.get_io_service().post(
-      [this, hdl, payload = std::move(payload), login_id, failure_reason, failure_code,
-       reconnected, reconnect_rejected] {
+      [this, hdl, payload = std::move(payload), login = std::move(login), login_id,
+       failure_reason, failure_code, reconnected, reconnect_rejected]() mutable {
         --pending_sends_;
         auto it = connections_.find(hdl);
         if (it == connections_.end() || !it->second->alive) return;
@@ -1222,6 +1254,19 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
           if (reconnected) ++diagnostics_.reconnect_success;
           it->second->device_id = login_id;
           it->second->authenticated = true;
+          if (!login.is_null()) {
+            auto& state = it->second;
+            state->announcement_v2 = true;
+            if (login["catalog_revision"] != announcement_catalog_->revision ||
+                login.value("catalog_id", "") != announcement_catalog_->id) {
+              state->announcement_page = 0;
+              pending_announcements_.try_emplace(state->id, state);
+              ScheduleAnnouncementNotification();
+            }
+            login["catalog_id"] = announcement_catalog_->id;
+            login["catalog_revision"] = announcement_catalog_->revision;
+            payload = login.dump();
+          }
           // Clients may start heartbeats only after login. Give them a full
           // heartbeat interval even if credential work spent minutes queued.
           it->second->last_heartbeat = Clock::now();
