@@ -190,6 +190,11 @@ void SessionRecovery::Report(websocketpp::connection_hdl hdl, const nlohmann::js
     Remove(key);
     return;
   }
+  if (msg.contains("route_generation") && msg["route_generation"].is_string() &&
+      msg.contains("route") && msg["route"].is_string()) {
+    db_->UpdateSessionRoute(ticket.tx, user, user == ticket.host ? ticket.guest : ticket.host,
+                            msg["route_generation"], msg["route"]);
+  }
   if (user == ticket.host) {
     ticket.host_ready = true; ticket.host_hdl = hdl;
   } else {

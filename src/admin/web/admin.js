@@ -207,6 +207,9 @@
       'Failed to disconnect session': '断开会话失败',
       'Failed to log out': '退出登录失败，请重试',
       'controlling {count}': '正在控制 {count} 台设备',
+      'Direct': '直连',
+      'Relay': '中继',
+      'Unreported': '未上报',
       'controlled by {count}': '有 {count} 个控制方',
       'host {id}': '被控端 {id}',
       '{start}-{end} of {total}': '第 {start}-{end} 条，共 {total} 条',
@@ -355,6 +358,7 @@
     function showLogin(message, values = {}) {
       document.getElementById('auth-loading').classList.add('hidden');
       resetDeviceData();
+      expandedDevices.clear();
       ++riskSerial; riskItems = []; riskOffset = 0; riskTotal = 0; riskStale = true;
       riskElement('form').reset();
       for (const id of ['status', 'error']) setMessage(`risk-${id}`, '');
@@ -484,13 +488,28 @@
       const controlling = Number(device.active_control_count) || targets.length;
       const controlled = Number(device.active_controlled_count) || controlledBy.length;
       const parts = [];
-      if (controlling > 0) parts.push(t('controlling {count}', {count: controlling}));
+      if (controlling > 0) {
+        const activity = t('controlling {count}', {count: controlling});
+        const counts = new Map();
+        for (const {route} of device.control_routes || []) {
+          const label = routeLabel(route);
+          counts.set(label, (counts.get(label) || 0) + 1);
+        }
+        const routes = [...counts].map(([label, count]) => count > 1 ? `${label} ×${count}` : label);
+        parts.push(routes.length ? `${activity} (${routes.join(', ')})` : activity);
+      }
       if (controlled > 0) parts.push(t('controlled by {count}', {count: controlled}));
-      return parts.join(', ') || '-';
+      return parts.join(' · ') || '-';
     }
 
-    function peerList(value) {
-      return Array.isArray(value) && value.length ? value.join(', ') : '-';
+    function routeLabel(route) {
+      return t(route === 'direct' ? 'Direct' : route === 'relay' ? 'Relay' : 'Unreported');
+    }
+
+    function peerList(peers, routes) {
+      if (routes?.length) return routes.map(({peer_id, route}) =>
+        `${peer_id} (${routeLabel(route)})`).join('\n');
+      return Array.isArray(peers) && peers.length ? peers.join('\n') : '-';
     }
 
     function activeDuration(value, activeCount) {
@@ -657,10 +676,15 @@
         detailButton.setAttribute('aria-expanded', String(isExpanded));
         detailButton.setAttribute('aria-label', `${t(isExpanded ? 'Hide' : 'Details')} · ${device.id}`);
         detailButton.textContent = t(isExpanded ? 'Hide' : 'Details');
-        detailButton.addEventListener('click', () => {
-          if (expandedDevices.has(device.id)) expandedDevices.delete(device.id);
-          else expandedDevices.add(device.id);
+        detailButton.addEventListener('click', event => {
+          const opening = !expandedDevices.has(device.id);
+          if (opening) expandedDevices.add(device.id);
+          else expandedDevices.delete(device.id);
           renderDevices(currentDevices);
+          if (opening) {
+            const detailsRow = event.currentTarget.closest('tr').nextElementSibling;
+            detailsRow.scrollIntoView({block: 'nearest', inline: 'nearest'});
+          }
         });
         detailCell.appendChild(detailButton);
         row.appendChild(detailCell);
@@ -691,7 +715,7 @@
           setDurationDataset(currentControl, 'current-control', device,
             device.current_control_seconds, capturedAt,
             activeControlCount > 0, activeControlCount);
-          appendDetailItem(controlling, 'Controlling', peerList(device.active_control_targets), 'peer-list');
+          appendDetailItem(controlling, 'Controlling', peerList(device.active_control_targets, device.control_routes), 'peer-list');
           const controlled = appendDetailGroup(details, 'Controlled activity');
           const currentControlled = appendDetailItem(
             controlled, 'Current controlled',
@@ -699,7 +723,7 @@
           setDurationDataset(currentControlled, 'current-controlled', device,
             device.current_controlled_seconds, capturedAt,
             activeControlledCount > 0, activeControlledCount);
-          appendDetailItem(controlled, 'Controlled by', peerList(device.active_controlled_by), 'peer-list');
+          appendDetailItem(controlled, 'Controlled by', peerList(device.active_controlled_by, device.controlled_by_routes), 'peer-list');
           detailsCell.appendChild(details);
           detailsRow.appendChild(detailsCell);
           fragment.appendChild(detailsRow);
@@ -741,7 +765,8 @@
         }
         const guests = document.createElement('div');
         guests.className = 'session-guests';
-        for (const guest of session.guest_ids) appendText(guests, 'span', guest);
+        for (const guest of session.guest_ids)
+          appendText(guests, 'span', `${guest} · ${routeLabel(session.guest_routes?.[guest])}`);
         if (!session.guest_ids.length) guests.textContent = '-';
         participantsCell.appendChild(guests);
         row.appendChild(participantsCell);

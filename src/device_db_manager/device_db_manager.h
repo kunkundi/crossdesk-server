@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include "device_password.h"
+#include "session_routes.h"
 
 struct DeviceCredential {
   std::string device_id;
@@ -43,6 +45,8 @@ struct OnlineDeviceInfo {
   int64_t active_controlled_count = 0;
   std::vector<std::string> active_control_targets;
   std::vector<std::string> active_controlled_by;
+  nlohmann::json control_routes = nlohmann::json::array();
+  nlohmann::json controlled_by_routes = nlohmann::json::array();
   std::string client_version;
   std::string client_platform;
 };
@@ -70,6 +74,7 @@ struct RemoteControlSessionInfo {
   std::string host_id;
   std::vector<std::string> guest_ids;
   int64_t started_at = 0;
+  nlohmann::json guest_routes = nlohmann::json::object();
 };
 
 struct RetentionCleanupResult {
@@ -84,7 +89,9 @@ class DeviceDBManager {
  public:
   enum class OpenMode { ReadWrite, ReadOnly };
   explicit DeviceDBManager(const std::string& db_path,
-                           OpenMode mode = OpenMode::ReadWrite);
+                           OpenMode mode = OpenMode::ReadWrite,
+                           std::shared_ptr<SessionRoutes> routes =
+                               std::make_shared<SessionRoutes>());
   ~DeviceDBManager();
   // Only the dedicated reader worker sets this; writers keep their existing
   // transaction behavior. SQLite's progress handler bounds expensive reads.
@@ -157,9 +164,16 @@ class DeviceDBManager {
   bool DeleteRiskRule(const std::string& scope, const std::string& target);
   std::optional<int> PasswordRiskDelay(const std::string& source,
                                       const std::string& verified_controller);
+  // A fresh join requests a new generation. Recovery confirms the existing one.
   bool StartRemoteControlSession(const std::string& transmission_id,
                                  const std::string& host_id,
-                                 const std::string& guest_id);
+                                 const std::string& guest_id,
+                                 std::string* new_generation = nullptr);
+  std::string SessionRouteGeneration(const std::string& transmission_id,
+                                     const std::string& guest_id) const;
+  void UpdateSessionRoute(const std::string& transmission_id,
+                          const std::string& reporter, const std::string& peer,
+                          const std::string& generation, const std::string& route);
   bool EndRemoteControlSession(const std::string& transmission_id,
                                const std::string& host_id,
                                const std::string& guest_id);
@@ -212,6 +226,7 @@ class DeviceDBManager {
  private:
   std::chrono::steady_clock::time_point read_deadline_ = (std::chrono::steady_clock::time_point::max)();
   sqlite3* db_;
+  std::shared_ptr<SessionRoutes> session_routes_;
   int64_t activity_day_ = 0;
   mutable std::recursive_mutex db_mutex_;
 };

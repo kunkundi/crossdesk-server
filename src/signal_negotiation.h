@@ -61,6 +61,7 @@ class SignalNegotiation {
                          const std::string& source_address = "",
                          const CredentialDispatch& dispatch = {});
   bool offer(websocketpp::connection_hdl hdl, const json& j);
+  bool session_route(websocketpp::connection_hdl hdl, const json& j);
   bool answer(websocketpp::connection_hdl hdl, const json& j);
   bool new_candidate(websocketpp::connection_hdl hdl, const json& j);
   bool new_candidate_mid(websocketpp::connection_hdl hdl, const json& j);

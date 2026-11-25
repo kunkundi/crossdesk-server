@@ -171,7 +171,9 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   server_.set_pong_handler(heartbeat_handler);
 
   transmission_manager_ = std::make_shared<TransmissionManager>(false);
-  device_db_manager_ = std::make_unique<DeviceDBManager>(db_path);
+  auto routes = std::make_shared<SessionRoutes>();
+  device_db_manager_ = std::make_unique<DeviceDBManager>(
+      db_path, DeviceDBManager::OpenMode::ReadWrite, routes);
   notification_service_ = std::make_unique<NotificationService>(db_path);
   notification_read_service_ = std::make_unique<NotificationService>(
       db_path, NotificationStore::OpenMode::ReadOnly);
@@ -226,7 +228,7 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
                 msg);
       });
   admin_read_db_ = std::make_unique<DeviceDBManager>(
-      db_path, DeviceDBManager::OpenMode::ReadOnly);
+      db_path, DeviceDBManager::OpenMode::ReadOnly, routes);
   admin_controller_->SetNotificationService(notification_service_.get());
   admin_controller_->SetAuthLimiter(signal_negotiation_->AuthLimiter());
   admin_controller_->SetDeviceDataCleanupCallback([this](const std::string& id) {
@@ -1500,6 +1502,9 @@ void SignalServer::ProcessMessage(
               if (presence_manager_ && !id.empty())
                 presence_manager_->OnLogin(id, id, hdl);
             });
+        break;
+      case "session_route"_H:
+        signal_negotiation_->session_route(hdl, j);
         break;
       case "session_report"_H:
         session_recovery_->Report(hdl, j);

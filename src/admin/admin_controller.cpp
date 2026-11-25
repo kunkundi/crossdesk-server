@@ -741,6 +741,8 @@ AdminHttpResponse AdminController::HandleOverview(
                           device.active_control_targets},
                          {"active_controlled_by",
                           device.active_controlled_by},
+                         {"control_routes", device.control_routes},
+                         {"controlled_by_routes", device.controlled_by_routes},
                          {"active_session_count",
                           active_control_count +
                               active_controlled_count}});
@@ -761,6 +763,7 @@ AdminHttpResponse AdminController::HandleOverview(
       sessions.push_back({{"transmission_id", session.transmission_id},
                           {"host_id", session.host_id},
                           {"guest_ids", session.guest_ids},
+                          {"guest_routes", session.guest_routes},
                           {"participant_count", 1 + session.guest_ids.size()},
                           {"recovering_count", recovering},
                           {"active", recovering < session.guest_ids.size()}});

@@ -767,14 +767,16 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
 
         // Also confirm an existing legacy routing entry restored at startup;
         // binding that entry does not emit a new session callback.
+        std::string generation;
         device_db_manager_->StartRemoteControlSession(transmission_id, host_id,
-                                                      user_id);
+                                                      user_id, &generation);
 
         json message = {{"type", "user_join_transmission"},
                         {"transmission_id", transmission_id},
                         {"user_id", user_id},
                         {"status", "success"}};
 
+        if (!generation.empty()) message["route_generation"] = generation;
         if (recovery_) recovery_->Issue(transmission_id, host_id, user_id, hdl);
         AddConnectionIceConfig(message, host_id);
         send_msg_(host_hdl, message);
@@ -810,6 +812,11 @@ bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
         {"remote_user_id", user_id},
         {"sdp", sdp},
     };
+    const auto guest = transmission_manager_->IsHostOfTransmission(user_id, transmission_id)
+                           ? remote_user_id : user_id;
+    const auto generation =
+        device_db_manager_->SessionRouteGeneration(transmission_id, guest);
+    if (!generation.empty()) message["route_generation"] = generation;
     AddConnectionIceConfig(message, remote_user_id);
     LOG_INFO("[{}] send offer to [{}]", user_id, remote_user_id);
     send_msg_(destination_hdl, message);
@@ -818,6 +825,21 @@ bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
     LOG_ERROR("Invalid offer msg");
   }
 
+  return true;
+}
+
+bool SignalNegotiation::session_route(websocketpp::connection_hdl hdl, const json& j) {
+  const auto user = transmission_manager_->GetUserId(hdl);
+  std::string tx, peer, generation, route;
+  if (user.empty() || !GetStringField(j, "transmission_id", tx) ||
+      !GetStringField(j, "remote_user_id", peer) ||
+      !GetStringField(j, "route_generation", generation) ||
+      !GetStringField(j, "route", route) || user == peer ||
+      tx.size() > 128 || peer.size() > 128) return false;
+  // If the join has a live socket grant, reject reports from superseded sockets.
+  const auto bound = transmission_manager_->GetWsHandle(user, tx);
+  if (!bound.expired() && (hdl.owner_before(bound) || bound.owner_before(hdl))) return false;
+  device_db_manager_->UpdateSessionRoute(tx, user, peer, generation, route);
   return true;
 }
 

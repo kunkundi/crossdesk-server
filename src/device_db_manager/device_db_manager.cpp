@@ -51,25 +51,17 @@ std::string NormalizeRemoteDeviceId(const std::string& device_id) {
   return device_id.rfind("C-", 0) == 0 ? device_id.substr(2) : device_id;
 }
 
-std::vector<std::string> SplitCommaSeparatedIds(const std::string& value) {
-  std::vector<std::string> result;
-  size_t start = 0;
-  while (start <= value.size()) {
-    size_t end = value.find(',', start);
-    std::string item =
-        value.substr(start, end == std::string::npos ? std::string::npos
-                                                     : end - start);
-    if (!item.empty()) {
-      result.push_back(item);
-    }
-    if (end == std::string::npos) {
-      break;
-    }
-    start = end + 1;
+std::vector<std::string> ReadPeerRoutes(const std::string& connections,
+                                       const SessionRoutes& routes,
+                                       nlohmann::json& peer_routes) {
+  std::set<std::string> peers;
+  for (const auto& row : nlohmann::json::parse(connections)) {
+    const auto& peer = row.at(0).get_ref<const std::string&>();
+    peers.insert(peer);
+    peer_routes.push_back({{"peer_id", peer},
+                           {"route", routes.Get(row.at(1), row.at(2), row.at(3))}});
   }
-  std::sort(result.begin(), result.end());
-  result.erase(std::unique(result.begin(), result.end()), result.end());
-  return result;
+  return {peers.begin(), peers.end()};
 }
 
 std::string DevicePresenceKindClause(const std::string& kind) {
@@ -225,8 +217,9 @@ constexpr int64_t kRemoteControlRecoveryWindowSeconds = 120;
 
 }  // namespace
 
-DeviceDBManager::DeviceDBManager(const std::string& db_path, OpenMode mode)
-    : db_(nullptr) {
+DeviceDBManager::DeviceDBManager(const std::string& db_path, OpenMode mode,
+                                 std::shared_ptr<SessionRoutes> routes)
+    : db_(nullptr), session_routes_(std::move(routes)) {
   try {
     std::filesystem::path path(db_path);
     if (mode == OpenMode::ReadWrite && !path.parent_path().empty()) {
@@ -506,6 +499,22 @@ void DeviceDBManager::InitDB() {
   EnsureTextColumn(db_, "remote_control_sessions", "normalized_guest_id");
   EnsureTextColumn(db_, "remote_control_sessions", "normalized_host_id");
   EnsureIntegerColumn(db_, "remote_control_sessions", "activity_confirmed");
+  EnsureTextColumn(db_, "remote_control_sessions", "route_generation");
+  // Databases opened by the relay-metering prototype may still have active triggers.
+  ExecuteSchemaStatement(db_,
+      "DROP TRIGGER IF EXISTS relay_usage_join;"
+      "DROP TRIGGER IF EXISTS relay_usage_end;"
+      "DROP TRIGGER IF EXISTS relay_usage_settled;"
+      "DROP TRIGGER IF EXISTS relay_usage_archive;",
+      "disable obsolete relay usage triggers");
+  ExecuteSchemaStatement(db_, "DROP VIEW IF EXISTS remote_control_routes;",
+                         "remove obsolete route view");
+  for (const std::string column : {"host_route", "guest_route"}) {
+    if (ColumnExists(db_, "remote_control_sessions", column)) {
+      ExecuteSchemaStatement(db_, "ALTER TABLE remote_control_sessions DROP COLUMN " + column,
+                             "remove stored " + column);
+    }
+  }
   InitDailyControllerActivity();
   ExecuteSchemaStatement(
       db_,
@@ -577,6 +586,20 @@ void DeviceDBManager::InitDB() {
                                error);
     }
   } else {
+    // Restore which peers may report. Their observations start empty.
+    const char* sql = "SELECT transmission_id, guest_id, host_id, route_generation "
+                      "FROM remote_control_sessions WHERE route_generation <> '';";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+      throw std::runtime_error(sqlite3_errmsg(db_));
+    }
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(stmt, sqlite3_finalize);
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+      session_routes_->Begin(ColumnText(stmt, 0), ColumnText(stmt, 1),
+                             ColumnText(stmt, 2), ColumnText(stmt, 3));
+    }
+    if (rc != SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
     LOG_INFO("Recovering persisted remote control sessions from last {}s",
              now - stale_cutoff);
   }
@@ -1157,7 +1180,8 @@ bool DeviceDBManager::UpdateDeviceClientInfo(
 
 bool DeviceDBManager::StartRemoteControlSession(
     const std::string& transmission_id, const std::string& host_id,
-    const std::string& guest_id) {
+    const std::string& guest_id, std::string* new_generation) {
+  if (new_generation) new_generation->clear();
   std::lock_guard<std::recursive_mutex> lock(db_mutex_);
   if (db_ == nullptr) {
     LOG_ERROR("Database is not initialized in StartRemoteControlSession.");
@@ -1167,6 +1191,10 @@ bool DeviceDBManager::StartRemoteControlSession(
       host_id == guest_id) {
     return false;
   }
+
+  // A password-authorized rejoin has already replaced the socket binding.
+  // Invalidate its previous generation even if the new transaction fails.
+  if (new_generation) session_routes_->End(transmission_id, guest_id);
 
   char* err_msg = nullptr;
   if (sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, &err_msg) !=
@@ -1210,9 +1238,13 @@ bool DeviceDBManager::StartRemoteControlSession(
   const char* sql =
       "INSERT INTO remote_control_sessions "
       "(transmission_id, guest_id, host_id, normalized_guest_id, "
-      "normalized_host_id, started_at, activity_confirmed) "
-      "VALUES (?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER), 1) "
-      "ON CONFLICT(transmission_id, guest_id) DO UPDATE SET activity_confirmed=1;";
+      "normalized_host_id, started_at, activity_confirmed, route_generation) "
+      "VALUES (?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER), 1, "
+      "CASE WHEN ?6 THEN lower(hex(randomblob(16))) ELSE '' END) "
+      "ON CONFLICT(transmission_id, guest_id) DO UPDATE SET activity_confirmed=1, "
+      "route_generation=CASE WHEN ?6 THEN excluded.route_generation "
+      "ELSE remote_control_sessions.route_generation END "
+      "RETURNING host_id, route_generation;";
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
     rollback();
@@ -1225,7 +1257,15 @@ bool DeviceDBManager::StartRemoteControlSession(
                     SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt, 5, normalized_host_id.c_str(), -1,
                     SQLITE_TRANSIENT);
-  bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_bind_int(stmt, 6, new_generation != nullptr);
+  bool ok = sqlite3_step(stmt) == SQLITE_ROW;
+  std::string saved_host;
+  std::string generation;
+  if (ok && new_generation) {
+    saved_host = ColumnText(stmt, 0);
+    generation = ColumnText(stmt, 1);
+  }
+  ok = ok && sqlite3_step(stmt) == SQLITE_DONE;
   sqlite3_finalize(stmt);
   if (!ok) {
     rollback();
@@ -1247,7 +1287,22 @@ bool DeviceDBManager::StartRemoteControlSession(
     rollback();
     return false;
   }
+  if (new_generation) {
+    session_routes_->Begin(transmission_id, guest_id, saved_host, generation);
+    *new_generation = std::move(generation);
+  }
   return true;
+}
+
+std::string DeviceDBManager::SessionRouteGeneration(
+    const std::string& transmission_id, const std::string& guest_id) const {
+  return session_routes_->Generation(transmission_id, guest_id);
+}
+
+void DeviceDBManager::UpdateSessionRoute(
+    const std::string& transmission_id, const std::string& reporter,
+    const std::string& peer, const std::string& generation, const std::string& route) {
+  session_routes_->Report(transmission_id, reporter, peer, generation, route);
 }
 
 bool DeviceDBManager::EndRemoteControlSession(
@@ -1277,6 +1332,7 @@ bool DeviceDBManager::EndRemoteControlSession(
   sqlite3_bind_text(stmt, 2, guest_id.c_str(), -1, SQLITE_TRANSIENT);
   const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
   sqlite3_finalize(stmt);
+  if (ok) session_routes_->End(transmission_id, guest_id);
   return ok;
 }
 
@@ -1388,8 +1444,8 @@ DeviceDBManager::ListRemoteControlSessions(size_t limit, size_t offset,
 
   std::string sql =
       "SELECT transmission_id, host_id, MIN(started_at), "
-      "GROUP_CONCAT(guest_id) "
-      "FROM remote_control_sessions ";
+      "json_group_object(guest_id, CASE WHEN activity_confirmed = 1 "
+      "THEN route_generation ELSE '' END) FROM remote_control_sessions ";
   if (!search.empty()) {
     sql +=
         "WHERE transmission_id LIKE ? ESCAPE '\\' "
@@ -1425,7 +1481,11 @@ DeviceDBManager::ListRemoteControlSessions(size_t limit, size_t offset,
     info.transmission_id = ColumnText(stmt, 0);
     info.host_id = ColumnText(stmt, 1);
     info.started_at = sqlite3_column_int64(stmt, 2);
-    info.guest_ids = SplitCommaSeparatedIds(ColumnText(stmt, 3));
+    const auto guests = nlohmann::json::parse(ColumnText(stmt, 3));
+    for (const auto& [guest, generation] : guests.items()) {
+      info.guest_ids.push_back(guest);
+      info.guest_routes[guest] = session_routes_->Get(info.transmission_id, guest, generation);
+    }
     result.push_back(info);
   }
   sqlite3_finalize(stmt);
@@ -1725,16 +1785,18 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
       "SELECT COUNT(*) FROM remote_control_sessions "
       "WHERE normalized_host_id = device_presence.device_id), 0) "
       "AS active_controlled_count, "
-      "COALESCE(("
-      "SELECT GROUP_CONCAT(DISTINCT normalized_host_id) "
+      "(SELECT json_group_array(json_array(peer_id, transmission_id, guest_id, generation)) "
+      "FROM (SELECT normalized_host_id AS peer_id, transmission_id, guest_id, "
+      "CASE WHEN activity_confirmed = 1 THEN route_generation ELSE '' END AS generation "
       "FROM remote_control_sessions "
-      "WHERE normalized_guest_id = device_presence.device_id), '') "
-      "AS active_control_targets, "
-      "COALESCE(("
-      "SELECT GROUP_CONCAT(DISTINCT normalized_guest_id) "
+      "WHERE normalized_guest_id = device_presence.device_id "
+      "ORDER BY peer_id, transmission_id, guest_id)) AS active_control_targets, "
+      "(SELECT json_group_array(json_array(peer_id, transmission_id, guest_id, generation)) "
+      "FROM (SELECT normalized_guest_id AS peer_id, transmission_id, guest_id, "
+      "CASE WHEN activity_confirmed = 1 THEN route_generation ELSE '' END AS generation "
       "FROM remote_control_sessions "
-      "WHERE normalized_host_id = device_presence.device_id), '') "
-      "AS active_controlled_by, "
+      "WHERE normalized_host_id = device_presence.device_id "
+      "ORDER BY peer_id, transmission_id, guest_id)) AS active_controlled_by, "
       "client_version, client_platform "
       "FROM device_presence "
       "WHERE " +
@@ -1772,8 +1834,10 @@ std::vector<OnlineDeviceInfo> DeviceDBManager::ListDevicePresence(
     info.current_controlled_seconds = sqlite3_column_int64(stmt, 6);
     info.active_control_count = sqlite3_column_int64(stmt, 7);
     info.active_controlled_count = sqlite3_column_int64(stmt, 8);
-    info.active_control_targets = SplitCommaSeparatedIds(ColumnText(stmt, 9));
-    info.active_controlled_by = SplitCommaSeparatedIds(ColumnText(stmt, 10));
+    info.active_control_targets =
+        ReadPeerRoutes(ColumnText(stmt, 9), *session_routes_, info.control_routes);
+    info.active_controlled_by =
+        ReadPeerRoutes(ColumnText(stmt, 10), *session_routes_, info.controlled_by_routes);
     info.client_version = ColumnText(stmt, 11);
     info.client_platform = ColumnText(stmt, 12);
     result.push_back(info);

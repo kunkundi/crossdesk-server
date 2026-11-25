@@ -268,6 +268,7 @@ tbody tr:last-child > td { border-bottom: 0; }
 .device-details .detail-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .device-details .detail-grid > div { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 8px; }
 .device-details .detail-grid strong { margin-top: 0; font-variant-numeric: tabular-nums; }
+.device-details .peer-list { white-space: pre-line; }
 @media (min-width: 1320px) {
   .monitoring-grid { grid-template-columns: minmax(0, 1.35fr) minmax(460px, 1fr); gap: 16px; }
 }
