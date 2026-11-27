@@ -169,26 +169,26 @@ void SessionRecovery::Issue(const std::string& tx, const std::string& host,
   send_(host_hdl, msg); send_(guest_hdl, msg);
 }
 
-void SessionRecovery::Report(websocketpp::connection_hdl hdl, const nlohmann::json& msg) {
+bool SessionRecovery::Report(websocketpp::connection_hdl hdl, const nlohmann::json& msg) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   for (const char* key : {"transmission_id", "guest_id", "token"})
-    if (!msg.contains(key) || !msg[key].is_string()) return;
-  if (!msg.contains("alive") || !msg["alive"].is_boolean()) return;
+    if (!msg.contains(key) || !msg[key].is_string()) return false;
+  if (!msg.contains("alive") || !msg["alive"].is_boolean()) return false;
   const Key key{msg["transmission_id"], msg["guest_id"]};
   auto found = tickets_.find(key);
-  if (found == tickets_.end()) return;
+  if (found == tickets_.end()) return false;
   auto& ticket = found->second;
   const auto user = transmission_->GetUserId(hdl);
   const auto token = msg["token"].get<std::string>();
   if (token.size() != ticket.token.size() ||
       CRYPTO_memcmp(token.data(), ticket.token.data(), token.size()) != 0 ||
       (user != ticket.host && user != ticket.guest) || !Exists(ticket) ||
-      (ticket.recovering && Now() > ticket.deadline)) return;
+      (ticket.recovering && Now() > ticket.deadline)) return false;
   if (!msg["alive"].get<bool>()) {
     transmission_->ReleaseGuestFromTransmission(ticket.guest, ticket.tx);
     db_->EndRemoteControlSession(ticket.tx, ticket.host, ticket.guest);
     Remove(key);
-    return;
+    return true;
   }
   if (msg.contains("route_generation") && msg["route_generation"].is_string() &&
       msg.contains("route") && msg["route"].is_string()) {
@@ -207,13 +207,14 @@ void SessionRecovery::Report(websocketpp::connection_hdl hdl, const nlohmann::js
     if (!transmission_->IsTransmissionExist(ticket.tx))
       transmission_->BindHostToTransmission(ticket.host, ticket.tx);
     if (transmission_->BindGuestToTransmission(ticket.guest, ticket.tx, ticket.guest_hdl)) {
-      if (!db_->StartRemoteControlSession(ticket.tx, ticket.host, ticket.guest)) return;
+      if (!db_->StartRemoteControlSession(ticket.tx, ticket.host, ticket.guest)) return false;
       ticket.recovering = false;
       const nlohmann::json ack = {{"type", "session_resumed"},
           {"transmission_id", ticket.tx}, {"guest_id", ticket.guest}};
       send_(ticket.host_hdl, ack); send_(ticket.guest_hdl, ack);
     }
   }
+  return true;
 }
 
 void SessionRecovery::Expire() {

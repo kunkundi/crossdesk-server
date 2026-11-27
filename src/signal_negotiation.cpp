@@ -389,6 +389,22 @@ void SignalNegotiation::RegisterDevice(
       }, dispatch);
 }
 
+void SignalNegotiation::AddLoginCapabilities(websocketpp::connection_hdl hdl,
+    const json& request, json& reply) {
+  if (request.contains("heartbeat_version") && request["heartbeat_version"] == 1) {
+    const auto profile = request.find("heartbeat_profile");
+    reply["heartbeat_seconds"] = profile != request.end() && *profile == "desktop" ? 60 : 20;
+  }
+  if (request.contains("join_delivery_version") && request["join_delivery_version"] == 1) {
+    receipt_hosts_.insert(hdl);
+    reply["join_delivery_version"] = 1;
+  }
+}
+
+void SignalNegotiation::ForgetSignalingHandle(websocketpp::connection_hdl hdl) {
+  receipt_hosts_.erase(hdl);
+}
+
 bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
                                       const json& j, const std::string& host_id,
                                       const DeviceCredential& dev_cred,
@@ -487,6 +503,7 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
       message["catalog_revision"] = rev != j.end() && rev->is_number_integer() &&
           *rev >= 0 && *rev <= INT64_MAX ? *rev : json(-1);
     }
+    AddLoginCapabilities(hdl, j, message);
     AddLoginIceConfig(message, j, ret_host_id);
     send_msg_(hdl, message);
   } else {
@@ -509,6 +526,7 @@ bool SignalNegotiation::CompleteLogin(websocketpp::connection_hdl hdl,
     json message = {
         {"type", "login"}, {"user_id", host_id}, {"status", "success"}};
     if (!verified_login_key.empty()) message["device_key_version"] = 1;
+    AddLoginCapabilities(hdl, j, message);
     AddLoginIceConfig(message, j, host_id);
     send_msg_(hdl, message);
   }
@@ -602,6 +620,7 @@ bool SignalNegotiation::leave_transmission(websocketpp::connection_hdl hdl,
     return false;
   }
 
+  deliveries_.erase({transmission_id, user_id});
   LOG_INFO("[{}] leaves transmission [{}]", user_id.c_str(),
            transmission_id.c_str());
 
@@ -731,6 +750,31 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
     send_msg_(hdl, failure);
     return true;
   }
+  std::string request_id;
+  if (j.contains("request_id") && (!GetStringField(j, "request_id", request_id) ||
+      request_id.empty() || request_id.size() > 64)) return false;
+  if (!request_id.empty()) failure["request_id"] = request_id;
+  const auto previous = deliveries_.find({transmission_id, user_id});
+  if (previous != deliveries_.end() && !request_id.empty()) {
+    const auto& delivery = previous->second;
+    const auto host = transmission_manager_->GetWsHandle(transmission_id);
+    if (delivery.request_id == request_id && !hdl.owner_before(delivery.guest) &&
+        !delivery.guest.owner_before(hdl) && !host.owner_before(delivery.host) &&
+        !delivery.host.owner_before(host) &&
+        (delivery.status == Delivery::Status::TimedOut ||
+         transmission_manager_->IsConnectionInTransmission(hdl, transmission_id))) {
+      if (delivery.status == Delivery::Status::TimedOut) {
+        failure["error_code"] = "REMOTE_UNRESPONSIVE";
+        failure["reason"] = "Remote did not respond";
+        send_msg_(hdl, failure);
+      } else if (delivery.status != Delivery::Status::Waiting) {
+        send_msg_(hdl, {{"type", "join_delivery"}, {"request_id", request_id},
+            {"transmission_id", transmission_id},
+            {"status", delivery.status == Delivery::Status::Received ? "received" : "checking"}});
+      }
+      return true;
+    }
+  }
   if (password.empty() && ValidDeviceCredentials(transmission_id, password)) {
     // Older desktops probe with ID@ to open their password dialog. This is
     // not a password guess: never read the target record, spend a credential
@@ -742,7 +786,7 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
   AuthenticateDevice(
       hdl, source_address, transmission_id, password, failure,
       DeviceAuthLimiter::Operation::RemoteConnection, dispatch,
-      [this, hdl, transmission_id, user_id] {
+      [this, hdl, transmission_id, user_id, request_id] {
         std::string host_id =
             transmission_manager_->GetHostIdOfTransmission(transmission_id);
         websocketpp::connection_hdl host_hdl =
@@ -759,6 +803,7 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
           return;
         }
 
+        const DeliveryKey key{transmission_id, user_id};
         if (!transmission_manager_->BindGuestToTransmission(
                 user_id, transmission_id, hdl)) {
           LOG_WARN("Reject connection request without a valid guest binding");
@@ -776,6 +821,13 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
                         {"user_id", user_id},
                         {"status", "success"}};
 
+        deliveries_.erase(key);
+        if (!request_id.empty()) {
+          const auto id = std::to_string(++delivery_sequence_);
+          deliveries_.emplace(key, Delivery{hdl, host_hdl, request_id, id,
+                                             std::chrono::steady_clock::now()});
+          message["delivery_id"] = id;
+        }
         if (!generation.empty()) message["route_generation"] = generation;
         if (recovery_) recovery_->Issue(transmission_id, host_id, user_id, hdl);
         AddConnectionIceConfig(message, host_id);
@@ -783,6 +835,111 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
       });
 
   return true;
+}
+
+bool SignalNegotiation::ConfirmDelivery(const DeliveryKey& key,
+    websocketpp::connection_hdl host, const std::string& delivery_id) {
+  auto it = deliveries_.find(key);
+  if (it == deliveries_.end()) return false;
+  auto& d = it->second;
+  if (d.status == Delivery::Status::Received || d.status == Delivery::Status::TimedOut ||
+      host.owner_before(d.host) || d.host.owner_before(host) ||
+      (!delivery_id.empty() && delivery_id != d.delivery_id) ||
+      !transmission_manager_->IsConnectionInTransmission(d.guest, key.first) ||
+      !transmission_manager_->IsConnectionInTransmission(host, key.first)) return false;
+  d.status = Delivery::Status::Received;
+  ++receipts_;
+  if (receipt_times_ms_.size() < 8192)
+    receipt_times_ms_.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - d.started).count());
+  send_msg_(d.guest, {{"type", "join_delivery"}, {"status", "received"},
+                      {"request_id", d.request_id}, {"transmission_id", key.first}});
+  return true;
+}
+
+bool SignalNegotiation::JoinReceipt(websocketpp::connection_hdl host, const json& j) {
+  std::string tx, guest, id;
+  if (GetStringField(j, "transmission_id", tx) && GetStringField(j, "user_id", guest) &&
+      GetStringField(j, "delivery_id", id) && !id.empty())
+    return ConfirmDelivery({tx, guest}, host, id);
+  return false;
+}
+
+bool SignalNegotiation::FirstFrame(websocketpp::connection_hdl guest, const json& j) {
+  std::string tx, request;
+  const auto ms = j.find("elapsed_ms");
+  if (!GetStringField(j, "transmission_id", tx) || !GetStringField(j, "request_id", request) ||
+      ms == j.end() || !ms->is_number_integer() || *ms < 0 || *ms > 3600000) return false;
+  auto it = deliveries_.find({tx, transmission_manager_->GetUserId(guest)});
+  if (it == deliveries_.end()) return false;
+  auto& d = it->second;
+  if (d.guest.owner_before(guest) || guest.owner_before(d.guest) || d.request_id != request ||
+      d.status != Delivery::Status::Received || d.first_frame ||
+      !transmission_manager_->IsConnectionInTransmission(guest, tx)) return false;
+  d.first_frame = true;
+  ++first_frames_;
+  if (frame_times_ms_.size() < 8192) frame_times_ms_.push_back(ms->get<int64_t>());
+  return true;
+}
+
+void SignalNegotiation::LogDeliveryDiagnostics() {
+  const auto p95 = [](std::vector<int64_t>& samples) {
+    if (samples.empty()) return int64_t{-1};
+    const auto rank = (samples.size() * 95 + 99) / 100 - 1;
+    std::nth_element(samples.begin(), samples.begin() + rank, samples.end());
+    return samples[rank];
+  };
+  LOG_INFO("Join delivery: forwarded_total={} received_total={} unresponsive_total={} "
+           "first_frame_total={} receipt_samples={} receipt_p95_ms={} "
+           "first_frame_samples={} join_to_first_frame_p95_ms={}", delivery_sequence_,
+           receipts_, delivery_timeouts_, first_frames_, receipt_times_ms_.size(),
+           p95(receipt_times_ms_), frame_times_ms_.size(), p95(frame_times_ms_));
+  receipt_times_ms_.clear();
+  frame_times_ms_.clear();
+}
+
+void SignalNegotiation::TickJoinDeliveries(
+    const std::function<void(websocketpp::connection_hdl)>& probe) {
+  using namespace std::chrono;
+  const auto now = steady_clock::now();
+  for (auto it = deliveries_.begin(); it != deliveries_.end();) {
+    const auto& [tx, guest] = it->first;
+    auto& d = it->second;
+    const auto age = now - d.started;
+    if (d.guest.expired() || (d.status == Delivery::Status::TimedOut && age >= seconds(60))) {
+      it = deliveries_.erase(it);
+      continue;
+    }
+    if (age < seconds(3) || d.status == Delivery::Status::TimedOut) { ++it; continue; }
+    const bool bound = transmission_manager_->IsConnectionInTransmission(d.guest, tx);
+    if (d.status == Delivery::Status::Received) {
+      // Keep the idempotency key for the lifetime of the current route.
+      if (!bound) it = deliveries_.erase(it);
+      else ++it;
+      continue;
+    }
+    if (transmission_manager_->GetUserId(d.guest) != guest) {
+      it = deliveries_.erase(it);
+      continue;
+    }
+    if (age >= seconds(10) || !bound || d.host.expired()) {
+      if (bound) transmission_manager_->ReleaseGuestFromTransmission(guest, tx);
+      send_msg_(d.guest, {{"type", "user_join_transmission"}, {"status", "failed"},
+          {"transmission_id", tx}, {"request_id", d.request_id},
+          {"error_code", "REMOTE_UNRESPONSIVE"}, {"reason", "Remote did not respond"}});
+      ++delivery_timeouts_;
+      d.status = Delivery::Status::TimedOut;
+      ++it;
+      continue;
+    }
+    if (d.status == Delivery::Status::Waiting) {
+      d.status = Delivery::Status::Checking;
+      probe(d.host);
+      send_msg_(d.guest, {{"type", "join_delivery"}, {"status", "checking"},
+          {"request_id", d.request_id}, {"transmission_id", tx}});
+    }
+    ++it;
+  }
 }
 
 bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
@@ -817,6 +974,8 @@ bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
     const auto generation =
         device_db_manager_->SessionRouteGeneration(transmission_id, guest);
     if (!generation.empty()) message["route_generation"] = generation;
+    if (!sdp.empty() && !receipt_hosts_.count(hdl))
+      ConfirmDelivery({transmission_id, remote_user_id}, hdl, {});
     AddConnectionIceConfig(message, remote_user_id);
     LOG_INFO("[{}] send offer to [{}]", user_id, remote_user_id);
     send_msg_(destination_hdl, message);

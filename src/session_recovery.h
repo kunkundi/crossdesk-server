@@ -27,7 +27,7 @@ class SessionRecovery {
   void Login(websocketpp::connection_hdl hdl, const nlohmann::json& request);
   void Issue(const std::string& tx, const std::string& host,
              const std::string& guest, websocketpp::connection_hdl guest_hdl);
-  void Report(websocketpp::connection_hdl hdl, const nlohmann::json& message);
+  bool Report(websocketpp::connection_hdl hdl, const nlohmann::json& message);
   void Expire();
   nlohmann::json Status();
   bool Manages(const std::string& tx, const std::string& guest);

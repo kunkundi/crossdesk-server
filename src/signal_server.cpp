@@ -164,11 +164,23 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
       std::bind(&SignalServer::OnHttp, this, std::placeholders::_1));
   server_.set_tls_init_handler(
       std::bind(&SignalServer::OnTlsInit, this, std::placeholders::_1));
-  auto heartbeat_handler = std::bind(&SignalServer::OnHeartbeat, this,
-                                     std::placeholders::_1,
-                                     std::placeholders::_2);
-  server_.set_ping_handler(heartbeat_handler);
-  server_.set_pong_handler(heartbeat_handler);
+  server_.set_ping_handler([this](websocketpp::connection_hdl hdl, std::string payload) {
+    if (!OnHeartbeat(hdl, {})) return false;
+    heartbeat_frame_bytes_ += 2 + payload.size();  // Automatic unmasked Pong.
+    return true;
+  });
+  server_.set_pong_timeout(0);  // The connection owns one correlated probe deadline.
+  server_.set_pong_handler([this](websocketpp::connection_hdl hdl, std::string payload) {
+    auto it = connections_.find(hdl);
+    if (it == connections_.end()) return;
+    auto& state = *it->second;
+    if (state.pending_probe && payload == std::to_string(state.pending_probe)) {
+      state.pending_probe = 0;
+      OnHeartbeat(hdl, {});
+    } else if (!state.heartbeat_seconds) {
+      OnHeartbeat(hdl, {});
+    }
+  });
 
   transmission_manager_ = std::make_shared<TransmissionManager>(false);
   auto routes = std::make_shared<SessionRoutes>();
@@ -309,6 +321,14 @@ void SignalServer::ReloadTlsContext() {
     throw std::runtime_error("TLS cipher configuration failed");
   if (generation != stamp(cert) + ":" + stamp(key))
     throw std::runtime_error("TLS files changed during reload; retrying later");
+  SSL_CTX_set_msg_callback_arg(ctx->native_handle(), this);
+  SSL_CTX_set_msg_callback(ctx->native_handle(),
+      [](int write, int, int type, const void* buffer, size_t length, SSL* ssl, void* arg) {
+        if (!write || type != SSL3_RT_HEADER || length != 5 || SSL_is_init_finished(ssl)) return;
+        const auto* header = static_cast<const unsigned char*>(buffer);
+        static_cast<SignalServer*>(arg)->tls_handshake_bytes_ +=
+            5u + (static_cast<unsigned>(header[3]) << 8) + header[4];
+      });
   std::atomic_store(&tls_context_, ctx);
   tls_generation_ = generation;
   LOG_INFO("TLS context loaded and published for new connections");
@@ -475,6 +495,8 @@ std::string SignalServer::DescribeConnectionResources() {
 }
 
 void SignalServer::LogConnectionDiagnostics() {
+  LOG_INFO("Signal egress totals: tls_handshake_record_bytes={} heartbeat_ws_frame_bytes={} signaling_json_bytes={}",
+           tls_handshake_bytes_.load(), heartbeat_frame_bytes_, signaling_payload_bytes_);
   const auto summary = [](auto values) {
     std::sort(values.begin(), values.end());
     const auto percentile = [&](size_t percent) -> int64_t {
@@ -695,9 +717,14 @@ void SignalServer::QueueSessionCleanup(
     websocketpp::connection_hdl hdl,
     const std::shared_ptr<ConnectionState>& state) {
   if (!state->alive.exchange(false) || !state->opened) return;
+  if (state->probe_timer) {
+    state->probe_timer->cancel();
+    state->probe_timer.reset();
+  }
   ++pending_cleanup_;
   if (!application_worker_->Submit(
           [this, hdl, state] {
+            signal_negotiation_->ForgetSignalingHandle(hdl);
             credential_queue_->Cancel(state->id);
             state->pending_messages -= state->deferred_messages.size();
             deferred_message_count_ -= state->deferred_messages.size();
@@ -738,6 +765,9 @@ void SignalServer::FinishConnection(server::connection_ptr con) {
   CompleteHandshake(
       state, !con->get_ec() ||
                  con->get_ec() == websocketpp::error::http_connection_ended);
+  if (state->opened && (con->get_ec() ||
+      con->get_remote_close_code() == websocketpp::close::status::abnormal_close))
+    RecordIdleFailure(*state);
   QueueSessionCleanup(hdl, state);
   if (state->opened) {
     LOG_INFO(
@@ -791,10 +821,70 @@ void SignalServer::CloseConnection(websocketpp::connection_hdl hdl,
   }
 }
 
+void SignalServer::RecordIdleFailure(ConnectionState& state) {
+  if (state.heartbeat_seconds != 60 || state.idle_failure_recorded ||
+      Clock::now() - state.last_heartbeat < std::chrono::seconds(15)) return;
+  state.idle_failure_recorded = true;
+  auto key = std::make_pair(state.device_id, state.source_address);
+  if (idle_failures_.size() >= max_connections_ && !idle_failures_.count(key)) return;
+  auto& failure = idle_failures_[key];
+  if (failure.expires <= Clock::now()) failure.count = 0;
+  failure.count = std::min(2, failure.count + 1);
+  failure.expires = Clock::now() + std::chrono::hours(1);
+}
+
+void SignalServer::ArmProbeTimer(const std::shared_ptr<ConnectionState>& state) {
+  // Incoming traffic only moves the deadline. Keep one timer per connection.
+  const auto deadline = state->pending_probe
+      ? state->probe_sent + std::chrono::seconds(15) : state->next_probe;
+  const auto due = std::max(deadline, heartbeat_grace_until_);
+  const auto delay = std::max<int64_t>(1, std::chrono::ceil<std::chrono::milliseconds>(
+      due - Clock::now()).count());
+  state->probe_timer = server_.set_timer(delay, [this, state, due](websocketpp::lib::error_code ec) {
+    if (ec || stopping_ || !state->alive) return;
+    state->probe_timer.reset();
+    const auto activity = Clock::time_point(std::chrono::milliseconds(state->valid_signal_ms.load()));
+    if (activity > state->last_heartbeat) {
+      state->last_heartbeat = activity;
+      state->next_probe = activity + std::chrono::seconds(state->heartbeat_seconds);
+    }
+    const auto now = Clock::now();
+    if (now - due > std::chrono::seconds(5))
+      heartbeat_grace_until_ = now + std::chrono::seconds(5);
+    if (now >= heartbeat_grace_until_) {
+      if (state->pending_probe && now - state->probe_sent >= std::chrono::seconds(15)) {
+        RecordIdleFailure(*state);
+        CloseConnection(state->handle, "Heartbeat timeout", websocketpp::close::status::going_away);
+        return;
+      }
+      if (state->heartbeat_seconds && !state->pending_probe && now >= state->next_probe)
+        SendProbe(*state);
+    }
+    if (state->alive && (state->heartbeat_seconds || state->pending_probe))
+      ArmProbeTimer(state);
+  });
+}
+
+void SignalServer::SendProbe(ConnectionState& state) {
+  if (!state.alive || state.pending_probe) return;
+  websocketpp::lib::error_code ec;
+  const auto payload = std::to_string(++probe_sequence_);
+  server_.ping(state.handle, payload, ec);
+  if (ec) {
+    CloseConnection(state.handle, "Probe send failed", websocketpp::close::status::going_away);
+    return;
+  }
+  state.pending_probe = probe_sequence_;
+  state.probe_sent = Clock::now();
+  heartbeat_frame_bytes_ += 2 + payload.size();
+}
+
 bool SignalServer::OnHeartbeat(websocketpp::connection_hdl hdl, std::string) {
   auto it = connections_.find(hdl);
   if (it == connections_.end() || !it->second->alive) return false;
-  it->second->last_heartbeat = Clock::now();
+  auto& state = *it->second;
+  state.last_heartbeat = Clock::now();
+  state.next_probe = state.last_heartbeat + std::chrono::seconds(state.heartbeat_seconds);
   ++received_heartbeats_;
   return true;
 }
@@ -991,6 +1081,10 @@ void SignalServer::ScheduleMaintenance() {
     if (ec || stopping_) return;
     const auto now = Clock::now();
     if (now >= next_diagnostics_) {
+      for (auto it = idle_failures_.begin(); it != idle_failures_.end();) {
+        if (it->second.expires <= now) it = idle_failures_.erase(it);
+        else ++it;
+      }
       LogConnectionDiagnostics();
       next_diagnostics_ = now + kDiagnosticInterval;
     }
@@ -1019,8 +1113,9 @@ void SignalServer::ScheduleMaintenance() {
         auto lifetime = std::chrono::duration_cast<std::chrono::milliseconds>(
                             now - state->accepted)
                             .count();
+
         if (state->opened && state->authenticated &&
-            age > heartbeat_timeout_ms_) {
+            !state->heartbeat_seconds && age > heartbeat_timeout_ms_) {
           LOG_INFO(
               "Device [{}] heartbeat timed out connection={} age_ms={} "
               "source={}",
@@ -1081,6 +1176,7 @@ void SignalServer::Stop() {
     application_worker_->Submit([this] {
       device_db_manager_->RecordRuntimeHeartbeat();
       LogCredentialDiagnostics();
+      signal_negotiation_->LogDeliveryDiagnostics();
     }, true);
     LogConnectionDiagnostics();
     if (signals_) signals_->cancel();
@@ -1217,6 +1313,7 @@ void SignalServer::ScheduleAnnouncementNotification() {
       const auto& pages = announcement_catalog_->pages;
       const auto& payload = state->announcement_v2 ? pages.at(state->announcement_page) : message;
       ec = con->send(payload, websocketpp::frame::opcode::text);
+      if (!ec) signaling_payload_bytes_ += payload.size();
       if (!ec && (!state->announcement_v2 || ++state->announcement_page == pages.size()))
         pending_announcements_.erase(it);
     }
@@ -1242,12 +1339,13 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
     login_id = message.value("user_id", "");
     login_id = login_id.substr(0, login_id.find('@'));
   }
-  const bool v2 = !login_id.empty() && message.contains("announcement_sync_version");
+  const bool heartbeat_reply = type == "pong";
+  const bool v2 = !login_id.empty();
   json login = v2 ? std::move(message) : json();
   auto payload = v2 ? std::string() : message.dump();
   server_.get_io_service().post(
       [this, hdl, payload = std::move(payload), login = std::move(login), login_id,
-       failure_reason, failure_code, reconnected, reconnect_rejected]() mutable {
+       heartbeat_reply, failure_reason, failure_code, reconnected, reconnect_rejected]() mutable {
         --pending_sends_;
         auto it = connections_.find(hdl);
         if (it == connections_.end() || !it->second->alive) return;
@@ -1256,7 +1354,19 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
           if (reconnected) ++diagnostics_.reconnect_success;
           it->second->device_id = login_id;
           it->second->authenticated = true;
-          if (!login.is_null()) {
+          if (login.contains("heartbeat_seconds")) {
+            auto& state = *it->second;
+            const auto failure = idle_failures_.find({login_id, state.source_address});
+            state.heartbeat_seconds = login["heartbeat_seconds"].get<int>();
+            if (failure != idle_failures_.end() && failure->second.expires > Clock::now() &&
+                failure->second.count >= 2) state.heartbeat_seconds = 20;
+            login["heartbeat_seconds"] = state.heartbeat_seconds;
+            // Spread the first probes after a restart, even for simultaneous logins.
+            state.next_probe = Clock::now() + std::chrono::milliseconds(
+                1000 + (state.id * 2654435761ULL) % ((state.heartbeat_seconds - 1) * 1000));
+            ArmProbeTimer(it->second);
+          }
+          if (login.contains("announcement_sync_version")) {
             auto& state = it->second;
             state->announcement_v2 = true;
             if (login["catalog_revision"] != announcement_catalog_->revision ||
@@ -1267,8 +1377,8 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
             }
             login["catalog_id"] = announcement_catalog_->id;
             login["catalog_revision"] = announcement_catalog_->revision;
-            payload = login.dump();
           }
+          payload = login.dump();
           // Clients may start heartbeats only after login. Give them a full
           // heartbeat interval even if credential work spent minutes queued.
           it->second->last_heartbeat = Clock::now();
@@ -1293,6 +1403,8 @@ void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
         }
         ec = con->send(payload, websocketpp::frame::opcode::text);
         if (ec) LOG_ERROR("Failed to send message: {}", ec.message());
+        else if (heartbeat_reply) heartbeat_frame_bytes_ += 2 + payload.size();
+        else signaling_payload_bytes_ += payload.size();
       });
 }
 
@@ -1310,7 +1422,12 @@ void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
   }
   const auto type = j["type"].get<std::string>();
   if (type == "ping") {
-    if (OnHeartbeat(hdl, "")) SendMsg(hdl, {{"type", "pong"}});
+    if (OnHeartbeat(hdl, "")) {
+      json pong = {{"type", "pong"}};
+      if (j.contains("nonce") && j["nonce"].is_string() && j["nonce"].get_ref<const std::string&>().size() <= 64)
+        pong["nonce"] = j["nonce"];
+      SendMsg(hdl, std::move(pong));
+    }
     return;
   }
   auto state = it->second;
@@ -1461,9 +1578,22 @@ void SignalServer::ScheduleCredentialPump() {
       if (!application_worker_->Submit([this] {
             if (!stopping_) {
               credential_queue_->Pump();
+              signal_negotiation_->TickJoinDeliveries([this](websocketpp::connection_hdl host) {
+                server_.get_io_service().post([this, host] {
+                  auto it = connections_.find(host);
+                  if (it == connections_.end() || it->second->pending_probe || !it->second->alive) return;
+                  const auto& state = it->second;
+                  SendProbe(*state);
+                  if (state->alive) {
+                    if (state->probe_timer) state->probe_timer->cancel();
+                    ArmProbeTimer(state);
+                  }
+                });
+              });
               const auto now = Clock::now();
               if (now >= next_credential_diagnostics_) {
                 LogCredentialDiagnostics();
+                signal_negotiation_->LogDeliveryDiagnostics();
                 next_credential_diagnostics_ = now + kDiagnosticInterval;
               }
             }
@@ -1479,11 +1609,18 @@ void SignalServer::ProcessMessage(
     const std::shared_ptr<ConnectionState>& state) {
   try {
     const auto type = j["type"].get<std::string>();
+    const auto mark_activity = [&state] {
+      state->valid_signal_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          Clock::now().time_since_epoch()).count();
+    };
     if (NotificationService::IsClientMessage(type)) {
       const auto device = transmission_manager_->GetUserId(hdl);
       if (!device.empty() && device.rfind("C-", 0) != 0) {
         auto response = notification_service_->HandleClientMessage(j);
-        if (response) SendMsg(hdl, std::move(*response));
+        if (response) {
+          mark_activity();
+          SendMsg(hdl, std::move(*response));
+        }
       }
       return;
     }
@@ -1493,6 +1630,7 @@ void SignalServer::ProcessMessage(
       return SubmitCredentialWork(hdl, state, std::move(work),
                                   std::move(admit), std::move(expire));
     };
+    bool valid = false;
     switch (HASH_STRING_PIECE(type.c_str())) {
       case "login"_H:
         signal_negotiation_->login_user(
@@ -1504,49 +1642,55 @@ void SignalServer::ProcessMessage(
             });
         break;
       case "session_route"_H:
-        signal_negotiation_->session_route(hdl, j);
+        valid = signal_negotiation_->session_route(hdl, j);
         break;
       case "session_report"_H:
-        session_recovery_->Report(hdl, j);
+        valid = session_recovery_->Report(hdl, j);
         break;
       case "revoke_reconnect_credential"_H:
-        signal_negotiation_->revoke_reconnect_credential(hdl);
+        valid = signal_negotiation_->revoke_reconnect_credential(hdl);
         break;
       case "user_leave_transmission"_H:
-        signal_negotiation_->leave_transmission(hdl, j);
+        valid = signal_negotiation_->leave_transmission(hdl, j);
         break;
       case "disconnect_peer"_H:
-        signal_negotiation_->disconnect_peer(hdl, j);
+        valid = signal_negotiation_->disconnect_peer(hdl, j);
         break;
       case "query_user_id_list"_H:
-        signal_negotiation_->query_user_id_list(hdl, j, state->source_address,
+        valid = signal_negotiation_->query_user_id_list(hdl, j, state->source_address,
                                                 dispatch);
         break;
       case "join_transmission"_H:
-        signal_negotiation_->join_transmission(hdl, j, state->source_address,
+        valid = signal_negotiation_->join_transmission(hdl, j, state->source_address,
                                                dispatch);
         break;
+      case "join_first_frame"_H:
+        valid = signal_negotiation_->FirstFrame(hdl, j);
+        break;
+      case "join_receipt"_H:
+        valid = signal_negotiation_->JoinReceipt(hdl, j);
+        break;
       case "offer"_H:
-        signal_negotiation_->offer(hdl, j);
+        valid = signal_negotiation_->offer(hdl, j);
         break;
       case "answer"_H:
-        signal_negotiation_->answer(hdl, j);
+        valid = signal_negotiation_->answer(hdl, j);
         break;
       case "new_candidate"_H:
-        signal_negotiation_->new_candidate(hdl, j);
+        valid = signal_negotiation_->new_candidate(hdl, j);
         break;
       case "new_candidate_mid"_H:
-        signal_negotiation_->new_candidate_mid(hdl, j);
+        valid = signal_negotiation_->new_candidate_mid(hdl, j);
         break;
       case "change_password"_H:
-        signal_negotiation_->change_password(hdl, j, state->source_address,
+        valid = signal_negotiation_->change_password(hdl, j, state->source_address,
                                              dispatch);
         break;
       case "turn_credentials"_H:
-        signal_negotiation_->turn_credentials(hdl, j);
+        valid = signal_negotiation_->turn_credentials(hdl, j);
         break;
       case "client_info"_H:
-        signal_negotiation_->client_info(hdl, j);
+        valid = signal_negotiation_->client_info(hdl, j);
         break;
       case "recent_connections_presence"_H: {
         const std::string user_id = transmission_manager_->GetUserId(hdl);
@@ -1578,6 +1722,7 @@ void SignalServer::ProcessMessage(
           for (const auto& p : statuses) {
             resp["devices"].push_back({{"id", p.first}, {"online", p.second}});
           }
+          valid = true;
           SendMsg(hdl, resp);
         }
         break;
@@ -1586,6 +1731,7 @@ void SignalServer::ProcessMessage(
         LOG_WARN("Unknown signaling message type");
         break;
     }
+    if (valid) mark_activity();
   } catch (const json::exception&) {
     LOG_WARN("Invalid signaling fields on connection [{}]", state->id);
   }

@@ -73,6 +73,12 @@ class SignalServer {
     std::string device_id;  // Accessed only on the network thread.
     Clock::time_point accepted = Clock::now(), last_heartbeat = accepted;
     bool opened = false, authenticated = false, handshake_pending = true;
+    std::atomic<int64_t> valid_signal_ms{0};
+    int heartbeat_seconds = 0;
+    uint64_t pending_probe = 0;
+    Clock::time_point probe_sent{}, next_probe{};
+    server::timer_ptr probe_timer;
+    bool idle_failure_recorded = false;
     bool announcement_v2 = false;
     size_t announcement_page = 0;
     server::connection_ptr pending_http;  // Network thread; retains deferred HTTP.
@@ -102,7 +108,14 @@ class SignalServer {
   Clock::time_point heartbeat_grace_until_{};
   size_t max_source_handshakes_ = 16, source_handshakes_per_minute_ = 120;
   uint64_t source_rejections_ = 0, source_tracking_rejections_ = 0;
-  uint64_t received_heartbeats_ = 0;
+  uint64_t received_heartbeats_ = 0, probe_sequence_ = 0;
+  uint64_t heartbeat_frame_bytes_ = 0, signaling_payload_bytes_ = 0;
+  std::atomic<uint64_t> tls_handshake_bytes_{0};
+  struct IdleFailures { int count = 0; Clock::time_point expires{}; };
+  std::map<std::pair<std::string, std::string>, IdleFailures> idle_failures_;
+  void RecordIdleFailure(ConnectionState& state);
+  void SendProbe(ConnectionState& state);
+  void ArmProbeTimer(const std::shared_ptr<ConnectionState>& state);
   bool accept_wake_pending_ = false;
   int64_t EstimateFileDescriptors() const;
   std::string DescribeConnectionResources();

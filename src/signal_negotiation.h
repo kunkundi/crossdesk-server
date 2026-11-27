@@ -10,6 +10,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <set>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
@@ -60,6 +61,11 @@ class SignalNegotiation {
   bool join_transmission(websocketpp::connection_hdl hdl, const json& j,
                          const std::string& source_address = "",
                          const CredentialDispatch& dispatch = {});
+  void TickJoinDeliveries(const std::function<void(websocketpp::connection_hdl)>& probe);
+  void ForgetSignalingHandle(websocketpp::connection_hdl hdl);
+  bool FirstFrame(websocketpp::connection_hdl guest, const json& report);
+  void LogDeliveryDiagnostics();
+  bool JoinReceipt(websocketpp::connection_hdl host, const json& receipt);
   bool offer(websocketpp::connection_hdl hdl, const json& j);
   bool session_route(websocketpp::connection_hdl hdl, const json& j);
   bool answer(websocketpp::connection_hdl hdl, const json& j);
@@ -136,6 +142,22 @@ class SignalNegotiation {
   std::unordered_map<std::string, PasswordChangeResult>
       password_change_results_;
   std::deque<std::string> password_change_result_order_;
+  struct Delivery {
+    websocketpp::connection_hdl guest, host;
+    std::string request_id, delivery_id;
+    std::chrono::steady_clock::time_point started;
+    enum class Status { Waiting, Checking, Received, TimedOut };
+    Status status = Status::Waiting;
+    bool first_frame = false;
+  };
+  using DeliveryKey = std::pair<std::string, std::string>;  // transmission, guest ID
+  std::map<DeliveryKey, Delivery> deliveries_;  // Application worker only.
+  uint64_t delivery_sequence_ = 0, receipts_ = 0, delivery_timeouts_ = 0, first_frames_ = 0;
+  std::vector<int64_t> frame_times_ms_, receipt_times_ms_;
+  std::set<websocketpp::connection_hdl, std::owner_less<websocketpp::connection_hdl>> receipt_hosts_;
+  void AddLoginCapabilities(websocketpp::connection_hdl hdl, const json& request, json& reply);
+  bool ConfirmDelivery(const DeliveryKey& key, websocketpp::connection_hdl host,
+                       const std::string& delivery_id);
   SessionRecovery* recovery_ = nullptr;
 };
 
